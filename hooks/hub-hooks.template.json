@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "C:/Windows/System32/curl.exe -s -m 3 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=UserPromptSubmit\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "C:/Windows/System32/curl.exe -s -m 3 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=AskUserQuestion\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "C:/Windows/System32/curl.exe -s -m 3 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=PreToolUse\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "C:/Windows/System32/curl.exe -s -m 3 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=Stop\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "C:/Windows/System32/curl.exe -s -m 3 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=Notification\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      }
+    ]
+  }
+}

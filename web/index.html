@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deckhand</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23141a17'/><circle cx='8' cy='8' r='4' fill='%23ffb454'/></svg>" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <h1>DECKHAND</h1>
+        <span class="brand-sub">mission control</span>
+      </div>
+      <div class="topbar-right">
+        <span id="conn-status" class="conn offline">LINK&nbsp;DOWN</span>
+        <button id="admin-btn" class="ghost-btn" title="Fleet admin: versions, updates, restarts">ADMIN</button>
+        <button id="sound-toggle" class="ghost-btn" title="Toggle alert sound">SND&nbsp;ON</button>
+        <button id="resume-btn" class="ghost-btn" title="Resume a past Claude Code conversation in the hub">RESUME&nbsp;⟳</button>
+        <button id="new-session-btn" class="primary-btn">+ NEW SESSION</button>
+      </div>
+    </header>
+    <main id="layout">
+      <aside id="session-list" aria-label="Sessions"></aside>
+      <section id="terminal-panel">
+        <div id="term-tabs" hidden></div>
+        <div id="terminal-placeholder">
+          <div class="placeholder-mark">◉</div>
+          <p>SELECT A SESSION<br /><span>or launch a new one</span></p>
+        </div>
+        <div id="terminal-header" hidden>
+          <button id="term-back" class="ghost-btn mobile-only" title="Back to sessions">‹ BACK</button>
+          <span id="terminal-title"></span>
+          <div class="term-actions">
+            <button id="kill-btn" class="ghost-btn danger">KILL</button>
+          </div>
+        </div>
+        <div id="terminal-host" hidden></div>
+        <div id="quick-bar" hidden></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="new-session-dialog"></dialog>
+  <dialog id="resume-dialog"></dialog>
+  <dialog id="admin-dialog"></dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

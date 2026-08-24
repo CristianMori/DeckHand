@@ -1,0 +1,7 @@
+node_modules
+.venv
+venv
+__pycache__
+dist
+(?d).DS_Store
+(?d)Thumbs.db
