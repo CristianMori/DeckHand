@@ -26,6 +26,29 @@ const fontsReady = Promise.all([
   document.fonts.load("bold 13px 'IBM Plex Mono'"),
 ]).catch(() => {});
 
+// Clipboard API needs a secure context — dashboards are plain http on the
+// tailnet, so fall back to the hidden-textarea trick which works anywhere.
+function clipboardWrite(text: string) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+  } else {
+    legacyCopy(text);
+  }
+}
+function legacyCopy(text: string) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    ta.remove();
+  }
+}
+
 function wsUrl(hubId: string): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${location.host}/ws/term/${hubId}`;
@@ -90,6 +113,50 @@ function connect(hubId: string): TermConn {
   };
 
   const conn: TermConn = { term, fit, ws, container };
+
+  // ── clipboard ──
+  // select = copy (PuTTY-style); Ctrl+C copies when a selection exists and is
+  // the interrupt key otherwise; Ctrl+Shift+C explicit copy; right-click
+  // copies the selection. Paste stays native Ctrl+V (works on http), with
+  // Ctrl+Shift+V going through the async Clipboard API where available.
+  let selTimer: number | undefined;
+  term.onSelectionChange(() => {
+    clearTimeout(selTimer);
+    selTimer = window.setTimeout(() => {
+      const sel = term.getSelection();
+      if (sel) clipboardWrite(sel);
+    }, 150);
+  });
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    const key = ev.key.toLowerCase();
+    if (ev.ctrlKey && key === 'c' && (ev.shiftKey || term.hasSelection())) {
+      const sel = term.getSelection();
+      if (sel) clipboardWrite(sel);
+      term.clearSelection();
+      ev.preventDefault();
+      return false;
+    }
+    if (ev.ctrlKey && ev.shiftKey && key === 'v') {
+      ev.preventDefault();
+      navigator.clipboard?.readText?.()
+        .then((text) => {
+          if (text && ws.readyState === WebSocket.OPEN) term.paste(text);
+        })
+        .catch(() => {
+          /* non-secure context — native Ctrl+V still works */
+        });
+      return false;
+    }
+    return true;
+  });
+  container.addEventListener('contextmenu', (e) => {
+    if (term.hasSelection()) {
+      e.preventDefault();
+      clipboardWrite(term.getSelection());
+      term.clearSelection();
+    }
+  });
 
   term.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'in', d: data }));
