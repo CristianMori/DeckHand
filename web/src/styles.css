@@ -271,9 +271,14 @@ button {
   /* one column: the session list IS the screen */
   #session-list { width: 100%; border-right: none; padding: 10px; }
 
-  /* terminal becomes a full-screen overlay when a session is open */
+  /* terminal becomes a full-screen overlay when a session is open —
+     sized by the visual viewport so the iOS keyboard pushes it up
+     instead of covering the prompt */
   #terminal-panel {
-    position: fixed; inset: 0; z-index: 60; background: var(--bg);
+    position: fixed; left: 0; right: 0;
+    top: var(--vv-top, 0px);
+    height: var(--vv-height, 100dvh);
+    z-index: 60; background: var(--bg);
     display: none;
   }
   body.term-open #terminal-panel { display: flex; }

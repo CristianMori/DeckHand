@@ -212,6 +212,20 @@ el.killBtn.onclick = () => {
   if (selected) api.kill(selected);
 };
 
+// iOS: fixed overlays don't shrink when the on-screen keyboard opens — track
+// the visual viewport so the terminal panel always ends above the keyboard
+// (the resize also re-fits the PTY, so the TUI's composer reflows into view)
+const vv = window.visualViewport;
+if (vv) {
+  const applyViewport = () => {
+    document.documentElement.style.setProperty('--vv-height', `${vv.height}px`);
+    document.documentElement.style.setProperty('--vv-top', `${vv.offsetTop}px`);
+  };
+  vv.addEventListener('resize', applyViewport);
+  vv.addEventListener('scroll', applyViewport);
+  applyViewport();
+}
+
 // mobile back: close the terminal overlay, keep the session and its tab alive
 (document.getElementById('term-back') as HTMLButtonElement).onclick = () => {
   selected = null;

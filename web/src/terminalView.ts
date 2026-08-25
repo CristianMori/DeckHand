@@ -158,6 +158,36 @@ function connect(hubId: string): TermConn {
     }
   });
 
+  // ── touch scrolling ──
+  // xterm's canvas ignores touch pans (unscrollable on phones); translate
+  // vertical drags into buffer scrolls ourselves.
+  let touchY: number | null = null;
+  container.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.touches.length === 1) touchY = e.touches[0].clientY;
+    },
+    { passive: true },
+  );
+  container.addEventListener(
+    'touchmove',
+    (e) => {
+      if (touchY === null || e.touches.length !== 1) return;
+      const dy = e.touches[0].clientY - touchY;
+      const cell = term.element ? term.element.clientHeight / term.rows : 17;
+      const lines = Math.trunc(dy / cell);
+      if (lines !== 0) {
+        term.scrollLines(-lines);
+        touchY += lines * cell;
+        e.preventDefault();
+      }
+    },
+    { passive: false },
+  );
+  container.addEventListener('touchend', () => {
+    touchY = null;
+  });
+
   term.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'in', d: data }));
   });
