@@ -315,7 +315,15 @@ app.use((req, res, next) => {
     next();
   });
 });
-app.use(express.static(PUBLIC_DIR));
+// hashed asset bundles may cache forever, but the HTML shell must not —
+// stale index.html pins browsers to old bundles after updates
+app.use(
+  express.static(PUBLIC_DIR, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+    },
+  }),
+);
 
 app.post('/api/hook', makeHookHandler(manager, engine));
 

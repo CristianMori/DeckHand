@@ -34,6 +34,22 @@ function clipboardWrite(text: string) {
   } else {
     legacyCopy(text);
   }
+  showCopyFlash();
+}
+
+// silent clipboard success is indistinguishable from failure — flash it
+let flashEl: HTMLDivElement | null = null;
+let flashTimer: number | undefined;
+function showCopyFlash() {
+  if (!flashEl) {
+    flashEl = document.createElement('div');
+    flashEl.className = 'copy-flash';
+    flashEl.textContent = 'copied ✓';
+    document.body.appendChild(flashEl);
+  }
+  flashEl.classList.add('show');
+  clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => flashEl?.classList.remove('show'), 900);
 }
 function legacyCopy(text: string) {
   const ta = document.createElement('textarea');
@@ -150,10 +166,22 @@ function connect(hubId: string): TermConn {
     }
     return true;
   });
+  // xterm clears the selection on the right-click's mousedown, before the
+  // contextmenu event fires — snapshot it in the capture phase
+  let rightClickSel = '';
+  container.addEventListener(
+    'mousedown',
+    (e) => {
+      if (e.button === 2) rightClickSel = term.getSelection();
+    },
+    true,
+  );
   container.addEventListener('contextmenu', (e) => {
-    if (term.hasSelection()) {
+    const sel = term.hasSelection() ? term.getSelection() : rightClickSel;
+    rightClickSel = '';
+    if (sel) {
       e.preventDefault();
-      clipboardWrite(term.getSelection());
+      clipboardWrite(sel);
       term.clearSelection();
     }
   });

@@ -260,6 +260,15 @@ button {
   transition: width 0.6s ease;
 }
 
+.copy-flash {
+  position: fixed; top: 64px; right: 18px; z-index: 200;
+  font-family: var(--font-display); font-size: 10px; letter-spacing: 0.15em;
+  color: var(--green); background: #0e2416; border: 1px solid var(--green-deep);
+  padding: 5px 10px; border-radius: 2px; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.copy-flash.show { opacity: 1; }
+
 /* ── mobile ── */
 .mobile-only { display: none; }
 
