@@ -15,6 +15,9 @@ export interface PeerAlert {
   detail?: string;
 }
 
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_DEAD_MS = 75_000;
+
 class Peer {
   ws: WebSocket | null = null;
   connected = false;
@@ -22,6 +25,8 @@ class Peer {
   private lastSessionsJson = '';
   attempts = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private lastSeen = 0;
   private closed = false;
 
   constructor(
@@ -43,9 +48,30 @@ class Peer {
     ws.on('open', () => {
       this.attempts = 0;
       this.connected = true;
+      this.lastSeen = Date.now();
+      // A laptop sleeping mid-connection leaves this socket half-open: no
+      // close event ever fires and the peer looks connected forever while
+      // receiving nothing. Ping regularly and kill silent links so the
+      // normal reconnect path takes over.
+      this.heartbeat = setInterval(() => {
+        if (Date.now() - this.lastSeen > HEARTBEAT_DEAD_MS) {
+          ws.terminate(); // emits close → dropped() → reconnect with backoff
+          return;
+        }
+        try {
+          ws.ping();
+        } catch {
+          /* socket already dying */
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+      this.heartbeat.unref?.();
       this.events.emit('change');
     });
+    ws.on('pong', () => {
+      this.lastSeen = Date.now();
+    });
     ws.on('message', (raw) => {
+      this.lastSeen = Date.now();
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === 'sessions' && Array.isArray(msg.sessions)) {
@@ -79,6 +105,10 @@ class Peer {
   }
 
   private dropped() {
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
     const wasConnected = this.connected;
     this.connected = false;
     this.ws = null;
