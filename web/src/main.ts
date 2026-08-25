@@ -23,6 +23,7 @@ const el = {
   termHost: document.getElementById('terminal-host')!,
   quickBar: document.getElementById('quick-bar')!,
   killBtn: document.getElementById('kill-btn') as HTMLButtonElement,
+  autoYesBtn: document.getElementById('autoyes-btn') as HTMLButtonElement,
   soundToggle: document.getElementById('sound-toggle') as HTMLButtonElement,
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
 };
@@ -133,7 +134,11 @@ function render() {
 
   if (selected) {
     const s = sessions.find((x) => x.hubId === selected);
-    if (s) el.termTitle.textContent = `${s.name}${s.machine ? ` @ ${s.machine}` : ''} — ${s.cwd} — ${s.unreachable ? 'UNREACHABLE' : s.state}`;
+    if (s) {
+      el.termTitle.textContent = `${s.name}${s.machine ? ` @ ${s.machine}` : ''} — ${s.cwd} — ${s.unreachable ? 'UNREACHABLE' : s.state}`;
+      el.autoYesBtn.textContent = s.autoYes ? 'AUTO-YES ON' : 'AUTO-YES OFF';
+      el.autoYesBtn.classList.toggle('active', !!s.autoYes);
+    }
   }
   renderTabs();
 }
@@ -210,6 +215,17 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
 
 el.killBtn.onclick = () => {
   if (selected) api.kill(selected);
+};
+
+el.autoYesBtn.onclick = () => {
+  if (!selected) return;
+  const s = sessions.find((x) => x.hubId === selected);
+  if (!s) return;
+  const next = !s.autoYes;
+  s.autoYes = next; // optimistic; broadcast will confirm
+  el.autoYesBtn.textContent = next ? 'AUTO-YES ON' : 'AUTO-YES OFF';
+  el.autoYesBtn.classList.toggle('active', next);
+  api.autoYes(selected, next).catch(() => render());
 };
 
 // iOS: fixed overlays don't shrink when the on-screen keyboard opens — track

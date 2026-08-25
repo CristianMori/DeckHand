@@ -59,6 +59,10 @@ export class HubSession {
   rows = 32;
   /** true once any hook POST arrived — gates output heuristics down */
   hooksSeen = false;
+  /** per-session auto-approve: answer permission prompts yes until turned off */
+  autoYes = false;
+  /** stateSince of the last permission prompt we auto-answered (dedupe guard) */
+  autoAnsweredAt = 0;
   lastOutputAt = 0;
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
@@ -85,6 +89,7 @@ export class HubSession {
       summary: this.summary,
       createdAt: this.createdAt,
       alive: this.proc !== null,
+      autoYes: this.autoYes,
     };
   }
 

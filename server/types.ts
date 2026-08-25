@@ -25,6 +25,8 @@ export interface SessionInfo {
   summary?: string;
   createdAt: number;
   alive: boolean;
+  /** per-session auto-approve of permission prompts */
+  autoYes?: boolean;
   /** which fleet machine owns this session (tagged by its hub) */
   machine?: string;
   /** instanceId of the hub that owns this session — peers filter broadcasts on

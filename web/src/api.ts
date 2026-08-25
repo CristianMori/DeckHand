@@ -100,6 +100,12 @@ export const api = {
     fetch(`/api/admin/update${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
+  autoYes: (hubId: string, on: boolean) =>
+    fetch(`/api/sessions/${hubId}/autoyes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on }),
+    }).then((r) => json<{ ok: boolean; autoYes: boolean }>(r)),
   kill: (hubId: string) => fetch(`/api/sessions/${hubId}/kill`, { method: 'POST' }),
   resumeForce: (hubId: string, force: boolean) =>
     fetch(`/api/sessions/${hubId}/resume`, {

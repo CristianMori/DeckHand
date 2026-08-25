@@ -19,6 +19,7 @@ export interface SessionInfo {
   summary?: string;
   createdAt: number;
   alive: boolean;
+  autoYes?: boolean;
   machine?: string;
   unreachable?: boolean;
 }

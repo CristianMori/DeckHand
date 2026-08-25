@@ -89,6 +89,8 @@ button {
 }
 .ghost-btn:hover { color: var(--ink); border-color: var(--ink-dim); }
 .ghost-btn.danger:hover { color: var(--red); border-color: var(--red); }
+.ghost-btn.active { color: #1a1206; background: var(--amber); border-color: var(--amber); }
+.ghost-btn.active:hover { background: #ffc678; color: #1a1206; }
 
 /* ── layout ── */
 #layout { flex: 1; display: flex; min-height: 0; }

@@ -370,6 +370,30 @@ function sessionAction(
   };
 }
 
+// Auto-approve: when a session's toggle is on and it hits a permission
+// prompt, type the accept keystroke into its PTY. Guarded by stateSince so
+// each distinct prompt is answered exactly once.
+function maybeAutoAnswer(session: HubSession) {
+  if (!session.autoYes || !session.proc) return;
+  if (session.state !== 'WAITING_PERMISSION') return;
+  if (session.autoAnsweredAt >= session.stateSince) return;
+  session.autoAnsweredAt = session.stateSince;
+  // let the prompt finish rendering, then accept the highlighted default (Yes)
+  setTimeout(() => {
+    if (session.autoYes && session.proc && session.state === 'WAITING_PERMISSION') {
+      manager.write(session.hubId, '\r');
+    }
+  }, 600);
+}
+
+app.post('/api/sessions/:id/autoyes', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  session.autoYes = !!req.body?.on;
+  manager.emit('change', session);
+  if (session.autoYes) maybeAutoAnswer(session); // catch an already-pending prompt
+  res.json({ ok: true, autoYes: session.autoYes });
+}));
+
 app.post('/api/sessions/:id/kill', sessionAction((id, _req, res) => {
   manager.kill(id);
   res.json({ ok: true });
@@ -739,6 +763,7 @@ function broadcastSessions() {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 manager.on('change', (session: HubSession) => {
+  maybeAutoAnswer(session);
   broadcastSessions();
   if (!saveTimer) {
     saveTimer = setTimeout(() => {
