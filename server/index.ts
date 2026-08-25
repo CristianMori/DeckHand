@@ -217,6 +217,17 @@ app.post('/api/admin/update', (req, res) => {
   res.json({ ok: true, note: 'updating — hub restarts itself when done' });
 });
 
+// remote debugging: tail this machine's launcher-captured log
+app.get('/api/admin/log', (req, res) => {
+  if (adminForward(req, res)) return;
+  const lines = Math.min(500, Number(req.query.lines) || 100);
+  const logPath = join(DATA_DIR, 'hub.log');
+  if (!existsSync(logPath)) return res.status(404).json({ error: 'no hub.log on this machine' });
+  const content = readFileSync(logPath, 'utf8');
+  const tail = content.split(/\r?\n/).slice(-lines).join('\n');
+  res.type('text/plain').send(tail);
+});
+
 app.post('/api/admin/restart', (req, res) => {
   if (adminForward(req, res)) return;
   res.json({ ok: true });

@@ -24,7 +24,12 @@ export class StatusEngine extends EventEmitter {
       if (session.hooksSeen) return; // hooks + sessions-file carry the load once seen
       if (OUTPUT_WAITING_REGEX.test(chunk)) {
         this.signal(session, SIG_OUTPUT, 'WAITING_PERMISSION', 'prompt detected in output');
-      } else if (chunk.length > 4 && session.state !== 'STARTING') {
+      } else if (
+        chunk.length > 4 &&
+        // ignore boot noise, but never let a session sit in STARTING forever
+        // when hook delivery is broken on a machine — output is proof of life
+        (session.state !== 'STARTING' || Date.now() - session.createdAt > 15_000)
+      ) {
         this.signal(session, SIG_OUTPUT, 'WORKING');
       }
     });
