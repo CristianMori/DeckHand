@@ -28,41 +28,49 @@ const fontsReady = Promise.all([
 
 // Clipboard API needs a secure context — dashboards are plain http on the
 // tailnet, so fall back to the hidden-textarea trick which works anywhere.
+// MUST be called synchronously inside a user-gesture handler (mouseup,
+// keydown, contextmenu) — execCommand refuses outside the gesture on http.
 function clipboardWrite(text: string) {
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+    navigator.clipboard.writeText(text)
+      .then(() => showCopyFlash(true))
+      .catch(() => showCopyFlash(legacyCopy(text)));
   } else {
-    legacyCopy(text);
+    showCopyFlash(legacyCopy(text));
   }
-  showCopyFlash();
 }
 
-// silent clipboard success is indistinguishable from failure — flash it
+// the flash reports the REAL outcome — a lying success indicator is worse
+// than none
 let flashEl: HTMLDivElement | null = null;
 let flashTimer: number | undefined;
-function showCopyFlash() {
+function showCopyFlash(ok: boolean) {
   if (!flashEl) {
     flashEl = document.createElement('div');
-    flashEl.className = 'copy-flash';
-    flashEl.textContent = 'copied ✓';
     document.body.appendChild(flashEl);
   }
-  flashEl.classList.add('show');
+  flashEl.className = `copy-flash show${ok ? '' : ' fail'}`;
+  flashEl.textContent = ok ? 'copied ✓' : 'copy failed';
   clearTimeout(flashTimer);
   flashTimer = window.setTimeout(() => flashEl?.classList.remove('show'), 900);
 }
-function legacyCopy(text: string) {
+
+function legacyCopy(text: string): boolean {
+  const refocus = document.activeElement as HTMLElement | null;
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
   ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
+  let ok = false;
   try {
-    document.execCommand('copy');
+    ok = document.execCommand('copy');
   } finally {
     ta.remove();
+    refocus?.focus?.(); // don't strand keyboard focus on a removed textarea
   }
+  return ok;
 }
 
 function wsUrl(hubId: string): string {
@@ -135,13 +143,10 @@ function connect(hubId: string): TermConn {
   // the interrupt key otherwise; Ctrl+Shift+C explicit copy; right-click
   // copies the selection. Paste stays native Ctrl+V (works on http), with
   // Ctrl+Shift+V going through the async Clipboard API where available.
-  let selTimer: number | undefined;
-  term.onSelectionChange(() => {
-    clearTimeout(selTimer);
-    selTimer = window.setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel) clipboardWrite(sel);
-    }, 150);
+  // copy-on-select must happen synchronously in the mouseup handler — a
+  // debounced timeout falls outside the user gesture and execCommand refuses
+  container.addEventListener('mouseup', () => {
+    if (term.hasSelection()) clipboardWrite(term.getSelection());
   });
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
