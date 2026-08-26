@@ -29,14 +29,23 @@ const fontsReady = Promise.all([
 // Clipboard API needs a secure context — dashboards are plain http on the
 // tailnet, so fall back to the hidden-textarea trick which works anywhere.
 // MUST be called synchronously inside a user-gesture handler (mouseup,
-// keydown, contextmenu) — execCommand refuses outside the gesture on http.
+// keydown, contextmenu). execCommand goes FIRST: it is synchronous and
+// gesture-scoped, and works on http and localhost alike. The async
+// Clipboard API is only a fallback — observed to hang indefinitely on
+// these dashboards — and is raced against a timeout so it can never
+// strand the flash.
 function clipboardWrite(text: string) {
+  if (legacyCopy(text)) {
+    showCopyFlash(true);
+    return;
+  }
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text)
-      .then(() => showCopyFlash(true))
-      .catch(() => showCopyFlash(legacyCopy(text)));
+    void Promise.race([
+      navigator.clipboard.writeText(text).then(() => true, () => false),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 1500)),
+    ]).then((ok) => showCopyFlash(ok));
   } else {
-    showCopyFlash(legacyCopy(text));
+    showCopyFlash(false);
   }
 }
 
