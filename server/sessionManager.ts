@@ -112,6 +112,13 @@ export class SessionManager extends EventEmitter {
   private claudeExe = resolveClaudeExe();
 
   create(opts: SpawnOptions): HubSession {
+    // resuming a conversation supersedes its EXITED cards — leaving them
+    // around both clutters the sidebar and poisons claudeSessionId lookups
+    if (opts.resumeSessionId) {
+      for (const [hubId, s] of this.sessions) {
+        if (s.claudeSessionId === opts.resumeSessionId && !s.proc) this.sessions.delete(hubId);
+      }
+    }
     const session = new HubSession(opts);
     this.sessions.set(session.hubId, session);
     this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId);
@@ -257,8 +264,16 @@ export class SessionManager extends EventEmitter {
   }
 
   byClaudeSessionId(id: string): HubSession | undefined {
-    for (const s of this.sessions.values()) if (s.claudeSessionId === id) return s;
-    return undefined;
+    // resumes create new cards that share a claudeSessionId with older EXITED
+    // ones — a dead match would swallow hook/watcher signals meant for the
+    // live session, so the living always win
+    let dead: HubSession | undefined;
+    for (const s of this.sessions.values()) {
+      if (s.claudeSessionId !== id) continue;
+      if (s.proc) return s;
+      dead ??= s;
+    }
+    return dead;
   }
 
   list(): SessionInfo[] {
