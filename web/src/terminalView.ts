@@ -108,6 +108,18 @@ function connect(hubId: string): TermConn {
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
 
+  // Never surrender the mouse to the TUI. Claude requests mouse-reporting and
+  // then does its own select/copy/paste against the clipboard of the machine
+  // it runs on — a hidden session nobody can see. Consuming the enable/disable
+  // requests keeps every drag a local browser selection, so copy works with
+  // the viewer's clipboard on every device. (Wheel scrolling still works —
+  // xterm translates it to arrow keys for alt-screen apps.)
+  const MOUSE_MODES = new Set([9, 1000, 1002, 1003, 1005, 1015, 1016]);
+  const swallowMouseMode = (params: { length: number; params?: unknown } & ArrayLike<number>) =>
+    params.length === 1 && MOUSE_MODES.has(params[0]);
+  term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (p) => swallowMouseMode(p as never));
+  term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (p) => swallowMouseMode(p as never));
+
   const ws = new WebSocket(wsUrl(hubId));
   ws.binaryType = 'arraybuffer';
   const decoder = new TextDecoder();
