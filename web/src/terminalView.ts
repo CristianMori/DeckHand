@@ -167,26 +167,35 @@ function connect(hubId: string): TermConn {
       ev.preventDefault();
       return false;
     }
-    if (ev.ctrlKey && ev.shiftKey && key === 'v') {
-      ev.preventDefault();
-      navigator.clipboard?.readText?.()
-        .then((text) => {
-          if (text && ws.readyState === WebSocket.OPEN) term.paste(text);
-        })
-        .catch(() => {
-          /* non-secure context — native Ctrl+V still works */
-        });
+    if (ev.ctrlKey && key === 'v') {
+      // returning false WITHOUT preventDefault: xterm must not send ^V to the
+      // PTY (Claude's TUI binds it to pasting its own host-side clipboard),
+      // but the browser default proceeds — a native paste event lands in
+      // xterm's textarea and the OS clipboard text flows to the session.
       return false;
     }
     return true;
   });
-  // xterm clears the selection on the right-click's mousedown, before the
-  // contextmenu event fires — snapshot it in the capture phase
+  // Right-clicks must never reach xterm: in mouse-reporting mode it forwards
+  // them to Claude's TUI, which insta-pastes its host-side clipboard — and
+  // xterm also clears the local selection. Capture-stop the event, snapshot
+  // the selection, and let only the browser's own context menu happen (its
+  // Paste inserts the OS clipboard via the focused textarea).
   let rightClickSel = '';
   container.addEventListener(
     'mousedown',
     (e) => {
-      if (e.button === 2) rightClickSel = term.getSelection();
+      if (e.button === 2) {
+        rightClickSel = term.getSelection();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
+  container.addEventListener(
+    'mouseup',
+    (e) => {
+      if (e.button === 2) e.stopPropagation();
     },
     true,
   );
