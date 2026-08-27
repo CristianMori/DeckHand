@@ -108,17 +108,46 @@ function connect(hubId: string): TermConn {
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
 
-  // Never surrender the mouse to the TUI. Claude requests mouse-reporting and
-  // then does its own select/copy/paste against the clipboard of the machine
-  // it runs on — a hidden session nobody can see. Consuming the enable/disable
-  // requests keeps every drag a local browser selection, so copy works with
-  // the viewer's clipboard on every device. (Wheel scrolling still works —
-  // xterm translates it to arrow keys for alt-screen apps.)
-  const MOUSE_MODES = new Set([9, 1000, 1002, 1003, 1005, 1015, 1016]);
-  const swallowMouseMode = (params: { length: number; params?: unknown } & ArrayLike<number>) =>
-    params.length === 1 && MOUSE_MODES.has(params[0]);
-  term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (p) => swallowMouseMode(p as never));
-  term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (p) => swallowMouseMode(p as never));
+  // Never surrender the mouse BUTTONS to the TUI. Claude requests
+  // mouse-reporting and then does its own select/copy/paste against the
+  // clipboard of the machine it runs on — a hidden session nobody can see.
+  // Consuming the requests keeps every drag a local browser selection.
+  // But Claude still believes reporting is on — so wheel events are
+  // hand-forged below and sent as SGR reports, giving native TUI scrolling
+  // without giving up the buttons.
+  let tuiWantsMouse = false;
+  const MOUSE_EVENT_MODES = new Set([9, 1000, 1002, 1003]);
+  const MOUSE_ENC_MODES = new Set([1005, 1006, 1015, 1016]);
+  const swallowMouseMode = (params: ArrayLike<number>, enabled: boolean) => {
+    if (params.length !== 1) return false;
+    const mode = params[0];
+    if (MOUSE_EVENT_MODES.has(mode)) {
+      tuiWantsMouse = enabled;
+      return true;
+    }
+    return MOUSE_ENC_MODES.has(mode);
+  };
+  term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (p) => swallowMouseMode(p as never, true));
+  term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (p) => swallowMouseMode(p as never, false));
+
+  container.addEventListener(
+    'wheel',
+    (e) => {
+      if (!tuiWantsMouse || !term.element || ws.readyState !== WebSocket.OPEN) return;
+      // stop xterm's wheel→arrow-key fallback (arrows navigate input history)
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = term.element.getBoundingClientRect();
+      const col = Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols))));
+      const row = Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows))));
+      const btn = e.deltaY < 0 ? 64 : 65;
+      const ticks = Math.min(3, Math.max(1, Math.round(Math.abs(e.deltaY) / 60)));
+      let seq = '';
+      for (let i = 0; i < ticks; i++) seq += `\x1b[<${btn};${col};${row}M`;
+      ws.send(JSON.stringify({ t: 'in', d: seq }));
+    },
+    { passive: false, capture: true },
+  );
 
   const ws = new WebSocket(wsUrl(hubId));
   ws.binaryType = 'arraybuffer';
@@ -240,7 +269,15 @@ function connect(hubId: string): TermConn {
       const cell = term.element ? term.element.clientHeight / term.rows : 17;
       const lines = Math.trunc(dy / cell);
       if (lines !== 0) {
-        term.scrollLines(-lines);
+        if (tuiWantsMouse && ws.readyState === WebSocket.OPEN) {
+          // full-screen TUI: no scrollback to scroll — forge wheel reports
+          const btn = lines > 0 ? 64 : 65;
+          let seq = '';
+          for (let i = 0; i < Math.min(4, Math.abs(lines)); i++) seq += `\x1b[<${btn};1;1M`;
+          ws.send(JSON.stringify({ t: 'in', d: seq }));
+        } else {
+          term.scrollLines(-lines);
+        }
         touchY += lines * cell;
         e.preventDefault();
       }
