@@ -218,21 +218,40 @@ function connect(hubId: string): TermConn {
   term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (p) => swallowMouseMode(p as never, true));
   term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (p) => swallowMouseMode(p as never, false));
 
+  // Wheel deltas are pooled and flushed on a steady cadence: smooth-scroll
+  // mice fire dozens of tiny events per flick, and one report per event
+  // floods the TUI with repaints (the jank). The remainder carries over so
+  // slow scrolling still eventually moves.
+  const WHEEL_PX_PER_TICK = 80;
+  let wheelAcc = 0;
+  let wheelPos = { col: 1, row: 1 };
+  let wheelFlush: number | undefined;
+  const flushWheel = () => {
+    wheelFlush = undefined;
+    const ticks = Math.trunc(wheelAcc / WHEEL_PX_PER_TICK);
+    if (ticks === 0 || ws.readyState !== WebSocket.OPEN) return;
+    wheelAcc -= ticks * WHEEL_PX_PER_TICK;
+    const btn = ticks < 0 ? 64 : 65;
+    const n = Math.min(6, Math.abs(ticks));
+    let seq = '';
+    for (let i = 0; i < n; i++) seq += `\x1b[<${btn};${wheelPos.col};${wheelPos.row}M`;
+    ws.send(JSON.stringify({ t: 'in', d: seq }));
+  };
   container.addEventListener(
     'wheel',
     (e) => {
-      if (!tuiWantsMouse || !term.element || ws.readyState !== WebSocket.OPEN) return;
+      if (!tuiWantsMouse || !term.element) return;
       // stop xterm's wheel→arrow-key fallback (arrows navigate input history)
       e.preventDefault();
       e.stopPropagation();
       const rect = term.element.getBoundingClientRect();
-      const col = Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols))));
-      const row = Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows))));
-      const btn = e.deltaY < 0 ? 64 : 65;
-      const ticks = Math.min(10, Math.max(1, Math.round((Math.abs(e.deltaY) / 60) * scrollSensitivity())));
-      let seq = '';
-      for (let i = 0; i < ticks; i++) seq += `\x1b[<${btn};${col};${row}M`;
-      ws.send(JSON.stringify({ t: 'in', d: seq }));
+      wheelPos = {
+        col: Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols)))),
+        row: Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows)))),
+      };
+      const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY; // lines → px
+      wheelAcc += px * scrollSensitivity();
+      if (wheelFlush === undefined) wheelFlush = window.setTimeout(flushWheel, 35);
     },
     { passive: false, capture: true },
   );
