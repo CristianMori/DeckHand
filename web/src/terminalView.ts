@@ -11,6 +11,42 @@ interface TermConn {
   ws: WebSocket;
   container: HTMLDivElement;
   refreshTimer?: number;
+  /** the TUI asked for mouse reporting (we swallowed it, wheel is forged) */
+  tuiMouse?: boolean;
+}
+
+/** wheel sensitivity multiplier, persisted; read live so changes apply instantly */
+export function scrollSensitivity(): number {
+  const v = parseFloat(localStorage.getItem('deckhand-scroll-sens') ?? '1');
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+export function setScrollSensitivity(v: number) {
+  localStorage.setItem('deckhand-scroll-sens', String(v));
+}
+
+/** Scroll the active terminal by `lines` (negative = up). Forges wheel
+ *  reports for full-screen TUIs, plain scrollback otherwise. */
+export function scrollActive(lines: number) {
+  if (!activeHubId) return;
+  const conn = conns.get(activeHubId);
+  if (!conn || lines === 0) return;
+  if (conn.tuiMouse && conn.ws.readyState === WebSocket.OPEN) {
+    const btn = lines < 0 ? 64 : 65;
+    const n = Math.min(120, Math.abs(lines));
+    let seq = '';
+    for (let i = 0; i < n; i++) seq += `\x1b[<${btn};1;1M`;
+    conn.ws.send(JSON.stringify({ t: 'in', d: seq }));
+  } else {
+    conn.term.scrollLines(lines);
+  }
+}
+
+/** Scroll by a fraction of the visible page (1 = full page, 0.5 = half). */
+export function scrollActivePages(fraction: number) {
+  if (!activeHubId) return;
+  const conn = conns.get(activeHubId);
+  if (!conn) return;
+  scrollActive(Math.round(conn.term.rows * fraction));
 }
 
 const conns = new Map<string, TermConn>();
@@ -123,6 +159,7 @@ function connect(hubId: string): TermConn {
     const mode = params[0];
     if (MOUSE_EVENT_MODES.has(mode)) {
       tuiWantsMouse = enabled;
+      conn.tuiMouse = enabled;
       return true;
     }
     return MOUSE_ENC_MODES.has(mode);
@@ -141,7 +178,7 @@ function connect(hubId: string): TermConn {
       const col = Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols))));
       const row = Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows))));
       const btn = e.deltaY < 0 ? 64 : 65;
-      const ticks = Math.min(3, Math.max(1, Math.round(Math.abs(e.deltaY) / 60)));
+      const ticks = Math.min(10, Math.max(1, Math.round((Math.abs(e.deltaY) / 60) * scrollSensitivity())));
       let seq = '';
       for (let i = 0; i < ticks; i++) seq += `\x1b[<${btn};${col};${row}M`;
       ws.send(JSON.stringify({ t: 'in', d: seq }));

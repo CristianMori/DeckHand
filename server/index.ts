@@ -586,6 +586,90 @@ app.get('/api/fleet-folders', async (_req, res) => {
   );
 });
 
+// Printable transcript: the last N question→reply exchanges of a session,
+// extracted from the jsonl (text only — tool noise omitted).
+app.get('/api/sessions/:id/export', async (req, res) => {
+  const session = manager.sessions.get(String(req.params.id));
+  if (!session) return res.status(404).send('session not on this machine');
+  const n = Math.max(1, Math.min(100, Number(req.query.replies) || 5));
+  const path = join(
+    CLAUDE_PROJECTS_DIR,
+    encodeProjectDir(session.cwd),
+    `${session.claudeSessionId}.jsonl`,
+  );
+  if (!existsSync(path)) return res.status(404).send('no transcript for this session yet');
+
+  interface Exchange { q: string; r: string }
+  const exchanges: Exchange[] = [];
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const lines = (await readFile(path, 'utf8')).split('\n');
+    let replyParts: string[] = [];
+    // walk backwards: gather assistant text until the owning user question
+    for (let i = lines.length - 1; i >= 0 && exchanges.length < n; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let obj: {
+        type?: string;
+        isSidechain?: boolean;
+        isMeta?: boolean;
+        message?: { content?: unknown };
+      };
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (obj.isSidechain || obj.isMeta) continue;
+      const content = obj.message?.content;
+      if (obj.type === 'assistant' && Array.isArray(content)) {
+        const text = (content as { type: string; text?: string }[])
+          .filter((c) => c.type === 'text' && c.text)
+          .map((c) => c.text)
+          .join('\n');
+        if (text) replyParts.unshift(text);
+      } else if (obj.type === 'user') {
+        let q = '';
+        if (typeof content === 'string') q = content;
+        else if (Array.isArray(content)) {
+          q = (content as { type: string; text?: string }[])
+            .filter((c) => c.type === 'text' && c.text)
+            .map((c) => c.text)
+            .join('\n');
+        }
+        if (q && replyParts.length) {
+          exchanges.unshift({ q, r: replyParts.join('\n\n') });
+          replyParts = [];
+        }
+      }
+    }
+  } catch (err) {
+    return res.status(500).send(String(err));
+  }
+
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const when = new Date().toLocaleString();
+  res.type('html').send(`<!doctype html><html><head><meta charset="utf-8">
+<title>${esc(session.name)} — last ${exchanges.length} exchanges</title>
+<style>
+  body { max-width: 860px; margin: 32px auto; padding: 0 24px; background: #fff; color: #1a1a1a;
+         font: 15px/1.55 Georgia, 'Times New Roman', serif; }
+  header { border-bottom: 2px solid #1a1a1a; padding-bottom: 10px; margin-bottom: 28px; }
+  header h1 { font-size: 20px; margin: 0; }
+  header .meta { color: #666; font-size: 12px; margin-top: 4px; }
+  .q { background: #f2f2f2; border-left: 4px solid #1a1a1a; padding: 10px 14px;
+       font-weight: bold; white-space: pre-wrap; margin: 0 0 14px; }
+  .r { white-space: pre-wrap; margin: 0 0 28px; }
+  section + section { border-top: 1px solid #ccc; padding-top: 26px; }
+  @media print { body { margin: 0; max-width: none; font-size: 12px; } }
+</style></head><body>
+<header><h1>${esc(session.name)}</h1>
+<div class="meta">${esc(session.cwd)} · ${discovery.selfName} · exported ${esc(when)} · last ${exchanges.length} exchange${exchanges.length === 1 ? '' : 's'}</div></header>
+${exchanges.map((e) => `<section><div class="q">${esc(e.q)}</div><div class="r">${esc(e.r)}</div></section>`).join('\n')}
+</body></html>`);
+});
+
 app.get('/api/transcripts/:id', (req, res) => {
   const folder = String(req.query.folder ?? '');
   const id = String(req.params.id).replace(/[^a-zA-Z0-9-]/g, '');

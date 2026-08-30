@@ -28,7 +28,7 @@ const el = {
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
 };
 
-buildQuickBar(el.quickBar);
+buildQuickBar(el.quickBar, () => sessions.find((x) => x.hubId === selected) ?? null);
 
 // ---------------------------------------------------------------- render
 
