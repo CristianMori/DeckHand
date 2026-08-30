@@ -49,6 +49,57 @@ export function scrollActivePages(fraction: number) {
   scrollActive(Math.round(conn.term.rows * fraction));
 }
 
+// user prompts render as "> text" lines in Claude's transcript view
+const PROMPT_MARKER = /^\s?>\s\S/;
+
+function visiblePrompts(term: Terminal): { row: number; text: string }[] {
+  const out: { row: number; text: string }[] = [];
+  const buf = term.buffer.active;
+  const limit = Math.max(1, term.rows - 5); // skip the composer area
+  for (let y = 0; y < limit; y++) {
+    const text = buf.getLine(buf.viewportY + y)?.translateToString(true) ?? '';
+    if (PROMPT_MARKER.test(text)) out.push({ row: y, text: text.slice(0, 100) });
+  }
+  return out;
+}
+
+let jumping = false;
+/** Jump the view to the previous (-1) or next (+1) user prompt. */
+export async function jumpPrompt(dir: -1 | 1) {
+  if (jumping || !activeHubId) return;
+  const conn = conns.get(activeHubId);
+  if (!conn) return;
+  const term = conn.term;
+
+  if (!conn.tuiMouse) {
+    // plain buffer: scrollback is ours — deterministic scan
+    const buf = term.buffer.active;
+    for (let i = buf.viewportY + dir; i >= 0 && i < buf.length; i += dir) {
+      const t = buf.getLine(i)?.translateToString(true) ?? '';
+      if (PROMPT_MARKER.test(t)) {
+        term.scrollLines(i - buf.viewportY);
+        return;
+      }
+    }
+    return;
+  }
+
+  // full-screen TUI: the scroll position lives inside the app — hunt in
+  // half-page steps until a prompt line we couldn't see before is on screen
+  jumping = true;
+  try {
+    const before = new Set(visiblePrompts(term).map((m) => m.text));
+    for (let step = 0; step < 40; step++) {
+      scrollActive(dir * Math.max(3, Math.floor(term.rows / 2)));
+      await new Promise((r) => setTimeout(r, 140));
+      const fresh = visiblePrompts(term).filter((m) => !before.has(m.text));
+      if (fresh.some((m) => m.row <= Math.floor(term.rows / 2))) return;
+    }
+  } finally {
+    jumping = false;
+  }
+}
+
 const conns = new Map<string, TermConn>();
 let activeHubId: string | null = null;
 let resizeTimer: number | undefined;

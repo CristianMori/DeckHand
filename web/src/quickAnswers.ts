@@ -1,5 +1,5 @@
 import { api } from './api';
-import { sendKeys, scrollActivePages, scrollSensitivity, setScrollSensitivity } from './terminalView';
+import { sendKeys, scrollActivePages, scrollSensitivity, setScrollSensitivity, jumpPrompt } from './terminalView';
 import type { SessionInfo } from './types';
 
 /**
@@ -10,10 +10,12 @@ import type { SessionInfo } from './types';
 export function buildQuickBar(root: HTMLElement, getSelected: () => SessionInfo | null) {
   root.innerHTML = `
     <span class="qa-label">TERM</span>
+    <button data-jump="-1" title="Previous prompt">«</button>
     <button data-scroll="-1" title="Page up">⇈</button>
     <button data-scroll="-0.5" title="Half page up">↑</button>
     <button data-scroll="0.5" title="Half page down">↓</button>
     <button data-scroll="1" title="Page down">⇊</button>
+    <button data-jump="1" title="Next prompt">»</button>
     <select id="qb-sens" title="Mouse scroll sensitivity">
       <option value="0.5">SCROLL ×0.5</option>
       <option value="1">SCROLL ×1</option>
@@ -31,6 +33,9 @@ export function buildQuickBar(root: HTMLElement, getSelected: () => SessionInfo 
   const KEYS: Record<string, string> = { esc: '' };
   root.querySelectorAll<HTMLButtonElement>('button[data-scroll]').forEach((b) => {
     b.onclick = () => scrollActivePages(parseFloat(b.dataset.scroll!));
+  });
+  root.querySelectorAll<HTMLButtonElement>('button[data-jump]').forEach((b) => {
+    b.onclick = () => void jumpPrompt(Number(b.dataset.jump) as -1 | 1);
   });
   root.querySelectorAll<HTMLButtonElement>('button[data-key]').forEach((b) => {
     b.onclick = () => sendKeys(KEYS[b.dataset.key!] ?? b.dataset.key!);
