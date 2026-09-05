@@ -381,6 +381,19 @@ function sessionAction(
 // Auto-approve: when a session's toggle is on and it hits a permission
 // prompt, type the accept keystroke into its PTY. Guarded by stateSince so
 // each distinct prompt is answered exactly once.
+// The plan-mode exit prompt is the one permission we never auto-approve —
+// leaving plan mode is a real decision. It's recognizable by its options,
+// which offer to keep planning (ordinary permission prompts don't).
+const PLAN_EXIT_MARKER = /keep planning|exit plan mode|ready to (code|proceed)/i;
+
+function isPlanExitPrompt(session: HubSession): boolean {
+  try {
+    return PLAN_EXIT_MARKER.test(session.snapshot());
+  } catch {
+    return false;
+  }
+}
+
 function maybeAutoAnswer(session: HubSession) {
   if (!session.autoYes || !session.proc) return;
   if (session.state !== 'WAITING_PERMISSION') return;
@@ -388,9 +401,9 @@ function maybeAutoAnswer(session: HubSession) {
   session.autoAnsweredAt = session.stateSince;
   // let the prompt finish rendering, then accept the highlighted default (Yes)
   setTimeout(() => {
-    if (session.autoYes && session.proc && session.state === 'WAITING_PERMISSION') {
-      manager.write(session.hubId, '\r');
-    }
+    if (!session.autoYes || !session.proc || session.state !== 'WAITING_PERMISSION') return;
+    if (isPlanExitPrompt(session)) return; // plan-mode exit needs a human
+    manager.write(session.hubId, '\r');
   }, 600);
 }
 
