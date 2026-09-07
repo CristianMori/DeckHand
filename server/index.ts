@@ -800,6 +800,7 @@ httpServer.on('upgrade', (req, socket, head) => {
               cols: session.cols,
               rows: session.rows,
               snapshot: session.snapshot(),
+              mouseMode: session.mouseMode(),
             }),
           );
 

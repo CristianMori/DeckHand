@@ -93,6 +93,18 @@ export class HubSession {
     };
   }
 
+  /** Current mouse-reporting state from the mirror — the client can't infer
+   *  this from a reconnect snapshot (DECSET modes aren't replayed), so we tell
+   *  it authoritatively in the init frame. 'none' when the TUI isn't tracking. */
+  mouseMode(): string {
+    try {
+      return (this.mirror as unknown as { modes?: { mouseTrackingMode?: string } })?.modes
+        ?.mouseTrackingMode ?? 'none';
+    } catch {
+      return 'none';
+    }
+  }
+
   /** Exact current screen state (incl. colors, cursor, alt-screen) as an ANSI stream. */
   snapshot(): string {
     try {

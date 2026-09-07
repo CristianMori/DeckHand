@@ -271,6 +271,13 @@ function connect(hubId: string): TermConn {
           term.reset();
           if (msg.snapshot) term.write(msg.snapshot);
           initialized = true;
+          // authoritative mouse state from the server mirror — a reconnect
+          // snapshot doesn't replay the TUI's enable-mouse sequence, so without
+          // this the client wrongly thinks mouse reporting is off and drops
+          // forged clicks/wheel until the TUI happens to re-emit it
+          const on = !!msg.mouseMode && msg.mouseMode !== 'none';
+          tuiWantsMouse = on;
+          conn.tuiMouse = on;
           // now adapt the PTY to *our* viewport; the TUI repaints on resize
           requestAnimationFrame(() => {
             if (term.element) fit.fit();
