@@ -302,8 +302,42 @@ function connect(hubId: string): TermConn {
   // Ctrl+Shift+V going through the async Clipboard API where available.
   // copy-on-select must happen synchronously in the mouseup handler — a
   // debounced timeout falls outside the user gesture and execCommand refuses
-  container.addEventListener('mouseup', () => {
-    if (term.hasSelection()) clipboardWrite(term.getSelection());
+  // click vs drag: a drag creates a selection → copy it locally; a plain left
+  // click with no selection is forwarded to the TUI as an SGR mouse click, so
+  // Claude's clickable UI (diff panels, menus) works — while drag-to-copy and
+  // the OS clipboard stay ours. No modifier needed.
+  const cellFromEvent = (e: MouseEvent): { col: number; row: number } | null => {
+    if (!term.element) return null;
+    const rect = term.element.getBoundingClientRect();
+    return {
+      col: Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols)))),
+      row: Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows)))),
+    };
+  };
+  let downCell: { col: number; row: number } | null = null;
+  container.addEventListener('mousedown', (e) => {
+    if (e.button === 0) downCell = cellFromEvent(e);
+  });
+  container.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
+    if (term.hasSelection()) {
+      clipboardWrite(term.getSelection());
+      downCell = null;
+      return;
+    }
+    const up = cellFromEvent(e);
+    if (
+      conn.tuiMouse &&
+      up &&
+      downCell &&
+      up.col === downCell.col &&
+      up.row === downCell.row &&
+      ws.readyState === WebSocket.OPEN
+    ) {
+      // SGR: left press then release at the clicked cell
+      ws.send(JSON.stringify({ t: 'in', d: `\x1b[<0;${up.col};${up.row}M\x1b[<0;${up.col};${up.row}m` }));
+    }
+    downCell = null;
   });
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
