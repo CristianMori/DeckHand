@@ -22,9 +22,11 @@ export class StatusEngine extends EventEmitter {
     // S4: raw output flow marks WORKING; prompt-box patterns suggest WAITING.
     manager.on('data', (session: HubSession, chunk: string) => {
       if (session.hooksSeen) return; // hooks + sessions-file carry the load once seen
-      const waitingRx = agentFor(session).outputWaitingRegex;
+      const { outputWaitingRegex: waitingRx, outputIdleRegex: idleRx } = agentFor(session);
       if (waitingRx && waitingRx.test(chunk)) {
         this.signal(session, SIG_OUTPUT, 'WAITING_PERMISSION', 'prompt detected in output');
+      } else if (idleRx && idleRx.test(chunk)) {
+        this.signal(session, SIG_OUTPUT, 'IDLE', 'ready');
       } else if (
         chunk.length > 4 &&
         // ignore boot noise, but never let a session sit in STARTING forever

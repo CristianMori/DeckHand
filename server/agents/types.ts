@@ -86,6 +86,8 @@ export interface AgentAdapter {
 
   /** prompt-box patterns in raw output (fallback before any hook arrives) */
   outputWaitingRegex?: RegExp;
+  /** the agent's idle composer, for agents that fire no hook on resume */
+  outputIdleRegex?: RegExp;
   /** keystroke that accepts the highlighted default of a permission prompt */
   acceptKeystroke: string;
   /** prompts auto-yes must leave to a human (screen text test) */

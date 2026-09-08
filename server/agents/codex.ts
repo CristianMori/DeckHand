@@ -350,6 +350,9 @@ export const codexAdapter: AgentAdapter = {
   },
 
   outputWaitingRegex: OUTPUT_WAITING_REGEX,
+  // a resumed session paints its composer and then fires no hook until the
+  // first prompt — without this it would sit at STARTING
+  outputIdleRegex: /Ask Codex to do anything/,
   acceptKeystroke: '\r',
 
   transcript: {
