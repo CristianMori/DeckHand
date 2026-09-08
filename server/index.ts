@@ -240,18 +240,30 @@ app.post('/api/admin/restart', (req, res) => {
 
 app.get('/api/fleet', (_req, res) => res.json(federation.machines(discovery.selfName)));
 
-/** Agents this hub can run, with their launch-dialog vocabularies. */
-app.get('/api/agents', (_req, res) =>
+/** Agents a machine can run, with their launch-dialog vocabularies. */
+app.get('/api/agents', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, '/api/agents');
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
   res.json(
     listAgents().map((a) => ({
       id: a.id,
       label: a.label,
+      available: a.available(),
       models: a.models,
       permissionModes: a.permissionModes,
       canResume: !!a.transcript,
     })),
-  ),
-);
+  );
+});
 
 // Drag-and-drop upload: the browser can't reveal a dropped file's real path, so
 // the client sends the bytes here and pastes the saved path into the prompt.

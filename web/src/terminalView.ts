@@ -49,8 +49,9 @@ export function scrollActivePages(fraction: number) {
   scrollActive(Math.round(conn.term.rows * fraction));
 }
 
-// user prompts render as "> text" lines in Claude's transcript view
-const PROMPT_MARKER = /^\s?>\s\S/;
+// user prompts render as "> text" lines in Claude's transcript view and
+// "› text" in Codex's
+const PROMPT_MARKER = /^\s?[>›]\s\S/;
 
 function visiblePrompts(term: Terminal): { row: number; text: string }[] {
   const out: { row: number; text: string }[] = [];

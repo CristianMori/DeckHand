@@ -53,7 +53,7 @@ export async function listRecentConversations(
     try {
       const parsed = getAgent(f.agentType).transcript!.parseTail(await readTail(f.path));
       entry.cwd = parsed.cwd;
-      entry.title = parsed.title;
+      entry.title = parsed.title ?? f.title;
       entry.lastText = parsed.lastText;
     } catch {
       /* unreadable transcript — still listed, just bare */

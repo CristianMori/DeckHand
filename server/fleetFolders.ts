@@ -69,7 +69,7 @@ export async function listLocalFolders(
         };
         try {
           const parsed = agent.transcript!.parseTail(await readTail(ref.path));
-          entry.title = parsed.title;
+          entry.title = parsed.title ?? ref.title;
           entry.lastText = parsed.lastText;
         } catch {
           /* bare entry */

@@ -35,6 +35,8 @@ export interface FleetMachine {
 export interface AgentInfo {
   id: string;
   label: string;
+  /** CLI installed on that machine (old hubs omit it — treat as available) */
+  available?: boolean;
   models: { value: string; label: string }[];
   permissionModes: { value: string; label: string }[];
   canResume: boolean;

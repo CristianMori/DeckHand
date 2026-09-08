@@ -24,6 +24,8 @@ export interface TranscriptRef {
   path: string;
   sessionId: string;
   mtime: number;
+  /** label known to the agent's index but absent from the file itself */
+  title?: string;
 }
 
 export interface TranscriptTail {
@@ -67,7 +69,11 @@ export interface AgentAdapter {
   /** true when the hub picks the conversation id up front (--session-id) */
   clientChosenId: boolean;
   resolveExe(): string;
+  /** false when the CLI is not installed on this machine */
+  available(): boolean;
   buildArgs(input: BuildArgsInput): string[];
+  /** one-time preparation before a PTY spawn (e.g. pre-trusting a folder) */
+  beforeSpawn?(cwd: string): void;
 
   /** materialize this agent's hook config for the given hub port (boot time) */
   writeHooks?(port: number): void;

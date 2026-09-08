@@ -171,7 +171,9 @@ export class SessionManager extends EventEmitter {
   }
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean) {
-    const args = agentFor(session).buildArgs({
+    const adapter = agentFor(session);
+    adapter.beforeSpawn?.(session.cwd);
+    const args = adapter.buildArgs({
       sessionId: session.claudeSessionId,
       resume: isResume,
       name: session.name,

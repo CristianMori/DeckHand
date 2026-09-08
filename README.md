@@ -4,10 +4,10 @@
 
 ![Deckhand dashboard](docs/screenshot.jpg)
 
-A self-hosted **fleet controller for Claude Code sessions**. Run coding-agent
-sessions on any of your computers, watch and drive all of them from one
-dashboard (or your phone), and let projects and conversations follow you
-between machines. No cloud service, no accounts, no configuration files to
+A self-hosted **fleet controller for coding-agent sessions** — Claude Code and
+OpenAI Codex, side by side. Run agent sessions on any of your computers, watch
+and drive all of them from one dashboard (or your phone), and let projects and
+conversations follow you between machines. No cloud service, no accounts, no configuration files to
 maintain — machines discover each other and the fleet assembles itself.
 
 Deckhand grew out of a simple dashboard whose only job was to make sure you
@@ -19,6 +19,12 @@ when any session on any machine needs a human.
 
 ## What it does
 
+- **Mixed agents.** Claude Code and Codex sessions live in the same session
+  list and tab bar. The launch dialog offers whichever CLIs are installed on
+  the machine you pick, with that agent's own model and permission choices.
+  Status, resume, cross-machine migration, the durable transcript store and
+  PRINT export work for both. Each agent is an adapter under `server/agents/`,
+  so a third CLI is one file away.
 - **One dashboard, whole fleet.** Every machine runs the same hub; every hub
   shows every machine's sessions. Open `http://<any-machine>:5959` from any
   device on your tailnet — they are all equivalent.
@@ -62,7 +68,7 @@ when any session on any machine needs a human.
 - Not multi-user. There is no login system; the trust boundary is your
   private network (see Security).
 - Not a CI runner or an agent framework. It hosts and moves interactive
-  Claude Code sessions; the sessions themselves are stock Claude Code.
+  sessions; the sessions themselves are stock Claude Code or stock Codex.
 
 ---
 
@@ -106,12 +112,26 @@ peers; there is no controller. Three subsystems ride on that:
 Four signals fused with precedence (higher wins, 3-second shield):
 
 1. PTY exit → EXITED
-2. **Claude Code hooks** (injected per-session via `--settings`, no changes
-   to your global settings): UserPromptSubmit → WORKING, AskUserQuestion →
-   WAITING_QUESTION, Stop → IDLE, permission notification →
-   WAITING_PERMISSION.
+2. **Agent hooks.** Claude Code: injected per-session via `--settings`, no
+   changes to your global settings — UserPromptSubmit → WORKING,
+   AskUserQuestion → WAITING_QUESTION, Stop → IDLE, permission notification
+   → WAITING_PERMISSION. Codex: the hub keeps its own entries in
+   `~/.codex/hooks.json` (yours are preserved) and launches with
+   `--dangerously-bypass-hook-trust` so they run without the per-hook review
+   prompt — UserPromptSubmit → WORKING, PermissionRequest →
+   WAITING_PERMISSION, Stop/Interrupt → IDLE. Codex mints its own
+   conversation id; the SessionStart hook reports it and the hub binds it to
+   the card it just launched.
 3. `~/.claude/sessions/*.json` watcher — Claude Code's own status feed.
-4. Output heuristics — fallback until the first hook arrives.
+4. Output heuristics — fallback until the first hook arrives; each agent
+   contributes its own prompt patterns.
+
+Codex conversations are found through the `threads` table of
+`~/.codex/state_*.sqlite` (read with Node's built-in sqlite) and live as
+rollout files under `~/.codex/sessions/`. Moving one to another machine is a
+file copy — Codex rebuilds its index on resume. The first launch in a folder
+would ask Codex's "do you trust this directory?" question; the hub records the
+yes answer in `~/.codex/config.toml` beforehand, the same way pressing Yes does.
 
 Alerts fire only after a state persists 1.5 s. They reach every connected
 dashboard (chime + tab badge). There are deliberately no desktop toasts.
@@ -126,6 +146,7 @@ dashboard (chime + tab badge). There are deliberately no desktop toasts.
 | [Tailscale](https://tailscale.com) (free) | discovery, transport, trust boundary | required for any multi-machine features |
 | Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / distro package |
 | [Claude Code](https://claude.com/claude-code) | the sessions themselves | logged in on each machine that runs sessions |
+| [Codex CLI](https://developers.openai.com/codex) | optional second agent | `npm i -g @openai/codex`, logged in; machines without it simply don't offer it |
 | [Syncthing](https://syncthing.net) (free) | folder replication | optional — skip it and everything but folder sync works |
 
 A single machine with none of the above except Node + Claude Code still

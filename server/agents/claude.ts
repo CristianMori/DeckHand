@@ -120,6 +120,7 @@ export const claudeAdapter: AgentAdapter = {
   label: 'Claude Code',
   clientChosenId: true,
   resolveExe,
+  available: () => resolveExe() !== 'claude' || process.platform !== 'win32',
 
   buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt }) {
     const args: string[] = [];

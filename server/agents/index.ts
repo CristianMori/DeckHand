@@ -1,9 +1,13 @@
 import { claudeAdapter } from './claude.js';
+import { codexAdapter } from './codex.js';
 import type { AgentAdapter } from './types.js';
 
 export const DEFAULT_AGENT = 'claude';
 
-const registry = new Map<string, AgentAdapter>([[claudeAdapter.id, claudeAdapter]]);
+const registry = new Map<string, AgentAdapter>([
+  [claudeAdapter.id, claudeAdapter],
+  [codexAdapter.id, codexAdapter],
+]);
 
 export function registerAgent(adapter: AgentAdapter) {
   registry.set(adapter.id, adapter);

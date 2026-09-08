@@ -13,14 +13,10 @@ const FALLBACK_AGENTS: AgentInfo[] = [
 
 export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) {
   const dialog = document.getElementById('new-session-dialog') as HTMLDialogElement;
-  const [fleet, agentsRaw] = await Promise.all([
-    api.fleet().catch(() => []),
-    api.agents().catch(() => FALLBACK_AGENTS),
-  ]);
-  const agents = agentsRaw.length ? agentsRaw : FALLBACK_AGENTS;
+  const fleet = await api.fleet().catch(() => []);
   const machines = fleet.filter((m) => m.connected);
   const multiMachine = machines.length > 1;
-  const multiAgent = agents.length > 1;
+  let agents: AgentInfo[] = FALLBACK_AGENTS;
 
   dialog.innerHTML = `
     <h2>LAUNCH SESSION</h2>
@@ -29,11 +25,10 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <select id="ns-machine">
       ${machines.map((m) => `<option value="${m.machine}"${m.self ? ' selected' : ''}>${m.machine}${m.self ? ' (this machine)' : ''}</option>`).join('')}
     </select>` : ''}
-    ${multiAgent ? `
-    <label>AGENT</label>
-    <select id="ns-agent">
-      ${agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('')}
-    </select>` : ''}
+    <div id="ns-agent-wrap" hidden>
+      <label>AGENT</label>
+      <select id="ns-agent"></select>
+    </div>
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
     <label>SESSION NAME (optional)</label>
@@ -58,7 +53,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     return machines.find((x) => x.machine === m)?.self ? undefined : m;
   };
   const selectedAgent = (): AgentInfo =>
-    (multiAgent && agents.find((a) => a.id === get<HTMLSelectElement>('ns-agent').value)) || agents[0];
+    agents.find((a) => a.id === get<HTMLSelectElement>('ns-agent').value) ?? agents[0];
 
   // model and permission vocabularies belong to the chosen agent
   function loadAgentOptions() {
@@ -66,6 +61,19 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const opt = (o: { value: string; label: string }) => `<option value="${o.value}">${o.label}</option>`;
     get<HTMLSelectElement>('ns-mode').innerHTML = '<option value="">default</option>' + a.permissionModes.map(opt).join('');
     get<HTMLSelectElement>('ns-model').innerHTML = '<option value="">default</option>' + a.models.map(opt).join('');
+  }
+
+  // the agents on offer are the ones installed on the machine that will run the session
+  async function loadAgents() {
+    const list = await api.agents(selectedMachine()).catch(() => FALLBACK_AGENTS);
+    agents = list.filter((a) => a.available !== false);
+    if (!agents.length) agents = FALLBACK_AGENTS;
+    const sel = get<HTMLSelectElement>('ns-agent');
+    const prev = sel.value;
+    sel.innerHTML = agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
+    if (agents.some((a) => a.id === prev)) sel.value = prev;
+    get<HTMLDivElement>('ns-agent-wrap').hidden = agents.length < 2;
+    loadAgentOptions();
   }
 
   // folder list comes from whichever machine will run the session
@@ -77,10 +85,14 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
       .map((p) => `<option value="${p.path}">${p.name}</option>`)
       .join('') || '<option value="">no folders found</option>';
   }
-  if (multiMachine) get<HTMLSelectElement>('ns-machine').onchange = () => void loadFolders();
-  if (multiAgent) get<HTMLSelectElement>('ns-agent').onchange = loadAgentOptions;
-  loadAgentOptions();
-  await loadFolders();
+  if (multiMachine) {
+    get<HTMLSelectElement>('ns-machine').onchange = () => {
+      void loadFolders();
+      void loadAgents();
+    };
+  }
+  get<HTMLSelectElement>('ns-agent').onchange = loadAgentOptions;
+  await Promise.all([loadAgents(), loadFolders()]);
 
   get<HTMLButtonElement>('ns-cancel').onclick = () => dialog.close();
   get<HTMLButtonElement>('ns-launch').onclick = async () => {
