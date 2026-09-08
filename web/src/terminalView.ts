@@ -205,12 +205,28 @@ function connect(hubId: string): TermConn {
   let tuiWantsMouse = false;
   const MOUSE_EVENT_MODES = new Set([9, 1000, 1002, 1003]);
   const MOUSE_ENC_MODES = new Set([1005, 1006, 1015, 1016]);
+  // pixel-accurate cell under the pointer — measured on .xterm-screen (the real
+  // character grid), NOT the padded .xterm wrapper, or forged clicks drift a
+  // couple columns near the right edge and miss small targets (like a 1-char X)
+  const cellFromEvent = (e: { clientX: number; clientY: number }): { col: number; row: number } | null => {
+    const screen = (term.element?.querySelector('.xterm-screen') as HTMLElement | null) ?? term.element;
+    const rect = screen?.getBoundingClientRect();
+    if (!rect) return null;
+    const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
+    const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
+    return { col, row };
+  };
+  // mouse-reporting on ⇒ show an interactive arrow pointer, not a text I-beam
+  const setTuiMouse = (on: boolean) => {
+    tuiWantsMouse = on;
+    conn.tuiMouse = on;
+    container.classList.toggle('tui-mouse', on);
+  };
   const swallowMouseMode = (params: ArrayLike<number>, enabled: boolean) => {
     if (params.length !== 1) return false;
     const mode = params[0];
     if (MOUSE_EVENT_MODES.has(mode)) {
-      tuiWantsMouse = enabled;
-      conn.tuiMouse = enabled;
+      setTuiMouse(enabled);
       return true;
     }
     return MOUSE_ENC_MODES.has(mode);
@@ -244,11 +260,8 @@ function connect(hubId: string): TermConn {
       // stop xterm's wheel→arrow-key fallback (arrows navigate input history)
       e.preventDefault();
       e.stopPropagation();
-      const rect = term.element.getBoundingClientRect();
-      wheelPos = {
-        col: Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols)))),
-        row: Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows)))),
-      };
+      const c = cellFromEvent(e);
+      if (c) wheelPos = c;
       const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY; // lines → px
       wheelAcc += px * scrollSensitivity();
       if (wheelFlush === undefined) wheelFlush = window.setTimeout(flushWheel, 35);
@@ -275,9 +288,7 @@ function connect(hubId: string): TermConn {
           // snapshot doesn't replay the TUI's enable-mouse sequence, so without
           // this the client wrongly thinks mouse reporting is off and drops
           // forged clicks/wheel until the TUI happens to re-emit it
-          const on = !!msg.mouseMode && msg.mouseMode !== 'none';
-          tuiWantsMouse = on;
-          conn.tuiMouse = on;
+          setTuiMouse(!!msg.mouseMode && msg.mouseMode !== 'none');
           // now adapt the PTY to *our* viewport; the TUI repaints on resize
           requestAnimationFrame(() => {
             if (term.element) fit.fit();
@@ -313,14 +324,6 @@ function connect(hubId: string): TermConn {
   // click with no selection is forwarded to the TUI as an SGR mouse click, so
   // Claude's clickable UI (diff panels, menus) works — while drag-to-copy and
   // the OS clipboard stay ours. No modifier needed.
-  const cellFromEvent = (e: MouseEvent): { col: number; row: number } | null => {
-    if (!term.element) return null;
-    const rect = term.element.getBoundingClientRect();
-    return {
-      col: Math.min(term.cols, Math.max(1, Math.ceil((e.clientX - rect.left) / (rect.width / term.cols)))),
-      row: Math.min(term.rows, Math.max(1, Math.ceil((e.clientY - rect.top) / (rect.height / term.rows)))),
-    };
-  };
   let downCell: { col: number; row: number } | null = null;
   container.addEventListener('mousedown', (e) => {
     if (e.button === 0) downCell = cellFromEvent(e);

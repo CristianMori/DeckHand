@@ -381,3 +381,8 @@ dialog textarea { resize: vertical; min-height: 60px; }
 
 /* toast-ish inline flash when an alert arrives */
 @keyframes flashin { from { opacity: 0; transform: translateY(-4px); } }
+
+/* mouse-reporting on: interactive arrow pointer, not a text I-beam */
+.tui-mouse .xterm-screen,
+.tui-mouse .xterm-rows,
+.tui-mouse .xterm { cursor: default !important; }
