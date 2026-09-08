@@ -25,10 +25,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <select id="ns-machine">
       ${machines.map((m) => `<option value="${m.machine}"${m.self ? ' selected' : ''}>${m.machine}${m.self ? ' (this machine)' : ''}</option>`).join('')}
     </select>` : ''}
-    <div id="ns-agent-wrap" hidden>
-      <label>AGENT</label>
-      <select id="ns-agent"></select>
-    </div>
+    <label>ENGINE</label>
+    <select id="ns-agent"></select>
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
     <label>SESSION NAME (optional)</label>
@@ -72,7 +70,6 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const prev = sel.value;
     sel.innerHTML = agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
     if (agents.some((a) => a.id === prev)) sel.value = prev;
-    get<HTMLDivElement>('ns-agent-wrap').hidden = agents.length < 2;
     loadAgentOptions();
   }
 

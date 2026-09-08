@@ -145,7 +145,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       row.innerHTML = `
         <div class="resume-row-top">
           <span class="resume-proj"></span>
-          ${c.agentType && c.agentType !== 'claude' ? `<span class="agent-tag">${c.agentType}</span>` : ''}
+          <span class="agent-tag">${c.agentType || 'claude'}</span>
           <span class="machine-tag">${c.machine ?? ''}</span>
           ${c.activeElsewhere ? '<span class="chip waiting" title="Open in an agent window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
           <span class="resume-age">${age(c.updatedAt)}</span>
