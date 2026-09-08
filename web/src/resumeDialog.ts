@@ -36,6 +36,10 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
         <label>SOURCE MACHINE</label>
         <select id="rs-source"></select>
       </div>
+      <div>
+        <label>ENGINE</label>
+        <select id="rs-engine"></select>
+      </div>
     </div>
     <label>FOLDER</label>
     <div class="resume-list" id="rs-folders"><div class="empty-note">loading fleet folders…</div></div>
@@ -71,6 +75,13 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     sourceMachines.map((m) => `<option value="${m}">${m}</option>`).join('') +
     (groups.some((g) => g.onVps) ? '<option value="__vps__">vps only</option>' : '');
 
+  // engine filter: which CLI's conversations to offer
+  const engineSel = get<HTMLSelectElement>('rs-engine');
+  const engineOf = (c: FolderConversation) => c.agentType || 'claude';
+  const engines = [...new Set(groups.flatMap((g) => g.locations.flatMap((l) => l.conversations.map(engineOf))))].sort();
+  engineSel.innerHTML =
+    '<option value="">all engines</option>' + engines.map((e) => `<option value="${e}">${e}</option>`).join('');
+
   const foldersEl = get<HTMLDivElement>('rs-folders');
   const convsWrap = get<HTMLDivElement>('rs-convs-wrap');
   const convsEl = get<HTMLDivElement>('rs-convs');
@@ -78,9 +89,12 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
 
   function visibleGroups(): FleetFolderGroup[] {
     const src = sourceSel.value;
-    if (!src) return groups;
-    if (src === '__vps__') return groups.filter((g) => g.onVps);
-    return groups.filter((g) => g.locations.some((l) => l.machine === src));
+    const engine = engineSel.value;
+    let shown = groups;
+    if (src === '__vps__') shown = groups.filter((g) => g.onVps);
+    else if (src) shown = groups.filter((g) => g.locations.some((l) => l.machine === src));
+    if (engine) shown = shown.filter((g) => g.locations.some((l) => l.conversations.some((c) => engineOf(c) === engine)));
+    return shown;
   }
 
   function renderFolders() {
@@ -88,7 +102,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     foldersEl.innerHTML = '';
     const shown = visibleGroups();
     if (shown.length === 0) {
-      foldersEl.innerHTML = '<div class="empty-note">no folders match this source</div>';
+      foldersEl.innerHTML = '<div class="empty-note">no folders match this source and engine</div>';
       return;
     }
     for (const g of shown) {
@@ -126,9 +140,11 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     convsWrap.hidden = false;
     convsEl.innerHTML = '';
     const src = sourceSel.value;
+    const engine = engineSel.value;
     const convs: (FolderConversation & { machine?: string })[] = selectedFolder.locations
       .filter((l) => !src || src === '__vps__' || l.machine === src)
       .flatMap((l) => l.conversations.map((c) => ({ ...c, machine: l.machine })))
+      .filter((c) => !engine || engineOf(c) === engine)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     if (convs.length === 0) {
       convsEl.innerHTML =
@@ -208,7 +224,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
   }
 
   machineSel.onchange = () => renderFolders();
-  sourceSel.onchange = () => {
+  sourceSel.onchange = engineSel.onchange = () => {
     selectedFolder = null;
     convsWrap.hidden = true;
     renderFolders();
