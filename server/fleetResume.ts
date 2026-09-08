@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { storeFilePath } from './transcriptStore.js';
 import { readTail } from './transcriptIo.js';
 import { join } from 'node:path';
@@ -134,7 +134,9 @@ export function startFleetResume(opts: {
       const ops = agent.transcript;
       if (!ops) throw new Error(`${agent.label} conversations cannot be moved between machines`);
       let transcriptPath = ops.file(localPath, opts.claudeSessionId);
-      if (remoteSource && !existsSync(transcriptPath)) {
+      if (remoteSource) {
+        // a conversation that already migrated away may have left a stale copy
+        // here — the source machine's copy wins whenever it is newer
         job.phase = 'transcript';
         job.pct = 0;
         const peer = opts.federation.peerByMachine(opts.sourceMachine!);
@@ -143,8 +145,15 @@ export function startFleetResume(opts: {
           `${peer.info.url}/api/transcripts/${opts.claudeSessionId}` +
             `?folder=${encodeURIComponent(opts.folder)}&agent=${encodeURIComponent(agent.id)}`,
         );
-        if (!res.ok) throw new Error(`transcript fetch failed: ${res.status}`);
-        transcriptPath = await ops.install(localPath, opts.claudeSessionId, Buffer.from(await res.arrayBuffer()));
+        if (res.ok) {
+          const remoteMtime = Date.parse(res.headers.get('last-modified') ?? '') || Date.now();
+          const localMtime = existsSync(transcriptPath) ? (await stat(transcriptPath)).mtimeMs : 0;
+          if (remoteMtime > localMtime + 1000) {
+            transcriptPath = await ops.install(localPath, opts.claudeSessionId, Buffer.from(await res.arrayBuffer()));
+          }
+        } else if (!existsSync(transcriptPath)) {
+          throw new Error(`transcript fetch failed: ${res.status}`);
+        }
       }
       if (!existsSync(transcriptPath)) {
         // last resort: this machine may itself hold the durable store
