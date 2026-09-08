@@ -1,4 +1,4 @@
-import type { AdminStatus, FleetFolderGroup, FleetMachine, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, AgentInfo, FleetFolderGroup, FleetMachine, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -32,12 +32,17 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   sessions: () => fetch('/api/sessions').then((r) => json<SessionInfo[]>(r)),
   fleet: () => fetch('/api/fleet').then((r) => json<FleetMachine[]>(r)),
+  agents: (machine?: string) =>
+    fetch(`/api/agents${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
+      json<AgentInfo[]>(r),
+    ),
   projects: (machine?: string) =>
     fetch(`/api/projects${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
       json<{ name: string; path: string }[]>(r),
     ),
   spawn: (body: {
     cwd: string;
+    agentType?: string;
     name?: string;
     model?: string;
     permissionMode?: string;
@@ -78,6 +83,7 @@ export const api = {
   fleetFolders: () => fetch('/api/fleet-folders').then((r) => json<FleetFolderGroup[]>(r)),
   fleetResume: (body: {
     folder: string;
+    agentType?: string;
     claudeSessionId: string;
     sourceMachine?: string;
     machine?: string;

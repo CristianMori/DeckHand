@@ -25,26 +25,6 @@ export const FLEET_PORT_MAX = 5969;
 
 mkdirSync(DATA_DIR, { recursive: true });
 
-/** Resolve the claude binary once at boot — install paths move on updates. */
-export function resolveClaudeExe(): string {
-  try {
-    if (process.platform === 'win32') {
-      const out = execFileSync('where.exe', ['claude'], { encoding: 'utf8' });
-      const exe = out
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .find((l) => l.toLowerCase().endsWith('.exe'));
-      if (exe && existsSync(exe)) return exe;
-    } else {
-      const out = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
-      if (out && existsSync(out)) return out;
-    }
-  } catch {
-    /* fall through */
-  }
-  return 'claude'; // let the PTY resolve via PATH
-}
-
 /** Claude Code encodes a project cwd into a transcript folder name: non-alphanumerics become '-'. */
 export function encodeProjectDir(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');

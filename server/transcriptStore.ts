@@ -1,8 +1,9 @@
-import { readdir, stat, mkdir, writeFile, utimes } from 'node:fs/promises';
+import { readdir, stat, mkdir, writeFile, utimes, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { CLAUDE_PROJECTS_DIR, DATA_DIR, PROJECTS_ROOT, encodeProjectDir } from './config.js';
-import { readTail, parseTranscriptTail } from './conversations.js';
+import { DEFAULT_AGENT, getAgent, listAgents } from './agents/index.js';
+import { DATA_DIR, PROJECTS_ROOT } from './config.js';
+import { readTail } from './transcriptIo.js';
 import type { Federation } from './federation.js';
 
 /** which fleet machine keeps the durable conversation store */
@@ -13,6 +14,7 @@ const PUSH_INTERVAL_MS = 90_000;
 
 export interface StoreEntry {
   folder: string;
+  agentType: string;
   claudeSessionId: string;
   updatedAt: number;
   title?: string;
@@ -20,9 +22,18 @@ export interface StoreEntry {
 }
 
 const safeName = (s: string) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
+const safeId = (id: string) => id.replace(/[^a-zA-Z0-9-]/g, '');
 
-export function storeFilePath(folder: string, id: string): string {
-  return join(STORE_DIR, safeName(folder), `${id.replace(/[^a-zA-Z0-9-]/g, '')}.jsonl`);
+/** Claude transcripts keep their historical `<id>.jsonl` name; other agents are prefixed. */
+export function storeFilePath(folder: string, id: string, agentType = DEFAULT_AGENT): string {
+  const base = agentType === DEFAULT_AGENT ? safeId(id) : `${safeName(agentType)}__${safeId(id)}`;
+  return join(STORE_DIR, safeName(folder), `${base}.jsonl`);
+}
+
+function parseStoreName(file: string): { agentType: string; id: string } {
+  const stem = file.slice(0, -6);
+  const sep = stem.indexOf('__');
+  return sep > 0 ? { agentType: stem.slice(0, sep), id: stem.slice(sep + 2) } : { agentType: DEFAULT_AGENT, id: stem };
 }
 
 /** Accept a pushed transcript; last-writer-wins by mtime, older pushes are dropped. */
@@ -31,8 +42,9 @@ export async function saveToStore(
   id: string,
   body: Buffer,
   mtimeMs: number,
+  agentType = DEFAULT_AGENT,
 ): Promise<{ stored: boolean }> {
-  const path = storeFilePath(folder, id);
+  const path = storeFilePath(folder, id, agentType);
   if (existsSync(path)) {
     const cur = await stat(path);
     if (cur.mtimeMs >= mtimeMs) return { stored: false }; // we already have newer
@@ -64,18 +76,22 @@ export async function storeCatalog(): Promise<StoreEntry[]> {
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       const path = join(STORE_DIR, folder, f);
+      const { agentType, id } = parseStoreName(f);
+      const ops = getAgent(agentType).transcript;
+      if (!ops) continue;
       try {
         const s = await stat(path);
         const key = path;
         let meta = tailCache.get(key);
         if (!meta || meta.mtime !== s.mtimeMs) {
-          const parsed = parseTranscriptTail(await readTail(path));
+          const parsed = ops.parseTail(await readTail(path));
           meta = { mtime: s.mtimeMs, title: parsed.title, lastText: parsed.lastText };
           tailCache.set(key, meta);
         }
         out.push({
           folder,
-          claudeSessionId: f.slice(0, -6),
+          agentType,
+          claudeSessionId: id,
           updatedAt: s.mtimeMs,
           title: meta.title,
           lastText: meta.lastText,
@@ -121,12 +137,9 @@ export class TranscriptPusher {
       if (!res.ok) return;
       const entries = (await res.json()) as StoreEntry[];
       for (const e of entries) {
-        const local = join(
-          CLAUDE_PROJECTS_DIR,
-          encodeProjectDir(join(PROJECTS_ROOT, e.folder)),
-          `${e.claudeSessionId}.jsonl`,
-        );
-        this.pushed.set(local, e.updatedAt);
+        const ops = getAgent(e.agentType).transcript;
+        if (!ops) continue;
+        this.pushed.set(ops.file(join(PROJECTS_ROOT, e.folder), e.claudeSessionId), e.updatedAt);
       }
       this.seeded = true;
     } catch {
@@ -149,35 +162,32 @@ export class TranscriptPusher {
     }
 
     for (const folder of folders) {
-      const dir = join(CLAUDE_PROJECTS_DIR, encodeProjectDir(join(PROJECTS_ROOT, folder)));
-      let files: string[];
-      try {
-        files = await readdir(dir);
-      } catch {
-        continue;
-      }
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue;
-        const path = join(dir, f);
+      for (const agent of listAgents()) {
+        if (!agent.transcript) continue;
+        let refs;
         try {
-          const s = await stat(path);
-          if (s.size === 0) continue;
-          if ((this.pushed.get(path) ?? 0) >= s.mtimeMs) continue;
-          const id = f.slice(0, -6);
-          const { readFile } = await import('node:fs/promises');
-          const body = await readFile(path);
-          const res = await fetch(
-            `${base}/api/tstore/${encodeURIComponent(folder)}/${encodeURIComponent(id)}?mtime=${Math.round(s.mtimeMs)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body,
-              signal: AbortSignal.timeout(60_000),
-            },
-          );
-          if (res.ok) this.pushed.set(path, s.mtimeMs);
+          refs = await agent.transcript.listFolder(join(PROJECTS_ROOT, folder));
         } catch {
-          /* transient — next sweep retries */
+          continue;
+        }
+        for (const ref of refs) {
+          try {
+            if ((this.pushed.get(ref.path) ?? 0) >= ref.mtime) continue;
+            const body = await readFile(ref.path);
+            const res = await fetch(
+              `${base}/api/tstore/${encodeURIComponent(folder)}/${encodeURIComponent(ref.sessionId)}` +
+                `?mtime=${Math.round(ref.mtime)}&agent=${encodeURIComponent(agent.id)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream' },
+                body,
+                signal: AbortSignal.timeout(60_000),
+              },
+            );
+            if (res.ok) this.pushed.set(ref.path, ref.mtime);
+          } catch {
+            /* transient — next sweep retries */
+          }
         }
       }
     }

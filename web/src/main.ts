@@ -60,9 +60,9 @@ function renderTabs() {
       <span class="tab-min" title="Close tab — session keeps running">–</span>
       <span class="tab-x" title="End session and close tab">×</span>
     `;
-    (tab.querySelector('.tab-name') as HTMLElement).textContent = s.machine
-      ? `${s.name} @ ${s.machine}`
-      : s.name;
+    const agentSuffix = s.agentType && s.agentType !== 'claude' ? ` · ${s.agentType}` : '';
+    (tab.querySelector('.tab-name') as HTMLElement).textContent =
+      (s.machine ? `${s.name} @ ${s.machine}` : s.name) + agentSuffix;
     tab.onclick = () => select(s);
     tab.onauxclick = (e) => {
       if (e.button === 1) {

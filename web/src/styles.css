@@ -233,6 +233,12 @@ button {
   padding: 2px 6px; text-transform: uppercase; flex: none;
   white-space: nowrap;
 }
+.agent-tag {
+  font-family: var(--font-display); font-size: 8px; letter-spacing: 0.18em;
+  color: var(--amber); border: 1px solid var(--amber-deep); border-radius: 2px;
+  padding: 2px 6px; text-transform: uppercase; flex: none;
+  white-space: nowrap;
+}
 .card.unreachable { opacity: 0.55; }
 .card.unreachable .machine-tag { color: var(--ink-faint); border-color: var(--line-bright); }
 

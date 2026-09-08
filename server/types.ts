@@ -14,6 +14,9 @@ export const SIG_OUTPUT = 4;
 
 export interface SessionInfo {
   hubId: string;
+  /** which agent adapter runs this session ('claude', 'codex', ...) */
+  agentType: string;
+  /** the agent's own conversation id (name kept for wire/persistence compatibility) */
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -45,6 +48,7 @@ export interface FleetMachine {
 
 export interface SpawnOptions {
   cwd: string;
+  agentType?: string;
   name?: string;
   model?: string;
   permissionMode?: string;

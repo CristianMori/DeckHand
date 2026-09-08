@@ -15,7 +15,7 @@ const PHASE_LABEL: Record<string, string> = {
   'push-source': 'source machine pushing to VPS',
   pulling: 'pulling folder to target',
   transcript: 'transferring conversation',
-  spawning: 'starting claude…',
+  spawning: 'starting session…',
 };
 
 /**
@@ -145,8 +145,9 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       row.innerHTML = `
         <div class="resume-row-top">
           <span class="resume-proj"></span>
+          ${c.agentType && c.agentType !== 'claude' ? `<span class="agent-tag">${c.agentType}</span>` : ''}
           <span class="machine-tag">${c.machine ?? ''}</span>
-          ${c.activeElsewhere ? '<span class="chip waiting" title="Open in a claude window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
+          ${c.activeElsewhere ? '<span class="chip waiting" title="Open in an agent window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
           <span class="resume-age">${age(c.updatedAt)}</span>
         </div>
         <div class="resume-snippet"></div>
@@ -163,7 +164,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
   async function resume(c: FolderConversation & { machine?: string }) {
     if (
       c.activeElsewhere &&
-      !confirm('This conversation is open in another claude window. Resuming it may fork the conversation. Continue?')
+      !confirm('This conversation is open in another agent window. Resuming it may fork the conversation. Continue?')
     ) {
       return;
     }
@@ -179,6 +180,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       const { jobId, machine } = await withElsewhereConfirm((force) =>
         api.fleetResume({
           folder: selectedFolder!.folder,
+          agentType: c.agentType,
           claudeSessionId: c.claudeSessionId,
           sourceMachine: c.machine,
           machine: target,

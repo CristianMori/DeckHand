@@ -69,6 +69,7 @@ export function renderSessionList(
     card.innerHTML = `
       <div class="card-top">
         <span class="card-name"></span>
+        ${s.agentType && s.agentType !== 'claude' ? '<span class="agent-tag"></span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         <span class="chip ${chip.cls}">${chip.label}</span>
       </div>
@@ -81,6 +82,8 @@ export function renderSessionList(
       <div class="card-actions"></div>
     `;
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
+    const agentTag = card.querySelector('.agent-tag') as HTMLElement | null;
+    if (agentTag) agentTag.textContent = s.agentType!;
     if (s.machine) (card.querySelector('.machine-tag') as HTMLElement).textContent = s.machine;
     (card.querySelector('.cwd') as HTMLElement).textContent = shortPath(s.cwd);
     if (s.summary) (card.querySelector('.card-summary') as HTMLElement).textContent = s.summary;

@@ -1,11 +1,26 @@
 import { api, withElsewhereConfirm } from './api';
-import type { SessionInfo } from './types';
+import type { AgentInfo, SessionInfo } from './types';
+
+const FALLBACK_AGENTS: AgentInfo[] = [
+  {
+    id: 'claude',
+    label: 'Claude Code',
+    models: ['opus', 'sonnet', 'haiku'].map((m) => ({ value: m, label: m })),
+    permissionModes: ['acceptEdits', 'plan', 'bypassPermissions'].map((m) => ({ value: m, label: m })),
+    canResume: true,
+  },
+];
 
 export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) {
   const dialog = document.getElementById('new-session-dialog') as HTMLDialogElement;
-  const fleet = await api.fleet().catch(() => []);
+  const [fleet, agentsRaw] = await Promise.all([
+    api.fleet().catch(() => []),
+    api.agents().catch(() => FALLBACK_AGENTS),
+  ]);
+  const agents = agentsRaw.length ? agentsRaw : FALLBACK_AGENTS;
   const machines = fleet.filter((m) => m.connected);
   const multiMachine = machines.length > 1;
+  const multiAgent = agents.length > 1;
 
   dialog.innerHTML = `
     <h2>LAUNCH SESSION</h2>
@@ -14,6 +29,11 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <select id="ns-machine">
       ${machines.map((m) => `<option value="${m.machine}"${m.self ? ' selected' : ''}>${m.machine}${m.self ? ' (this machine)' : ''}</option>`).join('')}
     </select>` : ''}
+    ${multiAgent ? `
+    <label>AGENT</label>
+    <select id="ns-agent">
+      ${agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('')}
+    </select>` : ''}
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
     <label>SESSION NAME (optional)</label>
@@ -21,19 +41,9 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <label>INITIAL PROMPT (optional)</label>
     <textarea id="ns-prompt" placeholder="sent as the first message"></textarea>
     <label>PERMISSION MODE</label>
-    <select id="ns-mode">
-      <option value="">default</option>
-      <option value="acceptEdits">acceptEdits</option>
-      <option value="plan">plan</option>
-      <option value="bypassPermissions">bypassPermissions</option>
-    </select>
+    <select id="ns-mode"></select>
     <label>MODEL</label>
-    <select id="ns-model">
-      <option value="">default</option>
-      <option value="opus">opus</option>
-      <option value="sonnet">sonnet</option>
-      <option value="haiku">haiku</option>
-    </select>
+    <select id="ns-model"></select>
     <div class="dialog-actions">
       <button class="ghost-btn" id="ns-cancel">CANCEL</button>
       <button class="primary-btn" id="ns-launch">LAUNCH</button>
@@ -47,6 +57,16 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const m = get<HTMLSelectElement>('ns-machine').value;
     return machines.find((x) => x.machine === m)?.self ? undefined : m;
   };
+  const selectedAgent = (): AgentInfo =>
+    (multiAgent && agents.find((a) => a.id === get<HTMLSelectElement>('ns-agent').value)) || agents[0];
+
+  // model and permission vocabularies belong to the chosen agent
+  function loadAgentOptions() {
+    const a = selectedAgent();
+    const opt = (o: { value: string; label: string }) => `<option value="${o.value}">${o.label}</option>`;
+    get<HTMLSelectElement>('ns-mode').innerHTML = '<option value="">default</option>' + a.permissionModes.map(opt).join('');
+    get<HTMLSelectElement>('ns-model').innerHTML = '<option value="">default</option>' + a.models.map(opt).join('');
+  }
 
   // folder list comes from whichever machine will run the session
   async function loadFolders() {
@@ -58,6 +78,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
       .join('') || '<option value="">no folders found</option>';
   }
   if (multiMachine) get<HTMLSelectElement>('ns-machine').onchange = () => void loadFolders();
+  if (multiAgent) get<HTMLSelectElement>('ns-agent').onchange = loadAgentOptions;
+  loadAgentOptions();
   await loadFolders();
 
   get<HTMLButtonElement>('ns-cancel').onclick = () => dialog.close();
@@ -69,6 +91,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
       const session = await withElsewhereConfirm((force) =>
         api.spawn({
           cwd: get<HTMLSelectElement>('ns-folder').value,
+          agentType: selectedAgent().id,
           name: get<HTMLInputElement>('ns-name').value.trim() || undefined,
           initialPrompt: get<HTMLTextAreaElement>('ns-prompt').value.trim() || undefined,
           permissionMode: get<HTMLSelectElement>('ns-mode').value || undefined,

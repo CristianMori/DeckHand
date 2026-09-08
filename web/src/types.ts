@@ -8,6 +8,7 @@ export type SessionState =
 
 export interface SessionInfo {
   hubId: string;
+  agentType?: string;
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -31,7 +32,16 @@ export interface FleetMachine {
   url?: string;
 }
 
+export interface AgentInfo {
+  id: string;
+  label: string;
+  models: { value: string; label: string }[];
+  permissionModes: { value: string; label: string }[];
+  canResume: boolean;
+}
+
 export interface FolderConversation {
+  agentType?: string;
   claudeSessionId: string;
   title?: string;
   lastText?: string;

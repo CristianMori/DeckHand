@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
+import { agentFor } from './agents/index.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { SessionState } from './types.js';
 import { SIG_OUTPUT } from './types.js';
 
 const HIGHER_SIGNAL_SHIELD_MS = 3000; // lower-precedence signals can't override within this window
 const ALERT_DEBOUNCE_MS = 1500; // state must persist this long before alerting
-const OUTPUT_WAITING_REGEX = /Do you want|Would you like|❯\s*1\.|\(y\/n\)|Yes, and don't ask again/;
 
 const ALERT_STATES: SessionState[] = ['WAITING_QUESTION', 'WAITING_PERMISSION', 'IDLE'];
 
@@ -22,7 +22,8 @@ export class StatusEngine extends EventEmitter {
     // S4: raw output flow marks WORKING; prompt-box patterns suggest WAITING.
     manager.on('data', (session: HubSession, chunk: string) => {
       if (session.hooksSeen) return; // hooks + sessions-file carry the load once seen
-      if (OUTPUT_WAITING_REGEX.test(chunk)) {
+      const waitingRx = agentFor(session).outputWaitingRegex;
+      if (waitingRx && waitingRx.test(chunk)) {
         this.signal(session, SIG_OUTPUT, 'WAITING_PERMISSION', 'prompt detected in output');
       } else if (
         chunk.length > 4 &&

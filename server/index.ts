@@ -6,21 +6,12 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join } from 'node:path';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
-import {
-  CLAUDE_PROJECTS_DIR,
-  DATA_DIR,
-  DEFAULT_PORT,
-  HOOKS_JSON,
-  HOOKS_TEMPLATE,
-  HUB_ROOT,
-  PROJECTS_ROOT,
-  PUBLIC_DIR,
-  encodeProjectDir,
-} from './config.js';
+import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
+import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { makeHookHandler } from './hooksReceiver.js';
-import { startClaudeSessionsWatcher } from './claudeSessionsWatcher.js';
+import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { loadPersisted, savePersisted } from './persistence.js';
@@ -249,6 +240,19 @@ app.post('/api/admin/restart', (req, res) => {
 
 app.get('/api/fleet', (_req, res) => res.json(federation.machines(discovery.selfName)));
 
+/** Agents this hub can run, with their launch-dialog vocabularies. */
+app.get('/api/agents', (_req, res) =>
+  res.json(
+    listAgents().map((a) => ({
+      id: a.id,
+      label: a.label,
+      models: a.models,
+      permissionModes: a.permissionModes,
+      canResume: !!a.transcript,
+    })),
+  ),
+);
+
 // Drag-and-drop upload: the browser can't reveal a dropped file's real path, so
 // the client sends the bytes here and pastes the saved path into the prompt.
 // Registered before the JSON body parser — the body is raw binary.
@@ -290,6 +294,7 @@ app.post(
         String(req.params.id),
         Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
         mtime,
+        typeof req.query.agent === 'string' ? req.query.agent : undefined,
       );
       res.json(out);
     } catch (err) {
@@ -301,7 +306,11 @@ app.post(
 app.get('/api/tstore', async (_req, res) => res.json(await storeCatalog()));
 
 app.get('/api/tstore/:folder/:id', (req, res) => {
-  const path = storeFilePath(String(req.params.folder), String(req.params.id));
+  const path = storeFilePath(
+    String(req.params.folder),
+    String(req.params.id),
+    typeof req.query.agent === 'string' ? req.query.agent : undefined,
+  );
   if (!existsSync(path)) return res.status(404).json({ error: 'not in store' });
   res.sendFile(path, { dotfiles: 'allow' });
 });
@@ -330,7 +339,7 @@ app.post('/api/hook', makeHookHandler(manager, engine));
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
 app.post('/api/sessions', async (req, res) => {
-  const { cwd, name, model, permissionMode, initialPrompt, machine, force } = req.body ?? {};
+  const { cwd, agentType, name, model, permissionMode, initialPrompt, machine, force } = req.body ?? {};
   // spawn requested on another fleet machine — hand it to the owning hub
   if (machine && machine !== discovery.selfName) {
     const peer = federation.peerByMachine(machine);
@@ -338,7 +347,7 @@ app.post('/api/sessions', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/sessions', {
         method: 'POST',
-        body: { cwd, name, model, permissionMode, initialPrompt, force },
+        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force },
       });
       return res.status(out.status).json(out.body);
     } catch {
@@ -353,7 +362,7 @@ app.post('/api/sessions', async (req, res) => {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
   }
-  const session = manager.create({ cwd, name, model, permissionMode, initialPrompt });
+  const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt });
   res.json({ ...session.info(), machine: discovery.selfName });
 });
 
@@ -384,11 +393,9 @@ function sessionAction(
 // The plan-mode exit prompt is the one permission we never auto-approve —
 // leaving plan mode is a real decision. It's recognizable by its options,
 // which offer to keep planning (ordinary permission prompts don't).
-const PLAN_EXIT_MARKER = /keep planning|exit plan mode|ready to (code|proceed)/i;
-
-function isPlanExitPrompt(session: HubSession): boolean {
+function isProtectedPrompt(session: HubSession): boolean {
   try {
-    return PLAN_EXIT_MARKER.test(session.snapshot());
+    return agentFor(session).isProtectedPrompt?.(session.snapshot()) ?? false;
   } catch {
     return false;
   }
@@ -402,8 +409,8 @@ function maybeAutoAnswer(session: HubSession) {
   // let the prompt finish rendering, then accept the highlighted default (Yes)
   setTimeout(() => {
     if (!session.autoYes || !session.proc || session.state !== 'WAITING_PERMISSION') return;
-    if (isPlanExitPrompt(session)) return; // plan-mode exit needs a human
-    manager.write(session.hubId, '\r');
+    if (isProtectedPrompt(session)) return; // e.g. plan-mode exit needs a human
+    manager.write(session.hubId, agentFor(session).acceptKeystroke);
   }, 600);
 }
 
@@ -443,14 +450,14 @@ app.get('/api/conversations', async (_req, res) => {
 });
 
 app.post('/api/sessions/adopt', (req, res) => {
-  const { claudeSessionId, cwd, name } = req.body ?? {};
+  const { claudeSessionId, cwd, name, agentType } = req.body ?? {};
   if (!claudeSessionId || !cwd || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
     return res.status(400).json({ error: `bad session id or directory` });
   }
   if (manager.byClaudeSessionId(claudeSessionId)) {
     return res.status(409).json({ error: 'already in hub' });
   }
-  const session = manager.create({ cwd, name, resumeSessionId: claudeSessionId });
+  const session = manager.create({ cwd, agentType, name, resumeSessionId: claudeSessionId });
   res.json({ ...session.info(), machine: discovery.selfName });
 });
 
@@ -582,6 +589,7 @@ app.get('/api/fleet-folders', async (_req, res) => {
       activeHubSessions: 0,
       updatedAt: Math.max(...fresh.map((e) => e.updatedAt)),
       conversations: fresh.map((e) => ({
+        agentType: e.agentType ?? 'claude',
         claudeSessionId: e.claudeSessionId,
         title: e.title,
         lastText: e.lastText,
@@ -605,57 +613,15 @@ app.get('/api/sessions/:id/export', async (req, res) => {
   const session = manager.sessions.get(String(req.params.id));
   if (!session) return res.status(404).send('session not on this machine');
   const n = Math.max(1, Math.min(100, Number(req.query.replies) || 5));
-  const path = join(
-    CLAUDE_PROJECTS_DIR,
-    encodeProjectDir(session.cwd),
-    `${session.claudeSessionId}.jsonl`,
-  );
+  const ops = agentFor(session).transcript;
+  if (!ops) return res.status(404).send('this agent keeps no readable transcript');
+  const path = ops.file(session.cwd, session.claudeSessionId);
   if (!existsSync(path)) return res.status(404).send('no transcript for this session yet');
 
-  interface Exchange { q: string; r: string }
-  const exchanges: Exchange[] = [];
+  let exchanges: { q: string; r: string }[];
   try {
     const { readFile } = await import('node:fs/promises');
-    const lines = (await readFile(path, 'utf8')).split('\n');
-    let replyParts: string[] = [];
-    // walk backwards: gather assistant text until the owning user question
-    for (let i = lines.length - 1; i >= 0 && exchanges.length < n; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      let obj: {
-        type?: string;
-        isSidechain?: boolean;
-        isMeta?: boolean;
-        message?: { content?: unknown };
-      };
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (obj.isSidechain || obj.isMeta) continue;
-      const content = obj.message?.content;
-      if (obj.type === 'assistant' && Array.isArray(content)) {
-        const text = (content as { type: string; text?: string }[])
-          .filter((c) => c.type === 'text' && c.text)
-          .map((c) => c.text)
-          .join('\n');
-        if (text) replyParts.unshift(text);
-      } else if (obj.type === 'user') {
-        let q = '';
-        if (typeof content === 'string') q = content;
-        else if (Array.isArray(content)) {
-          q = (content as { type: string; text?: string }[])
-            .filter((c) => c.type === 'text' && c.text)
-            .map((c) => c.text)
-            .join('\n');
-        }
-        if (q && replyParts.length) {
-          exchanges.unshift({ q, r: replyParts.join('\n\n') });
-          replyParts = [];
-        }
-      }
-    }
+    exchanges = ops.parseExchanges(await readFile(path, 'utf8'), n);
   } catch (err) {
     return res.status(500).send(String(err));
   }
@@ -687,24 +653,21 @@ app.get('/api/transcripts/:id', (req, res) => {
   const folder = String(req.query.folder ?? '');
   const id = String(req.params.id).replace(/[^a-zA-Z0-9-]/g, '');
   if (!folder || !id) return res.status(400).json({ error: 'folder and id required' });
-  const path = join(
-    CLAUDE_PROJECTS_DIR,
-    encodeProjectDir(join(PROJECTS_ROOT, folder)),
-    `${id}.jsonl`,
-  );
-  if (existsSync(path)) {
-    // the path runs through ~/.claude — sendFile rejects dot-segments by default
+  const agent = getAgent(typeof req.query.agent === 'string' ? req.query.agent : undefined);
+  const path = agent.transcript?.file(join(PROJECTS_ROOT, folder), id);
+  if (path && existsSync(path)) {
+    // the path runs through a dot-directory — sendFile rejects those by default
     return res.sendFile(path, { dotfiles: 'allow' });
   }
   // not on this machine — the durable store may still have it (this is how
   // conversations survive their origin machine being wiped or offline)
-  const stored = storeFilePath(folder, id);
+  const stored = storeFilePath(folder, id, agent.id);
   if (existsSync(stored)) return res.sendFile(stored, { dotfiles: 'allow' });
   res.status(404).json({ error: 'transcript not found' });
 });
 
 app.post('/api/fleet-resume', async (req, res) => {
-  const { folder, claudeSessionId, sourceMachine, machine, force } = req.body ?? {};
+  const { folder, agentType, claudeSessionId, sourceMachine, machine, force } = req.body ?? {};
   if (!folder || !claudeSessionId) {
     return res.status(400).json({ error: 'folder and claudeSessionId required' });
   }
@@ -715,7 +678,7 @@ app.post('/api/fleet-resume', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/fleet-resume', {
         method: 'POST',
-        body: { folder, claudeSessionId, sourceMachine, force },
+        body: { folder, agentType, claudeSessionId, sourceMachine, force },
       });
       return res.status(out.status).json(out.body);
     } catch {
@@ -728,6 +691,7 @@ app.post('/api/fleet-resume', async (req, res) => {
   }
   const job = startFleetResume({
     folder: String(folder),
+    agentType: agentType ? String(agentType) : undefined,
     claudeSessionId: String(claudeSessionId),
     sourceMachine: sourceMachine ? String(sourceMachine) : undefined,
     selfName: discovery.selfName,
@@ -881,7 +845,7 @@ manager.on('change', (session: HubSession) => {
   // Small delay: the transcript jsonl flushes slightly after the Stop hook fires.
   if (['IDLE', 'WAITING_QUESTION', 'WAITING_PERMISSION'].includes(session.state)) {
     setTimeout(() => {
-      lastAssistantText(session.claudeSessionId, session.cwd).then((text) => {
+      lastAssistantText(session).then((text) => {
         if (text && text !== session.summary) {
           session.summary = text;
           broadcastSessions();
@@ -924,7 +888,7 @@ federation.on('alert', (alert: PeerAlert) => {
   broadcastAlert({ ...alert, type: 'alert' });
 });
 
-startClaudeSessionsWatcher(manager, engine);
+startStatusFileWatcher(manager, engine);
 startSessionPusher();
 
 // Broadcast every 15 s so elapsed-in-state timers stay honest even without events.
@@ -932,13 +896,15 @@ setInterval(broadcastSessions, 15_000).unref();
 
 // ----------------------------------------------------------------- Boot
 
+/** Every agent materializes its hook config against the port we actually got. */
 function writeHooksJson(port: number) {
-  let template = readFileSync(HOOKS_TEMPLATE, 'utf8').replaceAll('{{PORT}}', String(port));
-  // hooks run under bash everywhere; the hard-coded curl path is Windows-only
-  if (process.platform !== 'win32') {
-    template = template.replaceAll('C:/Windows/System32/curl.exe', 'curl');
+  for (const agent of listAgents()) {
+    try {
+      agent.writeHooks?.(port);
+    } catch (err) {
+      console.error(`[hooks] ${agent.id}: ${err}`);
+    }
   }
-  writeFileSync(HOOKS_JSON, template);
 }
 
 function listen(port: number, attemptsLeft: number) {

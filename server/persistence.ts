@@ -3,6 +3,7 @@ import { PERSIST_FILE } from './config.js';
 import type { SessionManager } from './sessionManager.js';
 
 export interface PersistedSession {
+  agentType?: string;
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -23,6 +24,7 @@ export function loadPersisted(): PersistedSession[] {
 
 export function savePersisted(manager: SessionManager) {
   const records: PersistedSession[] = [...manager.sessions.values()].map((s) => ({
+    agentType: s.agentType,
     claudeSessionId: s.claudeSessionId,
     name: s.name,
     cwd: s.cwd,

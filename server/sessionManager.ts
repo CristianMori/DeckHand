@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import * as pty from '@lydell/node-pty';
 import type { Terminal as HeadlessTerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
-import { HOOKS_JSON, resolveClaudeExe } from './config.js';
+import { agentFor, getAgent } from './agents/index.js';
 
 // @xterm packages ship CJS without named ESM exports
 const require = createRequire(import.meta.url);
@@ -40,6 +40,9 @@ class RingBuffer {
 
 export class HubSession {
   hubId = randomUUID().slice(0, 8);
+  agentType: string;
+  /** the agent's own conversation id; `pending-*` until an agent that mints
+   *  its own id reports it through its first hook */
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -68,7 +71,10 @@ export class HubSession {
   lastSignalAt: Record<number, number> = {};
 
   constructor(opts: SpawnOptions) {
-    this.claudeSessionId = opts.resumeSessionId ?? randomUUID();
+    this.agentType = getAgent(opts.agentType).id;
+    this.claudeSessionId =
+      opts.resumeSessionId ??
+      (agentFor(this).clientChosenId ? randomUUID() : `pending-${this.hubId}`);
     this.cwd = opts.cwd;
     this.name = opts.name || basename(opts.cwd);
     this.model = opts.model;
@@ -78,6 +84,7 @@ export class HubSession {
   info(): SessionInfo {
     return {
       hubId: this.hubId,
+      agentType: this.agentType,
       claudeSessionId: this.claudeSessionId,
       name: this.name,
       cwd: this.cwd,
@@ -116,12 +123,29 @@ export class HubSession {
 }
 
 /**
- * Owns all claude PTYs.
+ * Owns all agent PTYs.
  * Events: 'data' (session, chunk), 'change' (session), 'exit' (session).
  */
 export class SessionManager extends EventEmitter {
   sessions = new Map<string, HubSession>();
-  private claudeExe = resolveClaudeExe();
+  /** agent id -> resolved executable (install paths move on updates; resolve once) */
+  private exeCache = new Map<string, string>();
+
+  private exeFor(agentType: string): string {
+    let exe = this.exeCache.get(agentType);
+    if (!exe) {
+      exe = getAgent(agentType).resolveExe();
+      this.exeCache.set(agentType, exe);
+    }
+    return exe;
+  }
+
+  /** An agent that mints its own conversation id has reported it — adopt it. */
+  bindSessionId(session: HubSession, id: string) {
+    if (session.claudeSessionId === id) return;
+    session.claudeSessionId = id;
+    this.emit('change', session);
+  }
 
   create(opts: SpawnOptions): HubSession {
     // resuming a conversation supersedes its EXITED cards — leaving them
@@ -147,18 +171,17 @@ export class SessionManager extends EventEmitter {
   }
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean) {
-    const args: string[] = [];
-    if (isResume) {
-      args.push('--resume', session.claudeSessionId);
-    } else {
-      args.push('--session-id', session.claudeSessionId);
-    }
-    args.push('-n', session.name, '--settings', HOOKS_JSON);
-    if (session.permissionMode) args.push('--permission-mode', session.permissionMode);
-    if (session.model) args.push('--model', session.model);
-    if (initialPrompt) args.push(initialPrompt);
+    const args = agentFor(session).buildArgs({
+      sessionId: session.claudeSessionId,
+      resume: isResume,
+      name: session.name,
+      cwd: session.cwd,
+      model: session.model,
+      permissionMode: session.permissionMode,
+      initialPrompt,
+    });
 
-    const proc = pty.spawn(this.claudeExe, args, {
+    const proc = pty.spawn(this.exeFor(session.agentType), args, {
       name: 'xterm-256color',
       cols: session.cols,
       rows: session.rows,
@@ -252,6 +275,7 @@ export class SessionManager extends EventEmitter {
 
   /** Register a persisted record from a previous hub run as an EXITED card with Resume available. */
   addExitedRecord(rec: {
+    agentType?: string;
     claudeSessionId: string;
     name: string;
     cwd: string;
@@ -262,6 +286,7 @@ export class SessionManager extends EventEmitter {
   }) {
     const session = new HubSession({
       cwd: rec.cwd,
+      agentType: rec.agentType,
       name: rec.name,
       model: rec.model,
       permissionMode: rec.permissionMode,

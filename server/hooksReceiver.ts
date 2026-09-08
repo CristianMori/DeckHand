@@ -1,56 +1,61 @@
 import type { Request, Response } from 'express';
+import { agentFor, listAgents } from './agents/index.js';
+import type { HookPayload } from './agents/types.js';
 import type { SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
+import { normCwd } from './transcriptIo.js';
 import { SIG_HOOK } from './types.js';
 
-interface HookPayload {
-  session_id?: string;
-  hook_event_name?: string;
-  tool_name?: string;
-  message?: string;
-}
+const BIND_WINDOW_MS = 120_000;
 
 /**
- * Receives hook POSTs from claude sessions (injected via --settings hub-hooks.json).
- * Responds 204 immediately so hooks never slow Claude down.
+ * Receives hook POSTs from agent sessions (Claude: injected via --settings;
+ * others: hub-owned hooks.json). Responds 204 immediately so hooks never slow
+ * the agent down. Agents that mint their own conversation id are bound here:
+ * the first hook from an unknown id whose cwd matches a freshly spawned,
+ * still-unbound session of that agent claims it.
  */
 export function makeHookHandler(manager: SessionManager, engine: StatusEngine) {
   return (req: Request, res: Response) => {
     res.status(204).end();
 
     const event = String(req.query.event ?? '');
+    const agentId = typeof req.query.agent === 'string' ? req.query.agent : undefined;
     const body = (req.body ?? {}) as HookPayload;
     const sessionId = body.session_id;
     if (!sessionId) return;
-    const session = manager.byClaudeSessionId(sessionId);
-    console.log(`[hook] ${event} from ${sessionId.slice(0, 8)}${session ? ` (${session.name})` : ' (not hub-owned)'}${body.message ? `: ${body.message}` : ''}`);
+
+    let session = manager.byClaudeSessionId(sessionId);
+    if (!session && body.cwd) {
+      const want = normCwd(body.cwd);
+      const now = Date.now();
+      for (const agent of listAgents()) {
+        if (agent.clientChosenId || (agentId && agentId !== agent.id)) continue;
+        const candidate = [...manager.sessions.values()]
+          .filter(
+            (s) =>
+              s.proc &&
+              s.agentType === agent.id &&
+              s.claudeSessionId.startsWith('pending-') &&
+              normCwd(s.cwd) === want &&
+              now - s.createdAt < BIND_WINDOW_MS,
+          )
+          .sort((a, b) => b.createdAt - a.createdAt)[0];
+        if (candidate) {
+          manager.bindSessionId(candidate, sessionId);
+          session = candidate;
+          break;
+        }
+      }
+    }
+
+    console.log(
+      `[hook] ${event} from ${sessionId.slice(0, 8)}${session ? ` (${session.name})` : ' (not hub-owned)'}${body.message ? `: ${body.message}` : ''}`,
+    );
     if (!session) return;
     session.hooksSeen = true;
 
-    switch (event) {
-      case 'UserPromptSubmit':
-        engine.signal(session, SIG_HOOK, 'WORKING');
-        break;
-      case 'AskUserQuestion':
-        engine.signal(session, SIG_HOOK, 'WAITING_QUESTION', 'Claude is asking you a question');
-        break;
-      case 'PreToolUse':
-        engine.signal(session, SIG_HOOK, 'WORKING', body.tool_name ? `using ${body.tool_name}` : undefined);
-        break;
-      case 'Stop':
-        engine.signal(session, SIG_HOOK, 'IDLE', 'turn finished');
-        break;
-      case 'Notification': {
-        const msg = body.message ?? '';
-        if (/permission/i.test(msg)) {
-          engine.signal(session, SIG_HOOK, 'WAITING_PERMISSION', msg);
-        } else if (/waiting for your input/i.test(msg)) {
-          engine.signal(session, SIG_HOOK, 'IDLE', msg);
-        } else if (msg) {
-          engine.signal(session, SIG_HOOK, 'WAITING_QUESTION', msg);
-        }
-        break;
-      }
-    }
+    const sig = agentFor(session).mapHookEvent(event, body);
+    if (sig) engine.signal(session, SIG_HOOK, sig.state, sig.detail);
   };
 }
