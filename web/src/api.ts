@@ -1,4 +1,4 @@
-import type { AdminStatus, AgentInfo, FleetFolderGroup, FleetMachine, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, AgentInfo, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -94,6 +94,26 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ jobId: string; machine: string }>(r)),
+  handoff: (
+    hubId: string,
+    body: {
+      targetAgent: string;
+      targetMachine?: string;
+      targetFolder?: string;
+      newFolder?: string;
+      askBrief: boolean;
+      includeDialogue: boolean;
+      model?: string;
+      permissionMode?: string;
+    },
+  ) =>
+    fetch(`/api/sessions/${hubId}/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ jobId: string; machine: string }>(r)),
+  handoffStatus: (jobId: string, machine?: string) =>
+    fetch(`/api/handoff/${jobId}${mq(machine)}`).then((r) => json<HandoffJob>(r)),
   fleetResumeStatus: (jobId: string, machine?: string) =>
     fetch(`/api/fleet-resume/${jobId}${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then(
       (r) => json<ResumeJob>(r),

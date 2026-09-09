@@ -6,6 +6,7 @@ import { showTerminal, hideTerminal, dropTerminal, activeTerminal } from './term
 import { buildQuickBar } from './quickAnswers';
 import { openNewSessionDialog } from './newSessionDialog';
 import { openResumeDialog } from './resumeDialog';
+import { openHandoffDialog } from './handoffDialog';
 import { openAdminDialog } from './adminDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
 
@@ -127,6 +128,7 @@ function render() {
       if (selected === s.hubId) deselect();
       await api.remove(s.hubId);
     },
+    onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
   });
 
   const waiting = waitingCount();

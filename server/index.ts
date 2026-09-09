@@ -31,6 +31,7 @@ import {
 } from './transcriptStore.js';
 import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob } from './fleetResume.js';
+import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import type { SessionInfo } from './types.js';
 
 // a rejected promise in some background sweep must never take the hub down
@@ -676,6 +677,55 @@ app.get('/api/transcripts/:id', (req, res) => {
   const stored = storeFilePath(folder, id, agent.id);
   if (existsSync(stored)) return res.sendFile(stored, { dotfiles: 'allow' });
   res.status(404).json({ error: 'transcript not found' });
+});
+
+// ------------------------------------------------------------ Handoff
+// Source hub runs the job (it can talk to the live session); the target hub
+// receives the document and starts the engine.
+app.post('/api/sessions/:id/handoff', sessionAction((id, req, res) => {
+  const b = req.body ?? {};
+  if (!b.targetAgent) return res.status(400).json({ error: 'targetAgent required' });
+  const job = startHandoff(
+    {
+      sourceHubId: id,
+      targetAgent: String(b.targetAgent),
+      targetMachine: b.targetMachine ? String(b.targetMachine) : undefined,
+      targetFolder: b.targetFolder ? String(b.targetFolder) : undefined,
+      newFolder: b.newFolder ? String(b.newFolder) : undefined,
+      askBrief: b.askBrief !== false,
+      includeDialogue: b.includeDialogue !== false,
+      model: b.model ? String(b.model) : undefined,
+      permissionMode: b.permissionMode ? String(b.permissionMode) : undefined,
+    },
+    { manager, federation, selfName: discovery.selfName },
+  );
+  res.json({ jobId: job.id, machine: discovery.selfName });
+}));
+
+app.get('/api/handoff/:jobId', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/handoff/${req.params.jobId}`);
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  const job = getHandoffJob(String(req.params.jobId));
+  if (!job) return res.status(404).json({ error: 'unknown job' });
+  res.json(job);
+});
+
+app.post('/api/handoff/receive', async (req, res) => {
+  try {
+    const session = await receiveHandoff(req.body as HandoffPayload, { manager, selfName: discovery.selfName });
+    res.json({ ...session.info(), machine: discovery.selfName });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.post('/api/fleet-resume', async (req, res) => {

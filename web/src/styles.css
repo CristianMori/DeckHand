@@ -233,6 +233,13 @@ button {
   padding: 2px 6px; text-transform: uppercase; flex: none;
   white-space: nowrap;
 }
+/* handoff */
+.card-lineage { font-size: 10px; color: var(--ink-faint); margin-top: 4px; }
+.hd-from { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-dim); margin-bottom: 10px; }
+.hd-name { font-weight: 600; color: var(--ink); }
+.hd-check { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: none; letter-spacing: 0; margin-top: 8px; cursor: pointer; }
+.hd-check input { width: auto; margin: 0; }
+
 /* engine tag: which CLI runs the session */
 .agent-tag {
   font-family: var(--font-display); font-size: 8px; letter-spacing: 0.18em;

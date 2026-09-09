@@ -25,6 +25,13 @@ when any session on any machine needs a human.
   Status, resume, cross-machine migration, the durable transcript store and
   PRINT export work for both. Each agent is an adapter under `server/agents/`,
   so a third CLI is one file away.
+- **Hand a session to another engine.** HAND OFF on any card moves the work
+  to a different engine, machine and/or folder, including a brand-new folder.
+  Not a transcript transplant (each agent's log is its own private replay
+  format): the departing agent is asked to write a brief for its successor,
+  the hub appends the conversation as plain dialogue, drops both into the
+  target folder as `.deckhand/handoff.md`, and starts the target engine with
+  "read it, then continue". The new card shows where it came from.
 - **One dashboard, whole fleet.** Every machine runs the same hub; every hub
   shows every machine's sessions. Open `http://<any-machine>:5959` from any
   device on your tailnet — they are all equivalent.

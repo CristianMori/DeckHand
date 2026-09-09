@@ -37,6 +37,14 @@ export interface SessionInfo {
   origin?: string;
   /** true when the owning hub is currently unreachable — card data is a cached snapshot */
   unreachable?: boolean;
+  /** this session was started as a handoff from another session */
+  handoff?: HandoffLineage;
+}
+
+export interface HandoffLineage {
+  fromAgent: string;
+  fromSessionId: string;
+  fromMachine: string;
 }
 
 export interface FleetMachine {
@@ -54,4 +62,5 @@ export interface SpawnOptions {
   permissionMode?: string;
   initialPrompt?: string;
   resumeSessionId?: string;
+  handoff?: HandoffLineage;
 }

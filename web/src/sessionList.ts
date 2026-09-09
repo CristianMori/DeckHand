@@ -47,6 +47,7 @@ export function renderSessionList(
     onSelect: (s: SessionInfo) => void;
     onResume: (s: SessionInfo) => void;
     onRemove: (s: SessionInfo) => void;
+    onHandoff: (s: SessionInfo) => void;
   },
 ) {
   root.innerHTML = '';
@@ -77,10 +78,15 @@ export function renderSessionList(
         <span class="cwd"></span>
         <span class="elapsed">${stateWord} ${elapsed(s.stateSince)}</span>
       </div>
+      ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
       <div class="card-actions"></div>
     `;
+    if (s.handoff) {
+      (card.querySelector('.card-lineage') as HTMLElement).textContent =
+        `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;
+    }
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
     const engine = s.agentType || 'claude';
     (card.querySelector('.agent-tag') as HTMLElement).textContent = engine;
@@ -90,6 +96,11 @@ export function renderSessionList(
     if (s.detail && waiting) (card.querySelector('.card-detail') as HTMLElement).textContent = `⚠ ${s.detail}`;
 
     const actions = card.querySelector('.card-actions') as HTMLElement;
+    const handoff = document.createElement('button');
+    handoff.className = 'ghost-btn';
+    handoff.textContent = 'HAND OFF';
+    handoff.title = 'Continue this work with another engine, machine or folder';
+    handoff.onclick = (e) => { e.stopPropagation(); handlers.onHandoff(s); };
     if (s.unreachable) {
       actions.remove(); // owning hub is down — nothing can act on this session
     } else if (s.state === 'EXITED') {
@@ -101,7 +112,9 @@ export function renderSessionList(
       remove.className = 'ghost-btn danger';
       remove.textContent = 'REMOVE';
       remove.onclick = (e) => { e.stopPropagation(); handlers.onRemove(s); };
-      actions.append(resume, remove);
+      actions.append(resume, handoff, remove);
+    } else if (s.hubId === selected) {
+      actions.append(handoff); // live: offered on the selected card only, keeps the list quiet
     } else {
       actions.remove();
     }

@@ -23,6 +23,15 @@ export interface SessionInfo {
   autoYes?: boolean;
   machine?: string;
   unreachable?: boolean;
+  handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
+}
+
+export interface HandoffJob {
+  id: string;
+  phase: string;
+  pct: number;
+  error?: string;
+  session?: SessionInfo;
 }
 
 export interface FleetMachine {

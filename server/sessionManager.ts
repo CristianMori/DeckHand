@@ -12,7 +12,7 @@ import { agentFor, getAgent } from './agents/index.js';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { SessionInfo, SessionState, SpawnOptions } from './types.js';
+import type { HandoffLineage, SessionInfo, SessionState, SpawnOptions } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -48,6 +48,7 @@ export class HubSession {
   cwd: string;
   model?: string;
   permissionMode?: string;
+  handoff?: HandoffLineage;
   state: SessionState = 'STARTING';
   stateSince = Date.now();
   detail?: string;
@@ -79,6 +80,7 @@ export class HubSession {
     this.name = opts.name || basename(opts.cwd);
     this.model = opts.model;
     this.permissionMode = opts.permissionMode;
+    this.handoff = opts.handoff;
   }
 
   info(): SessionInfo {
@@ -97,6 +99,7 @@ export class HubSession {
       createdAt: this.createdAt,
       alive: this.proc !== null,
       autoYes: this.autoYes,
+      handoff: this.handoff,
     };
   }
 
@@ -285,6 +288,7 @@ export class SessionManager extends EventEmitter {
     permissionMode?: string;
     summary?: string;
     createdAt?: number;
+    handoff?: HandoffLineage;
   }) {
     const session = new HubSession({
       cwd: rec.cwd,
@@ -293,6 +297,7 @@ export class SessionManager extends EventEmitter {
       model: rec.model,
       permissionMode: rec.permissionMode,
       resumeSessionId: rec.claudeSessionId,
+      handoff: rec.handoff,
     });
     session.state = 'EXITED';
     session.detail = 'hub restarted';

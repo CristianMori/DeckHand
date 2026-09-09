@@ -11,6 +11,7 @@ export interface PersistedSession {
   permissionMode?: string;
   summary?: string;
   createdAt: number;
+  handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
 }
 
 export function loadPersisted(): PersistedSession[] {
@@ -32,6 +33,7 @@ export function savePersisted(manager: SessionManager) {
     permissionMode: s.permissionMode,
     summary: s.summary,
     createdAt: s.createdAt,
+    handoff: s.handoff,
   }));
   try {
     writeFileSync(PERSIST_FILE, JSON.stringify(records, null, 2));
