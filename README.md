@@ -335,9 +335,11 @@ Rules of the road:
 - Permission prompts: either turn on `autoyes` for the session or watch for
   `WAITING_PERMISSION` and answer with `keys`. Plan-mode exit is never
   auto-approved.
-- A brand-new folder makes Claude ask "do you trust this folder?" before the
-  first turn — the session sits in STARTING until `{"keys":["down","enter"]}`
-  answers it.
+- Folder trust is handled for you: before every spawn the hub records the
+  folder as trusted for that engine (Claude's `~/.claude.json`, Codex's
+  `config.toml`), so a brand-new project starts its first turn without a
+  "do you trust this folder?" prompt. If some other prompt does appear, the
+  session sits in STARTING — `screen` shows it, `keys` answers it.
 
 ### Publishing updates (the machine you develop on)
 

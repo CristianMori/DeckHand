@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   CLAUDE_PROJECTS_DIR,
@@ -115,12 +116,46 @@ async function listDir(dir: string): Promise<TranscriptRef[]> {
   return out;
 }
 
+/**
+ * Claude asks "Is this a project you trust?" the first time it runs in a
+ * folder and records the answer under projects[<path>] in ~/.claude.json.
+ * A hub-launched session has nobody at the keyboard to answer (a script, or
+ * NEW SESSION into a folder it just created), so the hub records the answer
+ * up front — exactly what choosing "Yes, I trust this folder" would do.
+ */
+function ensureTrusted(cwd: string) {
+  const file = join(homedir(), '.claude.json');
+  let root: { projects?: Record<string, Record<string, unknown>> } = {};
+  try {
+    root = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    /* no config yet */
+  }
+  // Claude keys projects by forward-slash path, no trailing slash
+  const key = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const projects = (root.projects ??= {});
+  const existing = Object.keys(projects).find((k) => k.toLowerCase() === key.toLowerCase());
+  if (existing && projects[existing].hasTrustDialogAccepted === true) return;
+  projects[existing ?? key] = { ...(projects[existing ?? key] ?? {}), hasTrustDialogAccepted: true };
+  // whole-file rewrite through a temp name — never leave a half-written config
+  const tmp = `${file}.deckhand-tmp`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2));
+  renameSync(tmp, file);
+}
+
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   label: 'Claude Code',
   clientChosenId: true,
   resolveExe,
   available: () => resolveExe() !== 'claude' || process.platform !== 'win32',
+  beforeSpawn: (cwd) => {
+    try {
+      ensureTrusted(cwd);
+    } catch {
+      /* the trust prompt then appears on screen; keys can answer it */
+    }
+  },
 
   buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt }) {
     const args: string[] = [];
