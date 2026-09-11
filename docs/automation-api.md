@@ -6,7 +6,7 @@ Every session is a real interactive TUI running in a pseudo-terminal that the
 hub owns. This document is everything you need to open sessions, send them
 prompts, read replies and drive them programmatically over plain HTTP.
 
-Requires hub build **72 or newer** (LAN access + beacon; the REST routes themselves need 71) (`GET /api/hub-info` → `build`).
+Requires hub build **74 or newer** (LAN access + beacon; the REST routes themselves need 71) (`GET /api/hub-info` → `build`).
 
 ## 1. Finding and reaching the hub
 
@@ -32,7 +32,7 @@ Requires hub build **72 or newer** (LAN access + beacon; the REST routes themsel
      LAN's directed broadcast address (e.g. `192.168.1.255` — compute it from
      your interface's address and netmask; `255.255.255.255` alone is
      unreliable on Windows). Every hub replies within ~50 ms with JSON:
-     `{"hub":"deckhand","machine":"thelaptop","build":72,"port":5959,
+     `{"hub":"deckhand","machine":"thelaptop","build":74,"port":5959,
        "urls":["http://192.168.1.253:5959"],"auth":"token",...}`.
      Hubs also announce that JSON unprompted every 30 s to the same port.
   3. On the tailnet, probe each online device (`tailscale status --json` →
@@ -41,7 +41,7 @@ Requires hub build **72 or newer** (LAN access + beacon; the REST routes themsel
   Once you have any one hub, `GET /api/fleet` →
   `[{"machine","self","connected","url"}]` gives you every other machine
   and its URL, and you never need to probe again.
-- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":72,...}`.
+- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":74,...}`.
 
 All request bodies are JSON (`Content-Type: application/json`). All responses
 are JSON except `screen` and `export`. Errors are `{"error": "..."}` with a
