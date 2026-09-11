@@ -287,7 +287,8 @@ dashboard (both can be attached at once — keystrokes merge live). Set
 
 Everything the dashboard does is plain HTTP on the hub, and a few extra
 routes exist only for scripts: type a prompt, wait for the turn to end, read
-the reply, read the screen. Talk to any hub in the fleet — per-session calls
+the reply, read the screen. The full reference, written to be handed to
+another agent as its briefing, is [`docs/automation-api.md`](docs/automation-api.md). Talk to any hub in the fleet — per-session calls
 are forwarded to the machine that owns the session, and `machine` on a spawn
 picks where it runs. Same trust rule as the dashboard: callers must come from
 localhost or the tailnet.
