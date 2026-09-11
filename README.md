@@ -205,9 +205,10 @@ works as the original standalone dashboard.
    ```
 5. **Windows firewall**: when first run interactively, click **Allow** on
    the prompt. Services get no prompt — if other machines can't reach this
-   hub, add the rule once (elevated):
+   hub, add the rules once (elevated; the UDP one is for LAN discovery):
    ```
    New-NetFirewallRule -DisplayName Deckhand -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5959-5969
+   New-NetFirewallRule -DisplayName "Deckhand beacon" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5959-5969
    ```
 6. Open `http://127.0.0.1:5959`. Within a minute every other dashboard in
    the fleet shows this machine, and vice versa.
@@ -280,8 +281,10 @@ deckhand ls               list fleet sessions
 ```
 
 `Ctrl+Q` detaches; the session keeps running and is also visible in every
-dashboard (both can be attached at once — keystrokes merge live). Set
-`HUB_URL` if your hub is not on `127.0.0.1:5959-5969`.
+dashboard (both can be attached at once — keystrokes merge live). With no
+hub on `127.0.0.1:5959-5969` the CLI broadcasts `DECKHAND?` on the LAN and
+takes the first hub that answers; set `HUB_URL` to skip the search and
+`HUB_TOKEN` (that machine's `data/api-token`) when the hub is a LAN one.
 
 ### REST API (automation)
 
@@ -372,11 +375,16 @@ unit on Linux).
 | `HUB_UPDATE_MACHINE` | `vps-node` | fleet machine holding the release shelf |
 | `DECKHAND_SERVICE` | unset | set by service installers; tells the hub a supervisor handles relaunches |
 | `HUB_SOLO` | unset | skip fleet discovery entirely — for a throwaway test hub on an odd port that must not join the fleet |
+| `HUB_LAN` | `1` | `0` = refuse LAN callers even with the token, and don't run the beacon |
+| `HUB_BEACON` | `1` | `0` = don't answer `DECKHAND?` / announce on UDP |
+| `HUB_BEACON_PORT` | `5959` | UDP port the beacon listens on (walks up to +10 if taken) |
+| `HUB_TOKEN` | unset | `deckhand` CLI: bearer token for a LAN hub (`data/api-token` on that machine) |
 | `HUB_URL` | probe localhost | `deckhand` CLI: explicit hub address |
 
 `data/` contents: `hub-hooks.json` (generated hook settings injected into
 sessions), `hub-sessions.json` (resume records for EXITED cards),
 `sync.json` (Syncthing endpoints — contains API keys, never commit),
+`api-token` (the LAN bearer token — same rule),
 `drops/` (drag-and-drop uploads), `hub.log` (launcher-captured output),
 `transcripts/` (the durable store, home machine), `releases/` (release
 shelf, home machine), `update.tgz` + `update-runner.cmd` (transient, during
@@ -390,16 +398,29 @@ Read this section before port-forwarding anything.
 
 - The dashboard **executes commands on your machines** by design — treat
   access to it as shell access to the entire fleet.
-- The hub binds `0.0.0.0` but accepts only: loopback, the machine's own
-  interface addresses, and tailnet sources (`100.64.0.0/10`,
-  `fd7a:115c:a1e0::/48`). LAN and internet sources get 403 / dropped.
-  **The tailnet is the trust boundary**: any device you admit to your
-  tailnet can drive your fleet. Don't admit guests.
-- There is no application-level auth and no TLS (WireGuard encrypts
-  transit). Never expose the port publicly; if you want access from
-  browsers outside the tailnet, put an authenticating proxy (e.g.
-  Cloudflare Tunnel + Access) in front — the hub itself should stay
-  unreachable from the internet.
+- The hub binds `0.0.0.0` and sorts callers into three classes:
+  - **loopback, the machine's own addresses, tailnet sources**
+    (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) — trusted, no token.
+    **The tailnet is the trust boundary**: any device you admit to your
+    tailnet can drive your fleet. Don't admit guests.
+  - **private LAN** (`10/8`, `172.16/12`, `192.168/16`) — allowed **with the
+    API token** in `data/api-token` (generated on first start). Present it
+    as `Authorization: Bearer …`, or open `http://<lan-ip>:5959/?token=…`
+    once in a browser — that sets an HttpOnly cookie and the dashboard works
+    from a phone on the Wi-Fi. Wrong or missing token → 401. `HUB_LAN=0`
+    turns LAN access off (tailnet-only, as before).
+  - **everything else** — 403 / dropped, token or not.
+- **LAN discovery**: the hub answers `DECKHAND?` on **UDP 5959** with its
+  hub-info JSON (machine, build, HTTP port, URLs) and announces itself every
+  30 s. Send to the LAN's directed broadcast (`192.168.1.255`), not only
+  `255.255.255.255` — Windows routes the limited broadcast out one
+  interface, often the Tailscale one. `HUB_BEACON=0` disables it. The
+  beacon reveals nothing the token doesn't already protect.
+- There is no TLS (WireGuard encrypts tailnet transit; the LAN is
+  plaintext, so the token is only as private as your Wi-Fi). Never expose
+  the port publicly; if you want access from browsers outside both
+  networks, put an authenticating proxy (e.g. Cloudflare Tunnel + Access)
+  in front — the hub itself should stay unreachable from the internet.
 - Syncthing API keys in `data/sync.json` grant control of file sync; the
   file is gitignored — keep it that way.
 

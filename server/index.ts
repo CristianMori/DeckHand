@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { authorize, cookieHeader, loadApiToken, LAN_ENABLED } from './access.js';
+import { startBeacon } from './beacon.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
@@ -131,41 +132,15 @@ function activeElsewhereError(res: express.Response, machines: string[]) {
 
 const app = express();
 
-// The hub listens on the tailnet, but only loopback, tailnet sources
-// (100.64.0.0/10 v4, fd7a:115c:a1e0::/48 v6) and this machine's own addresses
-// are trusted. Own addresses matter because Windows resolves the machine's own
-// name to its LAN IP — browsing your own hub by name arrives from that IP.
-let ownAddrs = new Set<string>();
-let ownAddrsAt = 0;
-function isOwnAddress(ip: string): boolean {
-  const now = Date.now();
-  if (now - ownAddrsAt > 30_000) {
-    ownAddrs = new Set(
-      Object.values(networkInterfaces())
-        .flat()
-        .filter((i): i is NonNullable<typeof i> => !!i)
-        .map((i) => i.address.toLowerCase()),
-    );
-    ownAddrsAt = now;
-  }
-  return ownAddrs.has(ip.toLowerCase());
-}
-
-function isTrustedSource(addr: string | undefined): boolean {
-  if (!addr) return false;
-  const ip = addr.replace(/^::ffff:/, '');
-  if (ip === '127.0.0.1' || ip === '::1') return true;
-  const m = ip.match(/^100\.(\d+)\./);
-  if (m) {
-    const octet = Number(m[1]);
-    return octet >= 64 && octet <= 127;
-  }
-  if (ip.toLowerCase().startsWith('fd7a:115c:a1e0')) return true;
-  return isOwnAddress(ip);
-}
-
+// Who gets in is decided in access.ts: loopback/own-address/tailnet freely,
+// the private LAN with the API token, nobody else.
 app.use((req, res, next) => {
-  if (!isTrustedSource(req.socket.remoteAddress)) return res.status(403).end();
+  const verdict = authorize(req.socket.remoteAddress, req.headers, req.url);
+  if (verdict.status === 403) return res.status(403).end();
+  if (verdict.status === 401) {
+    return res.status(401).json({ error: 'API token required (Authorization: Bearer …, or open /?token=… once)' });
+  }
+  if (verdict.setCookie) res.setHeader('Set-Cookie', cookieHeader());
   next();
 });
 
@@ -959,7 +934,7 @@ async function findPeerForTerm(hubId: string) {
 
 httpServer.on('upgrade', (req, socket, head) => {
   const remoteAddress = (socket as import('node:net').Socket).remoteAddress;
-  if (!isTrustedSource(remoteAddress)) return socket.destroy();
+  if (authorize(remoteAddress, req.headers, req.url ?? '/').status !== 0) return socket.destroy();
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/ws/control') {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -1136,12 +1111,22 @@ function listen(port: number, attemptsLeft: number) {
       throw err;
     }
   });
-  // 0.0.0.0 so tailnet peers can reach us; isTrustedSource() rejects everything
-  // that is not loopback or tailnet, so LAN/internet sources get 403/destroyed.
+  // 0.0.0.0 so tailnet peers can reach us; authorize() rejects everything
+  // that is not loopback, tailnet or a token-bearing LAN caller.
   httpServer.listen(port, '0.0.0.0', () => {
     actualPort = port;
     writeHooksJson(port);
     discovery.start();
+    loadApiToken();
+    if (LAN_ENABLED) {
+      startBeacon({
+        machine: () => discovery.selfName,
+        instanceId: INSTANCE_ID,
+        version: VERSION.version,
+        build: VERSION.build,
+        port,
+      });
+    }
     if (!existsSync(PROJECTS_ROOT)) {
       console.warn(
         `[hub] WARNING: projects root ${PROJECTS_ROOT} does not exist — set HUB_PROJECTS_ROOT in hub-env.cmd`,

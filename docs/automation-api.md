@@ -6,7 +6,7 @@ Every session is a real interactive TUI running in a pseudo-terminal that the
 hub owns. This document is everything you need to open sessions, send them
 prompts, read replies and drive them programmatically over plain HTTP.
 
-Requires hub build **71 or newer** (`GET /api/hub-info` → `build`).
+Requires hub build **72 or newer** (LAN access + beacon; the REST routes themselves need 71) (`GET /api/hub-info` → `build`).
 
 ## 1. Finding and reaching the hub
 
@@ -14,21 +14,34 @@ Requires hub build **71 or newer** (`GET /api/hub-info` → `build`).
   5969 if 5959 is taken). From the machine itself: `http://127.0.0.1:5959`.
 - Over the tailnet the same port on the machine's tailscale IP or MagicDNS
   name works.
-- **Authentication:** there is none. The hub accepts callers from localhost
-  and the Tailscale range (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and returns
-  **403** to everyone else. Do not expose it further.
+- **Authentication depends on where you call from:**
+  - localhost or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`): none.
+  - the private LAN (`10/8`, `172.16/12`, `192.168/16`): send
+    `Authorization: Bearer <token>` on every request. The token is the
+    contents of `data/api-token` on the hub's machine (ask the owner for
+    it). Missing/wrong → **401**. For WebSockets the same header works, or
+    `?token=` on the URL.
+  - anywhere else: **403**, token or not. Do not try to expose it further.
 - **Any hub can act on any session.** Per-session routes are forwarded to the
   machine that owns the session; spawn requests take a `machine` field. Use
   whichever hub is closest.
-- **Discovery:** there is no registry. If you were not given a URL, do what
-  the `deckhand` CLI does — try `http://127.0.0.1:{5959..5969}/api/hub-info`
-  and take the first that answers `{"hub":"deckhand",...}`. On a machine
-  without a hub, do the same against each online tailnet device
-  (`tailscale status --json` → `Peer[*].TailscaleIPs`). Hubs find each other
-  the same way, so once you have any one hub, `GET /api/fleet` →
-  `[{"machine","self","connected","url"}]` gives you every other machine and
-  its URL, and you never need to probe again.
-- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":71,...}`.
+- **Discovery:** there is no registry. If you were not given a URL:
+  1. Try `http://127.0.0.1:{5959..5969}/api/hub-info`; take the first that
+     answers `{"hub":"deckhand",...}` (what the `deckhand` CLI does).
+  2. On the LAN, send the UDP datagram `DECKHAND?` to port **5959** at the
+     LAN's directed broadcast address (e.g. `192.168.1.255` — compute it from
+     your interface's address and netmask; `255.255.255.255` alone is
+     unreliable on Windows). Every hub replies within ~50 ms with JSON:
+     `{"hub":"deckhand","machine":"thelaptop","build":72,"port":5959,
+       "urls":["http://192.168.1.253:5959"],"auth":"token",...}`.
+     Hubs also announce that JSON unprompted every 30 s to the same port.
+  3. On the tailnet, probe each online device (`tailscale status --json` →
+     `Peer[*].TailscaleIPs`) on 5959–5969 as in step 1.
+
+  Once you have any one hub, `GET /api/fleet` →
+  `[{"machine","self","connected","url"}]` gives you every other machine
+  and its URL, and you never need to probe again.
+- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":72,...}`.
 
 All request bodies are JSON (`Content-Type: application/json`). All responses
 are JSON except `screen` and `export`. Errors are `{"error": "..."}` with a
