@@ -63,6 +63,10 @@ export class Discovery {
   ) {}
 
   start() {
+    if (process.env.HUB_SOLO) {
+      console.log('[discovery] HUB_SOLO set — running solo (no fleet)');
+      return;
+    }
     if (!this.tailscaleExe) {
       console.log('[discovery] tailscale not found — running solo (no fleet)');
       return;

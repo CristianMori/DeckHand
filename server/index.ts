@@ -33,6 +33,16 @@ import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
+import {
+  KEYS,
+  isSettled,
+  lastExchanges,
+  replyTo,
+  screenText,
+  typePrompt,
+  waitForTurn,
+  waitUntil,
+} from './automation.js';
 import type { SessionInfo } from './types.js';
 
 // a rejected promise in some background sweep must never take the hub down
@@ -357,8 +367,21 @@ app.post('/api/hook', makeHookHandler(manager, engine));
 
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
+// Forwarded waits ride on a peer's fetch, whose header timeout is 5 minutes —
+// every long-poll is capped below that and returns timedOut so callers loop.
+const WAIT_DEFAULT_MS = 120_000;
+const WAIT_MAX_MS = 240_000;
+const clampWait = (v: unknown, fallback = WAIT_DEFAULT_MS) =>
+  Math.max(1000, Math.min(WAIT_MAX_MS, Number(v) || fallback));
+
+/** Turn outcome for automation callers: state plus the agent's reply text. */
+async function turnResult(session: HubSession, prompt: string | undefined, timedOut: string | null) {
+  const reply = !timedOut && prompt && isSettled(session) ? await replyTo(session, prompt) : undefined;
+  return { ...session.info(), machine: discovery.selfName, timedOut: timedOut ?? false, reply };
+}
+
 app.post('/api/sessions', async (req, res) => {
-  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder } = req.body ?? {};
+  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait } = req.body ?? {};
   let cwd: string | undefined = req.body?.cwd;
   // spawn requested on another fleet machine — hand it to the owning hub
   if (machine && machine !== discovery.selfName) {
@@ -367,7 +390,7 @@ app.post('/api/sessions', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/sessions', {
         method: 'POST',
-        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder },
+        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder, wait },
       });
       return res.status(out.status).json(out.body);
     } catch {
@@ -393,7 +416,14 @@ app.post('/api/sessions', async (req, res) => {
     if (busy.length) return activeElsewhereError(res, busy);
   }
   const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt });
-  res.json({ ...session.info(), machine: discovery.selfName });
+  if (!wait) return res.json({ ...session.info(), machine: discovery.selfName });
+  // automation: block until the first turn (the initial prompt, or just the
+  // startup) settles, and hand back the reply with the session
+  const timeoutMs = clampWait(wait);
+  const timedOut = initialPrompt
+    ? await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs })
+    : (await waitUntil(manager, () => isSettled(session), timeoutMs)) ? null : 'done';
+  res.json(await turnResult(session, initialPrompt, timedOut));
 });
 
 /** Route a per-session action to this hub or the owning peer. */
@@ -472,6 +502,89 @@ app.post('/api/sessions/:id/resume', sessionAction((id, req, res) => {
 app.post('/api/sessions/:id/remove', sessionAction((id, _req, res) => {
   manager.remove(id);
   res.json({ ok: true });
+}));
+
+// ----------------------------------------------------------- Automation
+// Drive a session from a script: read it, type into it, wait on it. Every
+// route goes through sessionAction, so a script talks to any hub in the
+// fleet and the owning machine answers.
+
+app.get('/api/sessions/:id', sessionAction((id, _req, res) => {
+  res.json({ ...manager.sessions.get(id)!.info(), machine: discovery.selfName });
+}));
+
+// Submit a prompt. With `wait` (true or a ms budget) the call blocks until
+// the turn settles and returns the reply; a WORKING session is refused
+// unless `queue` is set (the TUI would stack the prompt behind the current turn).
+app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (!text.trim()) return res.status(400).json({ error: 'text required' });
+  if (!session.proc) return res.status(409).json({ error: 'session has exited — resume it first' });
+  if (session.state === 'WORKING' && !req.body?.queue) {
+    return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
+  }
+  await typePrompt(manager, session, text);
+  if (!req.body?.wait) return res.json({ ...session.info(), machine: discovery.selfName });
+  const timeoutMs = clampWait(req.body.wait);
+  const timedOut = await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs });
+  res.json(await turnResult(session, text, timedOut));
+}));
+
+// Raw keystrokes: `keys` is a list of named keys (enter, esc, up, down, 1…)
+// or literal strings; `data` is sent verbatim. For answering prompts and menus.
+app.post('/api/sessions/:id/keys', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  if (!session.proc) return res.status(409).json({ error: 'session has exited' });
+  const keys: unknown[] = Array.isArray(req.body?.keys) ? req.body.keys : [];
+  let data = typeof req.body?.data === 'string' ? req.body.data : '';
+  for (const k of keys) {
+    if (typeof k !== 'string') continue;
+    data += KEYS[k.toLowerCase()] ?? k;
+  }
+  if (!data) return res.status(400).json({ error: 'keys or data required' });
+  manager.write(id, data);
+  res.json({ ok: true, sent: data.length });
+}));
+
+// Long-poll until the session reaches a state. `until` is a state name,
+// `settled` (default: anything but STARTING/WORKING) or `changed` (any
+// state other than `from`). Returns timedOut:true instead of erroring so
+// callers can simply loop.
+app.get('/api/sessions/:id/wait', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const until = String(req.query.until ?? 'settled').toUpperCase();
+  const from = typeof req.query.from === 'string' ? req.query.from.toUpperCase() : session.state;
+  const pred =
+    until === 'SETTLED'
+      ? () => isSettled(session)
+      : until === 'CHANGED'
+        ? () => session.state !== from
+        : () => session.state === until || (!session.proc && until === 'EXITED');
+  const ok = await waitUntil(manager, pred, clampWait(req.query.timeout));
+  res.json({ ...session.info(), machine: discovery.selfName, timedOut: !ok });
+}));
+
+// The screen as text (default: what a viewer sees; ?scrollback=N adds lines
+// above). ?format=ansi returns the exact serialized stream instead.
+app.get('/api/sessions/:id/screen', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  if (req.query.format === 'ansi') return res.type('text/plain').send(session.snapshot());
+  res.type('text/plain').send(screenText(session, Math.min(5000, Number(req.query.scrollback) || 0)));
+}));
+
+// The last N question→reply exchanges as JSON (oldest first) — the same
+// text the PRINT export renders.
+app.get('/api/sessions/:id/exchanges', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const n = Math.max(1, Math.min(200, Number(req.query.n) || 5));
+  try {
+    const exchanges = await lastExchanges(session, n);
+    if (!exchanges) return res.status(404).json({ error: 'this agent keeps no readable transcript' });
+    res.json(exchanges);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 }));
 
 app.get('/api/conversations', async (_req, res) => {

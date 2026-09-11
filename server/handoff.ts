@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentFor, getAgent } from './agents/index.js';
+import { typePrompt, waitForTurn } from './automation.js';
 import { PROJECTS_ROOT } from './config.js';
 import type { Federation } from './federation.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
@@ -74,15 +75,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const folderName = (cwd: string) => cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
 const safeFolder = (s: string) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
 
-async function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return true;
-    await sleep(700);
-  }
-  return pred();
-}
-
 /** Ask the live source agent to write its own handoff brief and capture the reply. */
 async function collectBrief(
   manager: SessionManager,
@@ -97,17 +89,13 @@ async function collectBrief(
     `the key decisions and why they were made, the current state of the code, the exact file ` +
     `paths touched, open items and the next steps, and any gotchas. Be thorough and concrete: ` +
     `the other agent has no access to your memory beyond this brief and the conversation transcript.`;
-  manager.write(source.hubId, prompt);
-  await sleep(120);
-  manager.write(source.hubId, '\r');
+  await typePrompt(manager, source, prompt);
 
   // the prompt lands, the agent works, then stops
-  await waitFor(() => source.state === 'WORKING', BRIEF_START_MS);
-  const finished = await waitFor(
-    () => !source.proc || ['IDLE', 'WAITING_QUESTION', 'WAITING_PERMISSION'].includes(source.state),
-    BRIEF_DONE_MS,
-  );
-  if (!finished) return undefined;
+  const outcome = await waitForTurn(manager, source, { startMs: BRIEF_START_MS, totalMs: BRIEF_START_MS + BRIEF_DONE_MS });
+  if (outcome === 'done') {
+    return undefined;
+  }
   await sleep(1500); // transcript flushes slightly after the stop hook
 
   const ops = agentFor(source).transcript;

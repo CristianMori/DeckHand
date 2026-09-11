@@ -283,6 +283,62 @@ deckhand ls               list fleet sessions
 dashboard (both can be attached at once — keystrokes merge live). Set
 `HUB_URL` if your hub is not on `127.0.0.1:5959-5969`.
 
+### REST API (automation)
+
+Everything the dashboard does is plain HTTP on the hub, and a few extra
+routes exist only for scripts: type a prompt, wait for the turn to end, read
+the reply, read the screen. Talk to any hub in the fleet — per-session calls
+are forwarded to the machine that owns the session, and `machine` on a spawn
+picks where it runs. Same trust rule as the dashboard: callers must come from
+localhost or the tailnet.
+
+One-shot question, answer in the response:
+
+```
+curl -X POST http://127.0.0.1:5959/api/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"cwd":"C:\\DataDrive\\myproject","agentType":"claude",
+       "initialPrompt":"Summarize the README in one sentence.","wait":120000}'
+→ { "hubId":"3724583a", "state":"IDLE", "reply":"…", "timedOut":false, … }
+```
+
+Then keep the conversation going:
+
+```
+POST /api/sessions/:id/prompt     {"text":"…","wait":120000}   → same shape, with "reply"
+POST /api/sessions/:id/keys       {"keys":["down","enter"]}     → answer a menu or prompt
+GET  /api/sessions/:id/wait?until=settled&timeout=120000        → long-poll
+GET  /api/sessions/:id/screen[?scrollback=200][&format=ansi]    → the terminal as text
+GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …] oldest first
+GET  /api/sessions/:id                                          → card data
+POST /api/sessions/:id/kill | /resume | /remove | /autoyes {"on":true}
+```
+
+Rules of the road:
+
+- **`wait`** is `true` or a millisecond budget, capped at 240 s per call.
+  A response with `"timedOut": "start"` means the prompt never started a
+  turn (read `screen` — usually a trust or permission prompt is up);
+  `"done"` means the turn is still running: call `wait` again. Long turns
+  are just a loop over `wait`.
+- **`prompt` refuses a WORKING session with 409** unless `"queue": true`;
+  the TUI would stack it behind the running turn.
+- **`reply`** is the agent's text for that prompt, pulled from its transcript.
+  Codex and Claude both provide it; an engine with no readable transcript
+  returns no `reply` and 404 on `exchanges`.
+- `keys` understands `enter esc tab backspace up down left right ctrl-c
+  ctrl-d ctrl-u shift-tab`; anything else is sent as typed. `{"data":"…"}`
+  sends raw bytes.
+- `until` for `wait` is `settled` (default — anything but STARTING/WORKING),
+  `changed` (leaves the current state; pass `&from=WORKING` to name it), or a
+  state: `IDLE WORKING WAITING_PERMISSION WAITING_QUESTION EXITED`.
+- Permission prompts: either turn on `autoyes` for the session or watch for
+  `WAITING_PERMISSION` and answer with `keys`. Plan-mode exit is never
+  auto-approved.
+- A brand-new folder makes Claude ask "do you trust this folder?" before the
+  first turn — the session sits in STARTING until `{"keys":["down","enter"]}`
+  answers it.
+
 ### Publishing updates (the machine you develop on)
 
 ```
@@ -312,6 +368,7 @@ unit on Linux).
 | `HUB_STORE_MACHINE` | `vps-node` | fleet machine holding the durable transcript store |
 | `HUB_UPDATE_MACHINE` | `vps-node` | fleet machine holding the release shelf |
 | `DECKHAND_SERVICE` | unset | set by service installers; tells the hub a supervisor handles relaunches |
+| `HUB_SOLO` | unset | skip fleet discovery entirely — for a throwaway test hub on an odd port that must not join the fleet |
 | `HUB_URL` | probe localhost | `deckhand` CLI: explicit hub address |
 
 `data/` contents: `hub-hooks.json` (generated hook settings injected into
