@@ -35,6 +35,17 @@ Requires hub build **74 or newer** (LAN access + beacon; the REST routes themsel
      `{"hub":"deckhand","machine":"thelaptop","build":74,"port":5959,
        "urls":["http://192.168.1.253:5959"],"auth":"token",...}`.
      Hubs also announce that JSON unprompted every 30 s to the same port.
+     **No reply from a machine you know runs a hub?** Windows Firewall on
+     that machine is dropping the datagram — the hub runs as a service and
+     never got the "Allow" prompt. The owner must run once, elevated, on
+     that machine (you cannot do this from here, and must not try):
+     ```
+     New-NetFirewallRule -DisplayName "Deckhand beacon" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5959-5969
+     New-NetFirewallRule -DisplayName "Deckhand"        -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5959-5969
+     ```
+     (the TCP rule is for the HTTP API itself; Linux hubs with ufw need
+     `ufw allow 5959/udp` and `5959/tcp` from the LAN). Until then, use a
+     URL the owner gives you, or a tailnet address.
   3. On the tailnet, probe each online device (`tailscale status --json` →
      `Peer[*].TailscaleIPs`) on 5959–5969 as in step 1.
 
