@@ -20,8 +20,15 @@ Requires hub build **71 or newer** (`GET /api/hub-info` → `build`).
 - **Any hub can act on any session.** Per-session routes are forwarded to the
   machine that owns the session; spawn requests take a `machine` field. Use
   whichever hub is closest.
-- Probe: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":71,...}`.
-  `GET /api/fleet` → `[{"machine","self","connected","url"}]` lists the machines.
+- **Discovery:** there is no registry. If you were not given a URL, do what
+  the `deckhand` CLI does — try `http://127.0.0.1:{5959..5969}/api/hub-info`
+  and take the first that answers `{"hub":"deckhand",...}`. On a machine
+  without a hub, do the same against each online tailnet device
+  (`tailscale status --json` → `Peer[*].TailscaleIPs`). Hubs find each other
+  the same way, so once you have any one hub, `GET /api/fleet` →
+  `[{"machine","self","connected","url"}]` gives you every other machine and
+  its URL, and you never need to probe again.
+- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":71,...}`.
 
 All request bodies are JSON (`Content-Type: application/json`). All responses
 are JSON except `screen` and `export`. Errors are `{"error": "..."}` with a
