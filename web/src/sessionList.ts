@@ -72,6 +72,7 @@ export function renderSessionList(
         <span class="card-name"></span>
         <span class="agent-tag"></span>
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
+        ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
         <span class="chip ${chip.cls}">${chip.label}</span>
       </div>
       <div class="card-meta">

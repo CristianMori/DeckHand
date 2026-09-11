@@ -24,6 +24,7 @@ export interface SessionInfo {
   machine?: string;
   unreachable?: boolean;
   handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
+  frozen?: boolean;
 }
 
 export interface HandoffJob {
@@ -65,6 +66,7 @@ export interface FolderInfo {
   path: string;
   machine?: string;
   synced: boolean;
+  frozen?: boolean;
   activeHubSessions: number;
   updatedAt: number;
   conversations: FolderConversation[];

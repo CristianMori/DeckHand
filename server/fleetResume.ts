@@ -6,6 +6,7 @@ import { readTail } from './transcriptIo.js';
 import { join } from 'node:path';
 import { getAgent } from './agents/index.js';
 import { PROJECTS_ROOT } from './config.js';
+import { isFrozen } from './frozen.js';
 import type { SessionManager } from './sessionManager.js';
 import type { SyncManager } from './syncthing.js';
 import type { Federation } from './federation.js';
@@ -119,12 +120,13 @@ export function startFleetResume(opts: {
             method: 'POST',
             body: { folder: opts.folder },
           });
+          if (out.status === 409) throw new Error(String((out.body as { error?: string })?.error ?? 'folder is frozen'));
           if (out.status !== 200) throw new Error(`source push failed: ${JSON.stringify(out.body)}`);
           await poll(job, 'push-source', () => opts.sync!.vpsCompletion(opts.folder), 30 * 60_000);
         }
         await opts.sync.registerFolder(opts.folder);
         await poll(job, 'pulling', () => opts.sync!.localCompletion(opts.folder), 30 * 60_000);
-      } else if (opts.sync) {
+      } else if (opts.sync && !isFrozen(opts.folder)) {
         // folder already here — make sure it's on the sync rails for next time
         job.phase = 'checking';
         await opts.sync.registerFolder(opts.folder).catch(() => {});

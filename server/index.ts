@@ -32,6 +32,7 @@ import {
 import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
+import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import type { SessionInfo } from './types.js';
 
 // a rejected promise in some background sweep must never take the hub down
@@ -82,7 +83,12 @@ for (const rec of loadPersisted()) manager.addExitedRecord(rec);
 
 /** Local sessions tagged with this machine's name — the shape peers rely on. */
 function localList(): SessionInfo[] {
-  return manager.list().map((s) => ({ ...s, machine: discovery.selfName, origin: INSTANCE_ID }));
+  return manager.list().map((s) => ({
+    ...s,
+    machine: discovery.selfName,
+    origin: INSTANCE_ID,
+    frozen: isFrozen(folderNameOf(s.cwd)) || undefined,
+  }));
 }
 
 function mergedList(): SessionInfo[] {
@@ -510,11 +516,39 @@ app.get('/api/sync/config', (_req, res) => {
   res.json({ vps: sync.cfg.vps });
 });
 
+/** Freeze/unfreeze a folder to this machine (forwarded with ?machine=). */
+app.post('/api/folders/:name/frozen', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/folders/${encodeURIComponent(String(req.params.name))}/frozen`, {
+        method: 'POST',
+        body: req.body,
+      });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  const name = String(req.params.name);
+  if (!existsSync(join(PROJECTS_ROOT, name))) return res.status(400).json({ error: `unknown folder: ${name}` });
+  const on = !!req.body?.on;
+  setFrozen(name, on);
+  if (on && sync) await sync.unregisterFolder(name).catch(() => {}); // stop replication that already started
+  broadcastSessions();
+  res.json({ ok: true, folder: name, frozen: on, machine: discovery.selfName });
+});
+
 app.post('/api/sync/register', async (req, res) => {
   const { folder } = req.body ?? {};
   if (!sync) return res.status(503).json({ error: 'sync not configured' });
   if (!folder || !existsSync(join(PROJECTS_ROOT, folder))) {
     return res.status(400).json({ error: `unknown folder: ${folder}` });
+  }
+  if (isFrozen(String(folder))) {
+    return res.status(409).json({ error: `folder ${folder} is frozen to ${discovery.selfName} — it does not leave this machine` });
   }
   try {
     await sync.registerFolder(String(folder));

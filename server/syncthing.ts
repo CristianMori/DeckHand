@@ -201,6 +201,22 @@ export class SyncManager {
     }
   }
 
+  /**
+   * Stop replicating a folder: drop its entry from the local Syncthing and
+   * from the VPS (files stay on disk everywhere; Syncthing never deletes on
+   * config removal). Used when a folder is frozen to this machine.
+   */
+  async unregisterFolder(folderId: string): Promise<void> {
+    const id = encodeURIComponent(folderId);
+    for (const ep of [this.cfg.local, this.cfg.vps]) {
+      try {
+        await rest(ep, 'DELETE', `/rest/config/folders/${id}`);
+      } catch {
+        /* not registered there */
+      }
+    }
+  }
+
   /** This device's completion (0-100) for a folder — 100 means fully pulled. */
   async localCompletion(folderId: string): Promise<number> {
     const c = await rest<{ completion: number }>(

@@ -25,6 +25,7 @@ const el = {
   quickBar: document.getElementById('quick-bar')!,
   killBtn: document.getElementById('kill-btn') as HTMLButtonElement,
   autoYesBtn: document.getElementById('autoyes-btn') as HTMLButtonElement,
+  frozenBtn: document.getElementById('frozen-btn') as HTMLButtonElement,
   soundToggle: document.getElementById('sound-toggle') as HTMLButtonElement,
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
 };
@@ -140,10 +141,34 @@ function render() {
       el.termTitle.textContent = `${s.name}${s.machine ? ` @ ${s.machine}` : ''} — ${s.cwd} — ${s.unreachable ? 'UNREACHABLE' : s.state}`;
       el.autoYesBtn.textContent = s.autoYes ? 'AUTO-YES ON' : 'AUTO-YES OFF';
       el.autoYesBtn.classList.toggle('active', !!s.autoYes);
+      el.frozenBtn.textContent = s.frozen ? '❄ FROZEN' : 'FREEZE';
+      el.frozenBtn.classList.toggle('active', !!s.frozen);
+      el.frozenBtn.hidden = !!s.unreachable;
     }
   }
   renderTabs();
 }
+
+el.frozenBtn.onclick = async () => {
+  if (!selected) return;
+  const s = sessions.find((x) => x.hubId === selected);
+  if (!s) return;
+  const folder = s.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  const next = !s.frozen;
+  if (
+    next &&
+    !confirm(
+      `Freeze "${folder}" to ${s.machine ?? 'this machine'}?\n\nIt will never sync to the VPS or other machines, and its conversations can only be resumed here. Existing replication of this folder stops.`,
+    )
+  ) {
+    return;
+  }
+  try {
+    await api.setFrozen(folder, next, s.machine);
+  } catch (err) {
+    alert(`Could not change freeze state: ${err}`);
+  }
+};
 
 function select(s: SessionInfo) {
   selected = s.hubId;

@@ -32,6 +32,12 @@ when any session on any machine needs a human.
   the hub appends the conversation as plain dialogue, drops both into the
   target folder as `.deckhand/handoff.md`, and starts the target engine with
   "read it, then continue". The new card shows where it came from.
+- **Freeze a project to a machine.** FREEZE in the terminal header pins the
+  session's folder to the machine it lives on: it is never registered for
+  sync, never pushed to the home machine, and its conversations can only be
+  resumed there (the resume dialog says so). Replication that already started
+  is stopped; files stay where they are. The list lives in the hub's data dir,
+  not in the folder, so the mark itself never travels.
 - **One dashboard, whole fleet.** Every machine runs the same hub; every hub
   shows every machine's sessions. Open `http://<any-machine>:5959` from any
   device on your tailnet — they are all equivalent.

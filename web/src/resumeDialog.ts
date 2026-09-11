@@ -109,6 +109,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       const conversationCount = g.locations.reduce((n, l) => n + l.conversations.length, 0);
       const onTarget = g.locations.some((l) => l.machine === target);
       const activeOn = g.locations.filter((l) => l.activeHubSessions > 0).map((l) => l.machine);
+      const frozenOn = g.locations.filter((l) => l.frozen).map((l) => l.machine);
       const where = onTarget
         ? 'local'
         : g.onVps
@@ -121,6 +122,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
           <span class="resume-proj"></span>
           <span class="folder-where ${onTarget ? 'local' : 'remote'}">${where.toUpperCase()}</span>
           ${activeOn.length ? `<span class="chip working" title="live hub sessions in this folder">ACTIVE: ${activeOn.join(',')}</span>` : ''}
+          ${frozenOn.length ? `<span class="frozen-tag" title="frozen to ${frozenOn.join(', ')} — resumable only there">❄ ${frozenOn.join(', ')}</span>` : ''}
           <span class="resume-age">${age(Math.max(0, ...g.locations.map((l) => l.updatedAt)))}</span>
         </div>
         <div class="resume-snippet">${conversationCount} conversation${conversationCount === 1 ? '' : 's'}</div>
@@ -185,6 +187,11 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       return;
     }
     const target = machineSel.value;
+    const frozenAt = selectedFolder!.locations.find((l) => l.frozen)?.machine;
+    if (frozenAt && frozenAt !== target) {
+      alert(`"${selectedFolder!.folder}" is frozen to ${frozenAt}. Choose ${frozenAt} as the machine to run on, or unfreeze it there first.`);
+      return;
+    }
     const progress = get<HTMLDivElement>('rs-progress');
     const phaseEl = get<HTMLDivElement>('rs-phase');
     const barEl = get<HTMLDivElement>('rs-bar');

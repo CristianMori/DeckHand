@@ -96,6 +96,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ jobId: string; machine: string }>(r)),
+  setFrozen: (folder: string, on: boolean, machine?: string) =>
+    fetch(`/api/folders/${encodeURIComponent(folder)}/frozen${mq(machine)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on }),
+    }).then((r) => json<{ ok: true; frozen: boolean }>(r)),
   handoff: (
     hubId: string,
     body: {

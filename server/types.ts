@@ -39,6 +39,8 @@ export interface SessionInfo {
   unreachable?: boolean;
   /** this session was started as a handoff from another session */
   handoff?: HandoffLineage;
+  /** the session's folder is frozen to its machine — never synced or moved */
+  frozen?: boolean;
 }
 
 export interface HandoffLineage {

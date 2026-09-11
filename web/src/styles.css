@@ -233,6 +233,14 @@ button {
   padding: 2px 6px; text-transform: uppercase; flex: none;
   white-space: nowrap;
 }
+/* frozen folder */
+.frozen-tag {
+  font-family: var(--font-display); font-size: 9px; letter-spacing: 0.1em;
+  color: #8fd3ff; border: 1px solid #2a5a78; border-radius: 2px;
+  padding: 1px 5px; flex: none; white-space: nowrap;
+}
+#frozen-btn.active { color: #8fd3ff; border-color: #2a5a78; }
+
 /* handoff */
 .card-lineage { font-size: 10px; color: var(--ink-faint); margin-top: 4px; }
 .hd-from { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-dim); margin-bottom: 10px; }

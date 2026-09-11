@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { listAgents } from './agents/index.js';
 import { PROJECTS_ROOT } from './config.js';
 import { activeSessionIds } from './conversations.js';
+import { isFrozen } from './frozen.js';
 import { readTail } from './transcriptIo.js';
 
 export interface FolderConversation {
@@ -22,6 +23,8 @@ export interface FolderInfo {
   machine?: string;
   /** registered with syncthing on this machine */
   synced: boolean;
+  /** frozen to this machine: never synced, never resumable elsewhere */
+  frozen?: boolean;
   /** number of live hub sessions currently in this folder here */
   activeHubSessions: number;
   updatedAt: number;
@@ -83,6 +86,7 @@ export async function listLocalFolders(
       folder: name,
       path,
       synced: syncedIds.has(name),
+      frozen: isFrozen(name),
       activeHubSessions: hubSessionCwds.filter((c) => c.toLowerCase() === path.toLowerCase()).length,
       updatedAt: latest,
       conversations,
