@@ -41,7 +41,9 @@ export const api = {
       json<{ name: string; path: string }[]>(r),
     ),
   spawn: (body: {
-    cwd: string;
+    cwd?: string;
+    /** create this folder under the target's projects root and start there */
+    newFolder?: string;
     agentType?: string;
     name?: string;
     model?: string;

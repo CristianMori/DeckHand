@@ -352,7 +352,8 @@ app.post('/api/hook', makeHookHandler(manager, engine));
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
 app.post('/api/sessions', async (req, res) => {
-  const { cwd, agentType, name, model, permissionMode, initialPrompt, machine, force } = req.body ?? {};
+  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder } = req.body ?? {};
+  let cwd: string | undefined = req.body?.cwd;
   // spawn requested on another fleet machine — hand it to the owning hub
   if (machine && machine !== discovery.selfName) {
     const peer = federation.peerByMachine(machine);
@@ -360,12 +361,22 @@ app.post('/api/sessions', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/sessions', {
         method: 'POST',
-        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force },
+        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder },
       });
       return res.status(out.status).json(out.body);
     } catch {
       return res.status(502).json({ error: `forward to ${machine} failed` });
     }
+  }
+  // a brand-new project: create its folder under the projects root first
+  if (newFolder) {
+    const safe = String(newFolder).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+    if (!safe || safe.startsWith('.')) return res.status(400).json({ error: 'bad folder name' });
+    if (!existsSync(PROJECTS_ROOT)) {
+      return res.status(400).json({ error: `projects root ${PROJECTS_ROOT} does not exist — set HUB_PROJECTS_ROOT` });
+    }
+    cwd = join(PROJECTS_ROOT, safe);
+    mkdirSync(cwd, { recursive: true });
   }
   if (!cwd || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
     return res.status(400).json({ error: `not a directory: ${cwd}` });

@@ -29,6 +29,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <select id="ns-agent"></select>
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
+    <input id="ns-newfolder" placeholder="new folder name — created under the projects root" hidden />
     <label>SESSION NAME (optional)</label>
     <input id="ns-name" placeholder="defaults to folder name" />
     <label>INITIAL PROMPT (optional)</label>
@@ -78,9 +79,15 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const folder = get<HTMLSelectElement>('ns-folder');
     folder.innerHTML = '<option value="">loading…</option>';
     const projects = await api.projects(selectedMachine()).catch(() => []);
-    folder.innerHTML = projects
-      .map((p) => `<option value="${p.path}">${p.name}</option>`)
-      .join('') || '<option value="">no folders found</option>';
+    folder.innerHTML =
+      projects.map((p) => `<option value="${p.path}">${p.name}</option>`).join('') +
+      '<option value="__new__">+ new project folder…</option>';
+    folder.onchange = () => {
+      const isNew = folder.value === '__new__';
+      get<HTMLInputElement>('ns-newfolder').hidden = !isNew;
+      if (isNew) get<HTMLInputElement>('ns-newfolder').focus();
+    };
+    get<HTMLInputElement>('ns-newfolder').hidden = true;
   }
   if (multiMachine) {
     get<HTMLSelectElement>('ns-machine').onchange = () => {
@@ -94,14 +101,21 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
   get<HTMLButtonElement>('ns-cancel').onclick = () => dialog.close();
   get<HTMLButtonElement>('ns-launch').onclick = async () => {
     const btn = get<HTMLButtonElement>('ns-launch');
+    const isNew = get<HTMLSelectElement>('ns-folder').value === '__new__';
+    const newFolder = isNew ? get<HTMLInputElement>('ns-newfolder').value.trim() : '';
+    if (isNew && !newFolder) {
+      alert('Give the new project folder a name.');
+      return;
+    }
     btn.disabled = true;
     btn.textContent = 'LAUNCHING…';
     try {
       const session = await withElsewhereConfirm((force) =>
         api.spawn({
-          cwd: get<HTMLSelectElement>('ns-folder').value,
+          cwd: isNew ? undefined : get<HTMLSelectElement>('ns-folder').value,
+          newFolder: newFolder || undefined,
           agentType: selectedAgent().id,
-          name: get<HTMLInputElement>('ns-name').value.trim() || undefined,
+          name: get<HTMLInputElement>('ns-name').value.trim() || (newFolder || undefined),
           initialPrompt: get<HTMLTextAreaElement>('ns-prompt').value.trim() || undefined,
           permissionMode: get<HTMLSelectElement>('ns-mode').value || undefined,
           model: get<HTMLSelectElement>('ns-model').value || undefined,
