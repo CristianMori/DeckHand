@@ -110,11 +110,16 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       const onTarget = g.locations.some((l) => l.machine === target);
       const activeOn = g.locations.filter((l) => l.activeHubSessions > 0).map((l) => l.machine);
       const frozenOn = g.locations.filter((l) => l.frozen).map((l) => l.machine);
+      // only the durable transcript copy exists — the project folder itself is
+      // on a machine that is offline, so a resume cannot materialize it yet
+      const storeOnly = !g.onVps && g.locations.length > 0 && g.locations.every((l) => l.path === '(fleet store)');
       const where = onTarget
         ? 'local'
         : g.onVps
           ? 'on vps'
-          : `on ${g.locations.map((l) => l.machine).join(', ') || '?'}`;
+          : storeOnly
+            ? 'transcript only · folder on an offline machine'
+            : `on ${g.locations.map((l) => l.machine).join(', ') || '?'}`;
       const row = document.createElement('div');
       row.className = `resume-row${selectedFolder === g ? ' selected' : ''}`;
       row.innerHTML = `
@@ -143,9 +148,9 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     convsEl.innerHTML = '';
     const src = sourceSel.value;
     const engine = engineSel.value;
-    const convs: (FolderConversation & { machine?: string })[] = selectedFolder.locations
+    const convs: (FolderConversation & { machine?: string; store?: boolean })[] = selectedFolder.locations
       .filter((l) => !src || src === '__vps__' || l.machine === src)
-      .flatMap((l) => l.conversations.map((c) => ({ ...c, machine: l.machine })))
+      .flatMap((l) => l.conversations.map((c) => ({ ...c, machine: l.machine, store: l.path === '(fleet store)' })))
       .filter((c) => !engine || engineOf(c) === engine)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     if (convs.length === 0) {
@@ -164,7 +169,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
         <div class="resume-row-top">
           <span class="resume-proj"></span>
           <span class="agent-tag">${c.agentType || 'claude'}</span>
-          <span class="machine-tag">${c.machine ?? ''}</span>
+          <span class="machine-tag">${c.store ? 'fleet store' : (c.machine ?? '')}</span>
           ${c.activeElsewhere ? '<span class="chip waiting" title="Open in an agent window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
           <span class="resume-age">${age(c.updatedAt)}</span>
         </div>
@@ -187,6 +192,15 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       return;
     }
     const target = machineSel.value;
+    const onTarget = selectedFolder!.locations.some((l) => l.machine === target && l.path !== '(fleet store)');
+    const reachable = selectedFolder!.locations.some((l) => l.path !== '(fleet store)') || selectedFolder!.onVps;
+    if (!onTarget && !reachable) {
+      alert(
+        `Only the conversation of "${selectedFolder!.folder}" is reachable (fleet store on ${c.machine}). ` +
+          `The project folder itself is on a machine that is offline — turn it on, wait for it to appear in the fleet, then resume again.`,
+      );
+      return;
+    }
     const frozenAt = selectedFolder!.locations.find((l) => l.frozen)?.machine;
     if (frozenAt && frozenAt !== target) {
       alert(`"${selectedFolder!.folder}" is frozen to ${frozenAt}. Choose ${frozenAt} as the machine to run on, or unfreeze it there first.`);
