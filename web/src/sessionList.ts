@@ -1,13 +1,20 @@
 import type { SessionInfo, SessionState } from './types';
 
+// needs attention first, then what is being worked on, then the rest;
+// cards of an unreachable machine always sink to the bottom
 const STATE_RANK: Record<SessionState, number> = {
   WAITING_QUESTION: 0,
   WAITING_PERMISSION: 0,
-  IDLE: 1,
-  STARTING: 2,
-  WORKING: 2,
+  WORKING: 1,
+  STARTING: 1,
+  IDLE: 2,
   EXITED: 3,
 };
+const UNREACHABLE_RANK = 4;
+
+function rankOf(s: SessionInfo): number {
+  return s.unreachable ? UNREACHABLE_RANK : STATE_RANK[s.state];
+}
 
 const CHIP: Record<SessionState, { cls: string; label: string }> = {
   WAITING_QUESTION: { cls: 'waiting', label: 'QUESTION' },
@@ -32,9 +39,10 @@ function elapsed(since: number): string {
 
 export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort((a, b) => {
-    const rank = STATE_RANK[a.state] - STATE_RANK[b.state];
+    const rank = rankOf(a) - rankOf(b);
     if (rank !== 0) return rank;
-    if (STATE_RANK[a.state] === 0) return a.stateSince - b.stateSince; // oldest wait first
+    if (rankOf(a) === 0) return a.stateSince - b.stateSince; // oldest wait first
+    if (rankOf(a) === 1) return b.stateSince - a.stateSince; // most recently started working first
     return b.createdAt - a.createdAt;
   });
 }
