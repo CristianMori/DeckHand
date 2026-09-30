@@ -147,6 +147,7 @@ function render() {
       await api.remove(s.hubId);
     },
     onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
+    onFiles: (s) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
   });
 
   const waiting = waitingCount();

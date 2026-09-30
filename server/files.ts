@@ -3,6 +3,22 @@ import { copyFile, mkdir, readdir, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import type { Writable } from 'node:stream';
+import { createRequire } from 'node:module';
+
+// archiver ships CJS without named ESM exports
+const require = createRequire(import.meta.url);
+interface ZipArchive {
+  on(event: string, cb: (...a: unknown[]) => void): unknown;
+  pipe(out: Writable): unknown;
+  directory(dir: string, dest: string): unknown;
+  glob(pattern: string, opts: { cwd: string; dot?: boolean; ignore?: string[] }, data?: { prefix?: string }): unknown;
+  finalize(): Promise<void>;
+}
+type ArchiverFn = (format: 'zip', opts?: { zlib?: { level: number } }) => ZipArchive;
+const archiverModule = require('archiver') as ArchiverFn | { default?: ArchiverFn; create?: ArchiverFn };
+const archiver: ArchiverFn =
+  typeof archiverModule === 'function' ? archiverModule : (archiverModule.default ?? archiverModule.create)!;
 import { PROJECTS_ROOT } from './config.js';
 
 /**
@@ -46,6 +62,30 @@ export async function listDir(rel: string): Promise<{ path: string; entries: Fil
   }
   entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
   return { path: relPath(abs), entries };
+}
+
+/** Directories nobody wants in a project zip unless they ask for everything. */
+const ZIP_SKIP = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__', '.stfolder']);
+
+/**
+ * Stream a folder as a zip. Entries live under `name/` inside the archive.
+ * Compression is moderate: these go over the tailnet, not to an archive shelf.
+ */
+export function zipFolder(abs: string, name: string, full: boolean, out: Writable) {
+  const archive = archiver('zip', { zlib: { level: 5 } });
+  archive.on('warning', () => {});
+  archive.on('error', () => out.end());
+  archive.pipe(out);
+  if (full) {
+    archive.directory(abs, name);
+  } else {
+    archive.glob('**/*', {
+      cwd: abs,
+      dot: true,
+      ignore: [...ZIP_SKIP].flatMap((d) => [`**/${d}`, `**/${d}/**`]),
+    }, { prefix: name });
+  }
+  void archive.finalize();
 }
 
 /**

@@ -59,6 +59,7 @@ export function renderSessionList(
     onResume: (s: SessionInfo) => void;
     onRemove: (s: SessionInfo) => void;
     onHandoff: (s: SessionInfo) => void;
+    onFiles: (s: SessionInfo) => void;
   },
 ) {
   root.innerHTML = '';
@@ -94,9 +95,16 @@ export function renderSessionList(
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
-      ${s.model?.startsWith('local/') ? '<div class="card-foot"><span class="tag model"></span></div>' : ''}
+      <div class="card-foot">
+        ${s.model?.startsWith('local/') ? '<span class="tag model"></span>' : ''}
+        <button class="ghost-btn card-files" title="Browse this session's folder on its machine">FILES</button>
+      </div>
       <div class="card-actions"></div>
     `;
+    (card.querySelector('.card-files') as HTMLButtonElement).onclick = (e) => {
+      e.stopPropagation();
+      handlers.onFiles(s);
+    };
     if (s.handoff) {
       (card.querySelector('.card-lineage') as HTMLElement).textContent =
         `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;

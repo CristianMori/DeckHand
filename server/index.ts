@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import express from 'express';
-import { copyIn, listDir, safePath } from './files.js';
+import { copyIn, listDir, safePath, zipFolder } from './files.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
 import { agentFor, getAgent, listAgents } from './agents/index.js';
@@ -610,6 +610,21 @@ app.get('/api/files/raw', (req, res) => {
     const abs = safePath(path);
     if (!existsSync(abs) || !statSync(abs).isFile()) return res.status(404).json({ error: 'not a file' });
     res.download(abs, basename(abs), { dotfiles: 'allow' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** A folder on THIS machine as a zip stream. node_modules and .git are skipped unless ?full=1. */
+app.get('/api/files/zip', (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  try {
+    const abs = safePath(path);
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) return res.status(404).json({ error: 'not a folder' });
+    const name = basename(abs) || 'projects';
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/["\\]/g, '_')}.zip"`);
+    zipFolder(abs, name, req.query.full === '1', res);
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

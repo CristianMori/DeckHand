@@ -66,7 +66,8 @@ when any session on any machine needs a human.
   it and updates itself from the ADMIN panel (or its 6-hour self-check).
   Dev checkouts (build 0) never auto-update.
 - **Fleet file browser.** FILES walks any connected machine's project folders,
-  downloads a file to your browser, or copies it straight to another machine:
+  downloads a file or a whole folder as a zip to your browser, or copies a file
+  straight to another machine:
   the target hub pulls the bytes from the source hub, so nothing passes through
   the dashboard.
 - **Console-first workflow if you want it.** The `deckhand` CLI spawns

@@ -20,7 +20,7 @@ function fmtAge(ms: number): string {
  * file to this browser, or copy it to another machine (the target hub pulls
  * it from the source hub directly).
  */
-export async function openFilesDialog() {
+export async function openFilesDialog(start?: { machine?: string; path?: string }) {
   const dialog = document.getElementById('files-dialog') as HTMLDialogElement;
   dialog.innerHTML = `
     <h2>FILES</h2>
@@ -59,6 +59,7 @@ export async function openFilesDialog() {
   machineSel.innerHTML = fleet
     .map((m) => `<option value="${m.machine}"${m.self ? ' selected' : ''}>${m.machine}${m.self ? ' (this machine)' : ''}</option>`)
     .join('');
+  if (start?.machine && fleet.some((m) => m.machine === start.machine)) machineSel.value = start.machine;
   const selfName = fleet.find((m) => m.self)?.machine ?? '';
   const baseFor = (machine: string) => (fleet.find((m) => m.machine === machine)?.self ? '' : fleet.find((m) => m.machine === machine)?.url ?? '');
 
@@ -96,8 +97,12 @@ export async function openFilesDialog() {
       if (path) {
         const up = document.createElement('div');
         up.className = 'resume-row fb-row';
-        up.innerHTML = '<span class="fb-name">‹ ..</span>';
+        up.innerHTML = '<span class="fb-name">‹ ..</span><span class="fb-actions"><button class="ghost-btn fb-zip" title="Download this whole folder as a zip (node_modules and .git left out)">ZIP THIS FOLDER</button></span>';
         up.onclick = () => void load(path.split('/').slice(0, -1).join('/'));
+        (up.querySelector('.fb-zip') as HTMLButtonElement).onclick = (ev) => {
+          ev.stopPropagation();
+          window.open(`${baseFor(machine)}/api/files/zip?path=${encodeURIComponent(path)}`, '_blank');
+        };
         listEl.appendChild(up);
       }
       if (res.entries.length === 0) listEl.innerHTML += '<div class="empty-note">empty folder</div>';
@@ -107,12 +112,18 @@ export async function openFilesDialog() {
         row.innerHTML = `
           <span class="fb-name"></span>
           <span class="fb-meta">${e.dir ? 'folder' : fmtSize(e.size)} · ${fmtAge(e.mtime)}</span>
-          ${e.dir ? '' : '<span class="fb-actions"><button class="ghost-btn fb-dl">DOWNLOAD</button><button class="ghost-btn fb-cp">COPY TO…</button></span>'}
+          ${e.dir
+            ? '<span class="fb-actions"><button class="ghost-btn fb-zip" title="Download this folder as a zip (node_modules and .git left out)">ZIP</button></span>'
+            : '<span class="fb-actions"><button class="ghost-btn fb-dl">DOWNLOAD</button><button class="ghost-btn fb-cp">COPY TO…</button></span>'}
         `;
         (row.querySelector('.fb-name') as HTMLElement).textContent = e.dir ? `▸ ${e.name}` : e.name;
         const relFile = path ? `${path}/${e.name}` : e.name;
         if (e.dir) {
           row.onclick = () => void load(relFile);
+          (row.querySelector('.fb-zip') as HTMLButtonElement).onclick = (ev) => {
+            ev.stopPropagation();
+            window.open(`${baseFor(machine)}/api/files/zip?path=${encodeURIComponent(relFile)}`, '_blank');
+          };
         } else {
           (row.querySelector('.fb-dl') as HTMLButtonElement).onclick = (ev) => {
             ev.stopPropagation();
@@ -168,5 +179,6 @@ export async function openFilesDialog() {
 
   machineSel.onchange = () => void load('');
   void selfName;
-  await load('');
+  // an absolute session folder is accepted by the hub and reported back root-relative
+  await load(start?.path ?? '');
 }
