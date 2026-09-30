@@ -47,6 +47,13 @@ const TAB_DOT: Record<string, string> = {
   EXITED: 'exited',
 };
 
+/** "local/qwen3-30b-a3b" -> "qwen3-30b-a3b" (shortened); undefined for hosted models */
+export function localModelLabel(model?: string): string | undefined {
+  if (!model || !model.startsWith('local/')) return undefined;
+  const id = model.slice('local/'.length);
+  return id.length > 18 ? id.slice(0, 17) + '…' : id;
+}
+
 function renderTabs() {
   // drop tabs whose sessions vanished (removed on another dashboard, etc.)
   tabs = tabs.filter((id) => sessions.some((s) => s.hubId === id));
@@ -65,6 +72,19 @@ function renderTabs() {
     const agentSuffix = ` · ${s.agentType || 'claude'}`;
     (tab.querySelector('.tab-name') as HTMLElement).textContent =
       (s.machine ? `${s.name} @ ${s.machine}` : s.name) + agentSuffix;
+    // sessions on a locally served model wear LOCAL plus the model name
+    const local = localModelLabel(s.model);
+    if (local) {
+      const name = tab.querySelector('.tab-name') as HTMLElement;
+      const t1 = document.createElement('span');
+      t1.className = 'tag local';
+      t1.textContent = 'LOCAL';
+      const t2 = document.createElement('span');
+      t2.className = 'tag model';
+      t2.textContent = local;
+      t2.title = s.model!;
+      name.after(t1, t2);
+    }
     tab.onclick = () => select(s);
     tab.onauxclick = (e) => {
       if (e.button === 1) {

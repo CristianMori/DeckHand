@@ -82,6 +82,7 @@ export function renderSessionList(
       <div class="card-top">
         <span class="card-name"></span>
         <span class="agent-tag"></span>
+        ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span><span class="tag model"></span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
         <span class="chip ${chip.cls}">${chip.label}</span>
@@ -102,6 +103,12 @@ export function renderSessionList(
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
     const engine = s.agentType || 'claude';
     (card.querySelector('.agent-tag') as HTMLElement).textContent = engine;
+    const modelTag = card.querySelector('.tag.model') as HTMLElement | null;
+    if (modelTag && s.model) {
+      const id = s.model.slice('local/'.length);
+      modelTag.textContent = id.length > 18 ? id.slice(0, 17) + '…' : id;
+      modelTag.title = s.model;
+    }
     if (s.machine) (card.querySelector('.machine-tag') as HTMLElement).textContent = s.machine;
     (card.querySelector('.cwd') as HTMLElement).textContent = shortPath(s.cwd);
     if (s.summary) (card.querySelector('.card-summary') as HTMLElement).textContent = s.summary;
