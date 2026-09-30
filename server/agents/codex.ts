@@ -74,6 +74,11 @@ function readdirSyncSafe(dir: string): string[] {
   }
 }
 
+/** models behind the local llama-server router are offered as local/<preset id> */
+const LOCAL_PREFIX = 'local/';
+const LOCAL_PROVIDER = 'llamacpp';
+const LOCAL_MODELS = ['qwen3-30b-a3b', 'gpt-oss-20b', 'gemma4-26b', 'qwen3.5-27b'];
+
 const MODE_FLAGS: Record<string, string[]> = {
   'approve-for-me': ['--approve-for-me'],
   'read-only': ['-s', 'read-only'],
@@ -302,8 +307,18 @@ export const codexAdapter: AgentAdapter = {
     const args: string[] = [];
     if (resume) args.push('resume', sessionId);
     args.push('--dangerously-bypass-hook-trust', '-C', cwd);
-    if (permissionMode && MODE_FLAGS[permissionMode]) args.push(...MODE_FLAGS[permissionMode]);
-    if (model) args.push('-m', model);
+    // "local/<id>" selects a model served by the machine's llama-server router
+    // (provider [model_providers.llamacpp] in ~/.codex/config.toml). Local
+    // sessions run without Codex's Windows sandbox: it cannot start processes
+    // from a service session, and the hub is one.
+    const local = model?.startsWith(LOCAL_PREFIX);
+    if (local) {
+      args.push('-c', `model_provider="${LOCAL_PROVIDER}"`, '-m', model!.slice(LOCAL_PREFIX.length));
+      args.push(...MODE_FLAGS[permissionMode && MODE_FLAGS[permissionMode] ? permissionMode : 'bypass']);
+    } else {
+      if (permissionMode && MODE_FLAGS[permissionMode]) args.push(...MODE_FLAGS[permissionMode]);
+      if (model) args.push('-m', model);
+    }
     if (initialPrompt) args.push(initialPrompt);
     return args;
   },
@@ -432,6 +447,7 @@ export const codexAdapter: AgentAdapter = {
     { value: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
     { value: 'gpt-5.5', label: 'gpt-5.5' },
     { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+    ...LOCAL_MODELS.map((m) => ({ value: `${LOCAL_PREFIX}${m}`, label: `local: ${m} (llama.cpp, no sandbox)` })),
   ],
   permissionModes: [
     { value: 'approve-for-me', label: 'approve-for-me (auto review)' },
