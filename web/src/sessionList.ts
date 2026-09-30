@@ -82,7 +82,7 @@ export function renderSessionList(
       <div class="card-top">
         <span class="card-name"></span>
         <span class="agent-tag"></span>
-        ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span><span class="tag model"></span>' : ''}
+        ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
         <span class="chip ${chip.cls}">${chip.label}</span>
@@ -94,6 +94,7 @@ export function renderSessionList(
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
+      ${s.model?.startsWith('local/') ? '<div class="card-foot"><span class="tag model"></span></div>' : ''}
       <div class="card-actions"></div>
     `;
     if (s.handoff) {

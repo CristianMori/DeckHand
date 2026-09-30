@@ -257,7 +257,10 @@ button {
 .tag.local { color: var(--green); border: 1px solid var(--green-deep); }
 .tag.model { color: var(--ink-dim); border: 1px solid var(--line-bright); text-transform: none; letter-spacing: 0.06em; }
 .term-tab .tag { font-size: 8px; padding: 1px 5px; }
-.term-tab:has(.tag) { max-width: 340px; }
+.term-tab:has(.tag) { max-width: 260px; }
+/* model name sits alone in the card's lower right corner */
+.card-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.card-foot .tag.model { font-size: 8px; padding: 1px 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
 /* engine tag: which CLI runs the session */
 .agent-tag {

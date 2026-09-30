@@ -75,15 +75,11 @@ function renderTabs() {
     // sessions on a locally served model wear LOCAL plus the model name
     const local = localModelLabel(s.model);
     if (local) {
-      const name = tab.querySelector('.tab-name') as HTMLElement;
       const t1 = document.createElement('span');
       t1.className = 'tag local';
       t1.textContent = 'LOCAL';
-      const t2 = document.createElement('span');
-      t2.className = 'tag model';
-      t2.textContent = local;
-      t2.title = s.model!;
-      name.after(t1, t2);
+      t1.title = `local model: ${local}`;
+      (tab.querySelector('.tab-name') as HTMLElement).after(t1);
     }
     tab.onclick = () => select(s);
     tab.onauxclick = (e) => {
