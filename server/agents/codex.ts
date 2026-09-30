@@ -314,6 +314,14 @@ export const codexAdapter: AgentAdapter = {
     const local = model?.startsWith(LOCAL_PREFIX);
     if (local) {
       args.push('-c', `model_provider="${LOCAL_PROVIDER}"`, '-m', model!.slice(LOCAL_PREFIX.length));
+      // keep a local session local: no hosted web-search tool, no analytics,
+      // no telemetry export, no update check
+      args.push(
+        '-c', 'web_search="disabled"',
+        '-c', 'analytics.enabled=false',
+        '-c', 'otel.exporter="none"',
+        '-c', 'check_for_update_on_startup=false',
+      );
       args.push(...MODE_FLAGS[permissionMode && MODE_FLAGS[permissionMode] ? permissionMode : 'bypass']);
     } else {
       if (permissionMode && MODE_FLAGS[permissionMode]) args.push(...MODE_FLAGS[permissionMode]);
