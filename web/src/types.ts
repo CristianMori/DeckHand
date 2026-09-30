@@ -42,6 +42,13 @@ export interface FleetMachine {
   url?: string;
 }
 
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  mtime: number;
+}
+
 export interface AgentInfo {
   id: string;
   label: string;

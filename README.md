@@ -65,6 +65,10 @@ when any session on any machine needs a human.
 - **Fleet auto-update.** Publish a build to the home machine; every hub sees
   it and updates itself from the ADMIN panel (or its 6-hour self-check).
   Dev checkouts (build 0) never auto-update.
+- **Fleet file browser.** FILES walks any connected machine's project folders,
+  downloads a file to your browser, or copies it straight to another machine:
+  the target hub pulls the bytes from the source hub, so nothing passes through
+  the dashboard.
 - **Console-first workflow if you want it.** The `deckhand` CLI spawns
   hub-owned sessions bridged into your real terminal, tmux-style: `Ctrl+Q`
   detaches, the session lives on, reattach from anywhere — including a

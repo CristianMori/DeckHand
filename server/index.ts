@@ -4,8 +4,9 @@ import { startBeacon } from './beacon.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import express from 'express';
+import { copyIn, listDir, safePath } from './files.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
 import { agentFor, getAgent, listAgents } from './agents/index.js';
@@ -577,6 +578,84 @@ app.post('/api/sessions/adopt', (req, res) => {
   }
   const session = manager.create({ cwd, agentType, name, resumeSessionId: claudeSessionId });
   res.json({ ...session.info(), machine: discovery.selfName });
+});
+
+// ------------------------------------------------------------ file browser
+
+/** Directory listing under a machine's projects root (forwarded for peers). */
+app.get('/api/files', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/files?path=${encodeURIComponent(path)}`);
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  try {
+    res.json({ machine: discovery.selfName, root: PROJECTS_ROOT, ...(await listDir(path)) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Raw bytes of one file on THIS machine — browser downloads and hub-to-hub copies. */
+app.get('/api/files/raw', (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  try {
+    const abs = safePath(path);
+    if (!existsSync(abs) || !statSync(abs).isFile()) return res.status(404).json({ error: 'not a file' });
+    res.download(abs, basename(abs), { dotfiles: 'allow' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
+ * Copy a file between machines: runs on the TARGET machine, which pulls the
+ * bytes from the source hub. { fromMachine, fromPath, toMachine, toDir, overwrite }
+ */
+app.post('/api/files/copy', async (req, res) => {
+  const { fromMachine, fromPath, toMachine, toDir, overwrite } = req.body ?? {};
+  if (!fromMachine || !fromPath || !toMachine) {
+    return res.status(400).json({ error: 'fromMachine, fromPath and toMachine required' });
+  }
+  if (toMachine !== discovery.selfName) {
+    const peer = federation.peerByMachine(String(toMachine));
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${toMachine}` });
+    try {
+      const out = await federation.forward(peer, '/api/files/copy', {
+        method: 'POST',
+        body: { fromMachine, fromPath, toMachine, toDir, overwrite },
+      });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${toMachine} failed` });
+    }
+  }
+  try {
+    const name = String(fromPath).split('/').pop() ?? '';
+    let out;
+    if (fromMachine === discovery.selfName) {
+      out = await copyIn({ sourceAbs: safePath(String(fromPath)), toDir: String(toDir ?? ''), name, overwrite: !!overwrite });
+    } else {
+      const peer = federation.peerByMachine(String(fromMachine));
+      if (!peer) return res.status(502).json({ error: `machine not connected: ${fromMachine}` });
+      out = await copyIn({
+        sourceUrl: `${peer.info.url}/api/files/raw?path=${encodeURIComponent(String(fromPath))}`,
+        toDir: String(toDir ?? ''),
+        name,
+        overwrite: !!overwrite,
+      });
+    }
+    res.json({ ok: true, machine: discovery.selfName, ...out });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.get('/api/projects', async (req, res) => {

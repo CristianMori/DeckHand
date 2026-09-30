@@ -8,6 +8,7 @@ import { openNewSessionDialog } from './newSessionDialog';
 import { openResumeDialog } from './resumeDialog';
 import { openHandoffDialog } from './handoffDialog';
 import { openAdminDialog } from './adminDialog';
+import { openFilesDialog } from './filesDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
 
 let sessions: SessionInfo[] = [];
@@ -255,6 +256,7 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
 (document.getElementById('resume-btn') as HTMLButtonElement).onclick = () =>
   openResumeDialog((s) => select(s));
 (document.getElementById('admin-btn') as HTMLButtonElement).onclick = () => void openAdminDialog();
+(document.getElementById('files-btn') as HTMLButtonElement).onclick = () => void openFilesDialog();
 
 el.killBtn.onclick = () => {
   if (selected) api.kill(selected);

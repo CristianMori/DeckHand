@@ -1,4 +1,4 @@
-import type { AdminStatus, AgentInfo, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, AgentInfo, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -32,6 +32,16 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   sessions: () => fetch('/api/sessions').then((r) => json<SessionInfo[]>(r)),
   fleet: () => fetch('/api/fleet').then((r) => json<FleetMachine[]>(r)),
+  files: (path: string, machine?: string) =>
+    fetch(`/api/files?path=${encodeURIComponent(path)}${machine ? `&machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
+      json<{ machine: string; root: string; path: string; entries: FileEntry[] }>(r),
+    ),
+  filesCopy: (body: { fromMachine: string; fromPath: string; toMachine: string; toDir: string; overwrite?: boolean }) =>
+    fetch(`/api/files/copy?machine=${encodeURIComponent(body.toMachine)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ ok: boolean; machine: string; path: string; bytes: number }>(r)),
   agents: (machine?: string) =>
     fetch(`/api/agents${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
       json<AgentInfo[]>(r),

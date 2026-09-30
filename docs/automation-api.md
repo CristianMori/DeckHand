@@ -315,3 +315,13 @@ async function ask(hubId, text) {
 const s = await call('POST', '/api/sessions', { cwd: 'C:\\DataDrive\\proj', wait: true });
 console.log(await ask(s.hubId, 'What does this repo do? Two sentences.'));
 ```
+
+## Files
+
+Every hub exposes the tree under its projects root. Paths are relative to that root and cannot escape it.
+
+| Endpoint | Body / query | Notes |
+|---|---|---|
+| `GET /api/files?path=<rel>&machine=<m>` | – | directory listing `{machine, root, path, entries:[{name,dir,size,mtime}]}`; forwarded to the named machine |
+| `GET /api/files/raw?path=<rel>` | – | raw bytes of one file on the hub you are talking to (attachment) |
+| `POST /api/files/copy?machine=<target>` | `{fromMachine, fromPath, toMachine, toDir, overwrite}` | runs on the target machine, which pulls the file from the source hub; single files only |

@@ -248,6 +248,23 @@ button {
 .hd-check { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: none; letter-spacing: 0; margin-top: 8px; cursor: pointer; }
 .hd-check input { width: auto; margin: 0; }
 
+/* ── file browser ── */
+.fb-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-height: 30px; font-size: 11px; color: var(--ink-dim); }
+.fb-crumb { background: none; border: none; color: var(--amber); cursor: pointer; font: inherit; padding: 2px 4px; }
+.fb-crumb:hover { text-decoration: underline; }
+.fb-list { max-height: 46vh; overflow: auto; }
+.fb-row { display: flex; align-items: center; gap: 10px; }
+.fb-row.dir { cursor: pointer; }
+.fb-row .fb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-row .fb-meta { color: var(--ink-faint); font-size: 10.5px; white-space: nowrap; }
+.fb-row .fb-actions { display: flex; gap: 6px; flex: none; }
+.fb-row .fb-actions button { padding: 3px 8px; font-size: 9px; }
+.fb-copy { border: 1px solid var(--line-bright); border-radius: 3px; padding: 10px 12px; margin-top: 10px; }
+.fb-copy-name { display: block; font-size: 11.5px; color: var(--ink); margin-bottom: 4px; }
+.fb-check { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-dim); margin-top: 6px; }
+.fb-check input { width: auto; }
+.fb-status { font-size: 11px; color: var(--ink-dim); margin-top: 6px; min-height: 14px; }
+
 /* small rectangles shared by cards and tabs: LOCAL marker and model name */
 .tag {
   font-family: var(--font-display); font-size: 8px; letter-spacing: 0.16em;
