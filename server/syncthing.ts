@@ -5,7 +5,11 @@ import { DATA_DIR, PROJECTS_ROOT } from './config.js';
 
 const SYNC_CONFIG = join(DATA_DIR, 'sync.json');
 
-/** Ignore patterns written into every synced folder — heavy, regenerable dirs. */
+/**
+ * Ignore patterns written into every synced folder — heavy, regenerable dirs
+ * and build output. Never .git: fleet sessions work inside these folders and
+ * need the history on every machine.
+ */
 const DEFAULT_IGNORES = [
   'node_modules',
   '.venv',
@@ -14,6 +18,17 @@ const DEFAULT_IGNORES = [
   'dist',
   '(?d).DS_Store',
   '(?d)Thumbs.db',
+  // build artifacts: .NET output alone was rewriting gigabytes per build
+  'bin',
+  'obj',
+  '.vs',
+  '.idea',
+  'TestResults',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '*.pyc',
+  '*.user',
 ];
 
 interface SyncEndpoint {

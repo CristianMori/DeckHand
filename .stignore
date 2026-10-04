@@ -5,3 +5,13 @@ __pycache__
 dist
 (?d).DS_Store
 (?d)Thumbs.db
+bin
+obj
+.vs
+.idea
+TestResults
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.pyc
+*.user
