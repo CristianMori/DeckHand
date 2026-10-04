@@ -7,6 +7,7 @@ import * as pty from '@lydell/node-pty';
 import type { Terminal as HeadlessTerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import { agentFor, getAgent } from './agents/index.js';
+import { fleetBriefing, identityEnv, type Identity } from './etiquette.js';
 
 // @xterm packages ship CJS without named ESM exports
 const require = createRequire(import.meta.url);
@@ -131,6 +132,8 @@ export class HubSession {
  */
 export class SessionManager extends EventEmitter {
   sessions = new Map<string, HubSession>();
+  /** who this hub is, for the briefing every session receives (set by the hub at boot) */
+  identity: { machine: string; hubUrl: string } = { machine: 'this machine', hubUrl: 'http://127.0.0.1:5959' };
   /** agent id -> resolved executable (install paths move on updates; resolve once) */
   private exeCache = new Map<string, string>();
 
@@ -175,6 +178,14 @@ export class SessionManager extends EventEmitter {
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean) {
     const adapter = agentFor(session);
+    const identity: Identity = {
+      hubId: session.hubId,
+      conversationId: session.claudeSessionId,
+      machine: this.identity.machine,
+      engine: session.agentType,
+      cwd: session.cwd,
+      hubUrl: this.identity.hubUrl,
+    };
     adapter.beforeSpawn?.(session.cwd);
     const args = adapter.buildArgs({
       sessionId: session.claudeSessionId,
@@ -184,6 +195,7 @@ export class SessionManager extends EventEmitter {
       model: session.model,
       permissionMode: session.permissionMode,
       initialPrompt,
+      briefing: fleetBriefing(identity),
     });
 
     const proc = pty.spawn(this.exeFor(session.agentType), args, {
@@ -191,7 +203,7 @@ export class SessionManager extends EventEmitter {
       cols: session.cols,
       rows: session.rows,
       cwd: session.cwd,
-      env: { ...process.env } as Record<string, string>,
+      env: { ...process.env, ...identityEnv(identity) } as Record<string, string>,
       useConpty: true,
     });
     session.proc = proc;

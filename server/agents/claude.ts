@@ -157,13 +157,14 @@ export const claudeAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt }) {
+  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing }) {
     const args: string[] = [];
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
     args.push('-n', name, '--settings', HOOKS_JSON);
     if (permissionMode) args.push('--permission-mode', permissionMode);
     if (model) args.push('--model', model);
+    if (briefing) args.push('--append-system-prompt', briefing);
     if (initialPrompt) args.push(initialPrompt);
     return args;
   },

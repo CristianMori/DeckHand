@@ -303,10 +303,12 @@ export const codexAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, cwd, model, permissionMode, initialPrompt }) {
+  buildArgs({ sessionId, resume, cwd, model, permissionMode, initialPrompt, briefing }) {
     const args: string[] = [];
     if (resume) args.push('resume', sessionId);
     args.push('--dangerously-bypass-hook-trust', '-C', cwd);
+    // fleet identity + etiquette as developer instructions (TOML basic string)
+    if (briefing) args.push('-c', `developer_instructions=${JSON.stringify(briefing)}`);
     // "local/<id>" selects a model served by the machine's llama-server router
     // (provider [model_providers.llamacpp] in ~/.codex/config.toml). Local
     // sessions run without Codex's Windows sandbox: it cannot start processes

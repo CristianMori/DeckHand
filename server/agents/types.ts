@@ -18,6 +18,8 @@ export interface BuildArgsInput {
   model?: string;
   permissionMode?: string;
   initialPrompt?: string;
+  /** fleet identity + etiquette, delivered as extra system/developer instructions */
+  briefing?: string;
 }
 
 export interface TranscriptRef {

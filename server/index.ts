@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { basename, join } from 'node:path';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
+import { FLEET_RULES } from './etiquette.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
 import { agentFor, getAgent, listAgents } from './agents/index.js';
@@ -355,7 +356,10 @@ app.use(
   }),
 );
 
-app.post('/api/hook', makeHookHandler(manager, engine));
+app.post('/api/hook', makeHookHandler(manager, engine, () => mergedList()));
+
+/** The etiquette every fleet session is briefed with (level 1), for humans and agents to read. */
+app.get('/api/etiquette', (_req, res) => res.type('text/plain').send(FLEET_RULES));
 
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
@@ -1263,6 +1267,9 @@ function listen(port: number, attemptsLeft: number) {
   // that is not loopback, tailnet or a token-bearing LAN caller.
   httpServer.listen(port, '0.0.0.0', () => {
     actualPort = port;
+    manager.identity = { machine: discovery.selfName, hubUrl: `http://127.0.0.1:${port}` };
+    // the tailnet name arrives with the first discovery tick; keep the briefing current
+    setTimeout(() => (manager.identity.machine = discovery.selfName), 5_000).unref();
     writeHooksJson(port);
     discovery.start();
     loadApiToken();

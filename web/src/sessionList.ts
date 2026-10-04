@@ -42,10 +42,11 @@ export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
     const rank = rankOf(a) - rankOf(b);
     if (rank !== 0) return rank;
     if (rankOf(a) === 0) return a.stateSince - b.stateSince; // oldest wait first
-    // within working and within idle: the card that entered the state most
-    // recently sits at the top of its band, so a session that just finished
-    // lands right under the working ones and pushes the older idle ones down
-    if (rankOf(a) === 1 || rankOf(a) === 2) return b.stateSince - a.stateSince;
+    // within working, idle and exited: the card that entered the state most
+    // recently sits at the top of its band — a session that just finished
+    // lands right under the working ones, a session that just exited lands
+    // right under the idle ones, each pushing its older siblings down one
+    if (rankOf(a) >= 1 && rankOf(a) <= 3) return b.stateSince - a.stateSince;
     return b.createdAt - a.createdAt;
   });
 }

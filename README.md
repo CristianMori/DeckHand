@@ -154,6 +154,28 @@ yes answer in `~/.codex/config.toml` beforehand, the same way pressing Yes does.
 Alerts fire only after a state persists 1.5 s. They reach every connected
 dashboard (chime + tab badge). There are deliberately no desktop toasts.
 
+### Fleet etiquette
+
+Several agents work side by side in a fleet, so each one is told where it is
+and how to behave towards the others.
+
+- **Briefing (level 1).** Every session the hub spawns is told, as extra
+  system instructions, that it is a Deckhand fleet session, its hub id,
+  conversation id, engine, machine and folder, and the rules: your folder is
+  yours, another live session's folder is theirs, talk to other sessions only
+  through the `deckhand-agent` MCP tools, agree a change before making it in
+  someone else's code. Claude Code receives it via `--append-system-prompt`,
+  Codex via `developer_instructions`. The same identity is in the process
+  environment as `DECKHAND_SESSION`, `DECKHAND_CONVERSATION`,
+  `DECKHAND_MACHINE`, `DECKHAND_ENGINE`, `DECKHAND_FOLDER`,
+  `DECKHAND_HUB_URL`. The rules text is served at `GET /api/etiquette`.
+- **Warning (level 2).** The PreToolUse hook the hub already injects answers
+  an edit (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Codex
+  `apply_patch`) that lands in a project folder owned by *another live
+  session* with a warning, delivered to the agent as additional context and
+  to the user as a system message. Nothing is blocked: the agent is told
+  whose folder it is and which hub id to talk to, and decides.
+
 ---
 
 ## Requirements
@@ -251,8 +273,12 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
 ### Dashboard
 
 - **Cards** (left) — every session in the fleet, machine-tagged, sorted by
-  urgency: WAITING first, then IDLE, WORKING, EXITED. Cards show elapsed
-  time in state and the last assistant message.
+  urgency: WAITING first, then WORKING, IDLE, EXITED, with unreachable
+  machines' cards at the bottom. Inside the working, idle and exited bands
+  the card that entered the state most recently is on top, so a session that
+  just finished sits right under the working ones and one that just exited
+  sits right under the idle ones. Cards show elapsed time in state and the
+  last assistant message.
 - **Terminal tabs** (right) — click a card to open its terminal as a tab.
   `–` (or middle-click) closes the tab and leaves the session running; `×`
   ends the session (it stays resumable). On another machine's session,

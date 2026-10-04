@@ -199,6 +199,7 @@ each tagged with `machine`).
 | `GET /api/agents?machine=X` | engines on X: `{id,label,available,models,permissionModes,canResume}` |
 | `GET /api/projects?machine=X` | project folders on X: `[{name,path}]` |
 | `GET /api/fleet-folders` | every folder across the fleet with its resumable conversations |
+| `GET /api/etiquette` | the fleet rules every spawned session is briefed with (plain text) |
 | `POST /api/fleet-resume` | `{folder, agentType, claudeSessionId, sourceMachine?, machine?}` → `{jobId, machine}`; poll `GET /api/fleet-resume/:jobId?machine=` until `phase:"done"` with `session` — resumes a conversation on any machine, syncing the folder there first |
 | `POST /api/sessions/:id/handoff` | `{targetAgent, targetMachine?, targetFolder?|newFolder?, askBrief, includeDialogue}` → `{jobId}`; poll `GET /api/handoff/:jobId?machine=` — continue the work with the *other* engine (brief + dialogue dropped into `.deckhand/handoff.md`) |
 
@@ -295,6 +296,12 @@ poll GET /api/fleet-resume/{jobId}?machine=vps-node until phase=="done" → .ses
   applies to EXITED cards.
 - Codex sessions mint their own id: `claudeSessionId` starts as `pending-…`
   for a second or two after creation until the first hook binds it.
+- Sessions are briefed on fleet etiquette at spawn (see README, *Fleet
+  etiquette*): another live session's folder is not theirs to edit without
+  agreeing it first. If you drive a session into editing a folder that
+  another live session owns, that session receives a warning from the hub and
+  may stop to ask. Agree the change with the owning session (`prompt`, then
+  `exchanges?n=1`) before asking for it.
 
 ## 8. Minimal client (Node 18+)
 
