@@ -135,6 +135,41 @@ export class SyncManager {
    * VPS, VPS folder entry (path <folderRoot>/<id>, staggered versioning)
    * sharing back. Idempotent; used both for first-push and for pull-to-here.
    */
+  /**
+   * Bring every folder this machine syncs up to the current DEFAULT_IGNORES.
+   * Append-only: patterns someone added by hand are kept, patterns missing
+   * from the defaults are added, nothing is removed. Runs at every hub boot,
+   * so an ignore rule shipped in a release reaches each machine as it takes
+   * the update. Only folders under the projects root are touched.
+   */
+  async reconcileIgnores(): Promise<{ folder: string; added: string[] }[]> {
+    const changed: { folder: string; added: string[] }[] = [];
+    const root = PROJECTS_ROOT.replace(/[\\/]+$/, '').toLowerCase();
+    const folders = await rest<StFolder[]>(this.cfg.local, 'GET', '/rest/config/folders');
+    for (const f of folders) {
+      const p = (f.path ?? '').replace(/[\\/]+$/, '').toLowerCase();
+      if (!p.startsWith(root)) continue;
+      try {
+        const cur = await rest<{ ignore?: string[] }>(
+          this.cfg.local,
+          'GET',
+          `/rest/db/ignores?folder=${encodeURIComponent(f.id)}`,
+        );
+        const have = new Set((cur.ignore ?? []).map((l) => l.trim()));
+        const added = DEFAULT_IGNORES.filter((d) => !have.has(d));
+        if (added.length === 0) continue;
+        await rest(this.cfg.local, 'POST', `/rest/db/ignores?folder=${encodeURIComponent(f.id)}`, {
+          ignore: [...(cur.ignore ?? []), ...added],
+        });
+        await rest(this.cfg.local, 'POST', `/rest/db/scan?folder=${encodeURIComponent(f.id)}`).catch(() => {});
+        changed.push({ folder: f.id, added });
+      } catch (err) {
+        console.warn(`[sync] ignore reconcile failed for ${f.id}: ${err}`);
+      }
+    }
+    return changed;
+  }
+
   /** Set ignore patterns through the API — reliable even before the first scan. */
   private async setIgnores(ep: SyncEndpoint, folderId: string): Promise<void> {
     await rest(ep, 'POST', `/rest/db/ignores?folder=${encodeURIComponent(folderId)}`, {

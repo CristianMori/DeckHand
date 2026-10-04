@@ -71,6 +71,19 @@ const updater = new Updater(VERSION, federation, selfRef);
 new TranscriptPusher(federation, selfRef);
 
 let sync: SyncManager | null = createSyncManager();
+
+/** Ignore rules shipped in a release propagate on boot: every synced folder is topped up. */
+function reconcileIgnoresSoon(m: SyncManager, delayMs: number) {
+  setTimeout(() => {
+    m.reconcileIgnores()
+      .then((changed) => {
+        if (changed.length === 0) return console.log('[sync] ignore rules up to date on all folders');
+        for (const c of changed) console.log(`[sync] ${c.folder}: added ignore rules ${c.added.join(', ')}`);
+      })
+      .catch((err) => console.warn(`[sync] ignore reconcile skipped: ${err}`));
+  }, delayMs).unref();
+}
+if (sync) reconcileIgnoresSoon(sync, 20_000);
 // machines without a data/sync.json learn the VPS endpoint from a fleet peer
 const syncBootstrapTimer = setInterval(() => {
   if (sync) return clearInterval(syncBootstrapTimer);
@@ -86,7 +99,10 @@ const syncBootstrapTimer = setInterval(() => {
     }
     return null;
   }).then((m) => {
-    if (m) sync = m;
+    if (m) {
+      sync = m;
+      reconcileIgnoresSoon(m, 5_000);
+    }
   });
 }, 60_000);
 syncBootstrapTimer.unref();
@@ -692,6 +708,27 @@ app.get('/api/projects', async (req, res) => {
 });
 
 // ---------------------------------------------------------- Fleet folders & sync
+
+/** Force the ignore-rule top-up now (it also runs at every boot). */
+app.post('/api/sync/reconcile', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, '/api/sync/reconcile', { method: 'POST' });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  if (!sync) return res.status(503).json({ error: 'sync not configured on this machine' });
+  try {
+    res.json({ machine: discovery.selfName, changed: await sync.reconcileIgnores() });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 app.get('/api/sync/config', (_req, res) => {
   if (!sync) return res.status(404).json({ error: 'sync not configured on this machine' });
