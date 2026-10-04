@@ -2,10 +2,11 @@ import { EventEmitter } from 'node:events';
 import { agentFor } from './agents/index.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { SessionState } from './types.js';
-import { SIG_OUTPUT } from './types.js';
+import { SIG_HOOK, SIG_OUTPUT } from './types.js';
 
 const HIGHER_SIGNAL_SHIELD_MS = 3000; // lower-precedence signals can't override within this window
 const ALERT_DEBOUNCE_MS = 1500; // state must persist this long before alerting
+const QUIET_IDLE_MS = 120_000; // a WORKING card with a silent PTY this long is idle
 
 const ALERT_STATES: SessionState[] = ['WAITING_QUESTION', 'WAITING_PERMISSION', 'IDLE'];
 
@@ -37,6 +38,24 @@ export class StatusEngine extends EventEmitter {
       }
     });
     manager.on('exit', (session: HubSession) => this.clearAlert(session.hubId));
+
+    // Backstop for agents that announce the start of work but not its end
+    // (a resumed Claude Code session fires no hook until its first prompt and
+    // sat WORKING for hours). A busy TUI repaints constantly; a WORKING card
+    // whose PTY has been silent for QUIET_IDLE_MS, with no hook in that time,
+    // is idle whatever the last signal said.
+    const quiet = setInterval(() => {
+      const now = Date.now();
+      for (const session of manager.sessions.values()) {
+        if (!session.proc || (session.state !== 'WORKING' && session.state !== 'STARTING')) continue;
+        if (now - session.stateSince < QUIET_IDLE_MS) continue;
+        if (now - (session.lastOutputAt || 0) < QUIET_IDLE_MS) continue;
+        const lastHook = session.lastSignalAt[SIG_HOOK] ?? 0;
+        if (now - lastHook < QUIET_IDLE_MS) continue;
+        this.signal(session, SIG_OUTPUT, 'IDLE', 'quiet');
+      }
+    }, 15_000);
+    quiet.unref();
   }
 
   /**

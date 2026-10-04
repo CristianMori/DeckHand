@@ -418,13 +418,30 @@ app.post('/api/sessions', async (req, res) => {
   res.json(await turnResult(session, initialPrompt, timedOut));
 });
 
+/** A live session whose conversation id starts with `prefix` (8+ chars), if exactly one matches. */
+function byConversationPrefix(prefix: string): HubSession | undefined {
+  if (prefix.length < 8) return undefined;
+  const hits = [...manager.sessions.values()].filter((s) => s.claudeSessionId.startsWith(prefix));
+  const live = hits.filter((s) => s.proc);
+  const pool = live.length ? live : hits;
+  return pool.length === 1 ? pool[0] : undefined;
+}
+
 /** Route a per-session action to this hub or the owning peer. */
 function sessionAction(
   local: (id: string, req: express.Request, res: express.Response) => void,
 ): express.RequestHandler {
   return async (req, res) => {
-    const id = String(req.params.id);
+    let id = String(req.params.id);
     if (manager.sessions.get(id)) return local(id, req, res);
+    // hub ids change on every hub restart and migration; the agent's own
+    // conversation id does not — accept it (or a unique prefix) so automation
+    // keeps a stable handle on a session
+    const byConv = manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+    if (byConv) {
+      id = byConv.hubId;
+      return local(id, req, res);
+    }
     const peer = federation.peerBySession(id);
     if (!peer) return res.status(404).json({ error: 'unknown session' });
     try {

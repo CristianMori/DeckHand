@@ -123,6 +123,9 @@ Notes:
   Pass `"force": true` if you really want two.
 - Without `initialPrompt`, `wait` just waits until the TUI is idle.
 
+
+> Session routes accept the hub id **or** the agent's own conversation id (any unique prefix of 8+ characters). Hub ids change on every hub restart or migration; the conversation id does not, so automation should store that one.
+
 ### Send a prompt — `POST /api/sessions/:id/prompt`
 
 ```json
