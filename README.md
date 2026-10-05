@@ -58,10 +58,14 @@ when any session on any machine needs a human.
   folder. From then on it syncs continuously (file-watch, seconds) to the
   home machine, which keeps the canonical copy plus 30 days of per-file
   version history.
-- **Durable conversation store.** Every hub continuously pushes transcripts
-  to the home machine. Conversations outlive their origin machine, local
-  retention cleanup, and folder moves — the resume dialog backfills from the
-  store when no machine can offer a copy.
+- **Durable conversation store.** Every hub pushes transcripts to the home
+  machine. Conversations outlive their origin machine, local retention
+  cleanup, and folder moves — the resume dialog backfills from the store when
+  no machine can offer a copy. Transcripts are append-only, so only the new
+  bytes travel (gzipped, verified by size + sha256, whole file as fallback);
+  a live session's transcript goes at most every 10 minutes and right when
+  the session goes idle or exits, and one sweep sends at most 32 MB
+  (`HUB_TSTORE_SWEEP_MB`).
 - **Fleet auto-update.** Publish a build to the home machine; every hub sees
   it and updates itself from the ADMIN panel (or its 6-hour self-check).
   Dev checkouts (build 0) never auto-update.

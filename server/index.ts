@@ -25,6 +25,8 @@ import { createSyncManager, bootstrapSyncConfig, type SyncManager } from './sync
 import { loadVersionInfo } from './version.js';
 import { Updater } from './updater.js';
 import {
+  storeMeta,
+  applyUpload,
   STORE_MACHINE,
   TranscriptPusher,
   saveToStore,
@@ -69,7 +71,13 @@ const selfRef = {
   baseUrl: () => `http://127.0.0.1:${actualPort}`,
 };
 const updater = new Updater(VERSION, federation, selfRef);
-new TranscriptPusher(federation, selfRef);
+const pusher = new TranscriptPusher(federation, selfRef, {
+  isLive: (id) => !!manager.byClaudeSessionId(id)?.proc,
+});
+// a session that went idle or exited gets its transcript pushed right away
+manager.on('change', (session: HubSession) => {
+  if (session.state === 'IDLE' || session.state === 'EXITED') pusher.nudge(session.claudeSessionId);
+});
 
 let sync: SyncManager | null = createSyncManager();
 
@@ -304,21 +312,35 @@ app.post(
 
 // Durable conversation store (lives on STORE_MACHINE, normally vps-node).
 // Push route takes raw bytes — registered before the JSON body parser.
+// Bodies may be gzipped (Content-Encoding) — express.raw inflates them. A
+// request carrying size+sha256 is a verified whole-file or append-only delta
+// upload (see applyUpload); without them it is a legacy whole-file push.
 app.post(
   '/api/tstore/:folder/:id',
-  express.raw({ type: () => true, limit: '200mb' }),
+  express.raw({ type: () => true, limit: '400mb', inflate: true }),
   async (req, res) => {
     const mtime = Number(req.query.mtime);
     if (!Number.isFinite(mtime)) return res.status(400).json({ error: 'mtime required' });
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const agent = typeof req.query.agent === 'string' ? req.query.agent : undefined;
+    const folder = String(req.params.folder);
+    const id = String(req.params.id);
     try {
-      const out = await saveToStore(
-        String(req.params.folder),
-        String(req.params.id),
-        Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
-        mtime,
-        typeof req.query.agent === 'string' ? req.query.agent : undefined,
-      );
-      res.json(out);
+      if (typeof req.query.size === 'string' && typeof req.query.sha256 === 'string') {
+        const out = await applyUpload(folder, id, agent, {
+          offset: Number(req.query.offset) || 0,
+          size: Number(req.query.size),
+          sha256: req.query.sha256,
+          mtime,
+          body,
+        });
+        if (!out.stored && (out.reason === 'offset-mismatch' || out.reason === 'hash-mismatch' || out.reason === 'size-mismatch')) {
+          console.log(`[tstore] ${folder}/${id.slice(0, 8)}: rejected ${out.reason} (have ${out.size} bytes)`);
+          return res.status(409).json(out);
+        }
+        return res.json(out);
+      }
+      res.json(await saveToStore(folder, id, body, mtime, agent));
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -326,6 +348,21 @@ app.post(
 );
 
 app.get('/api/tstore', async (_req, res) => res.json(await storeCatalog()));
+
+/** What the store holds for one transcript (size, mtime, sha256) — the pusher's delta base. */
+app.get('/api/tstore/:folder/:id/meta', async (req, res) => {
+  try {
+    res.json(
+      await storeMeta(
+        String(req.params.folder),
+        String(req.params.id),
+        typeof req.query.agent === 'string' ? req.query.agent : undefined,
+      ),
+    );
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 app.get('/api/tstore/:folder/:id', (req, res) => {
   const path = storeFilePath(
