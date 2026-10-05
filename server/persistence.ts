@@ -15,6 +15,10 @@ export interface PersistedSession {
   /** the process was running when this was written — restored on the next boot */
   alive?: boolean;
   autoYes?: boolean;
+  /** when the card entered its current state — keeps the sidebar order across restarts */
+  stateSince?: number;
+  /** when this file was written; a card alive then is "exited since" this moment */
+  savedAt?: number;
 }
 
 export function loadPersisted(): PersistedSession[] {
@@ -27,6 +31,7 @@ export function loadPersisted(): PersistedSession[] {
 }
 
 export function savePersisted(manager: SessionManager) {
+  const now = Date.now();
   const records: PersistedSession[] = [...manager.sessions.values()].map((s) => ({
     agentType: s.agentType,
     claudeSessionId: s.claudeSessionId,
@@ -39,6 +44,8 @@ export function savePersisted(manager: SessionManager) {
     handoff: s.handoff,
     alive: s.proc !== null,
     autoYes: s.autoYes,
+    stateSince: s.stateSince,
+    savedAt: now,
   }));
   try {
     writeFileSync(PERSIST_FILE, JSON.stringify(records, null, 2));

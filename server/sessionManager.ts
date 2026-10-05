@@ -301,6 +301,9 @@ export class SessionManager extends EventEmitter {
     summary?: string;
     createdAt?: number;
     handoff?: HandoffLineage;
+    alive?: boolean;
+    stateSince?: number;
+    savedAt?: number;
   }) {
     const session = new HubSession({
       cwd: rec.cwd,
@@ -313,6 +316,10 @@ export class SessionManager extends EventEmitter {
     });
     session.state = 'EXITED';
     session.detail = 'hub restarted';
+    // a card that was running when the hub went down exited at that moment;
+    // one that was already EXITED keeps its original exit time — so the
+    // sidebar's "most recently exited first" order survives the restart
+    session.stateSince = rec.alive ? (rec.savedAt ?? Date.now()) : (rec.stateSince ?? rec.createdAt ?? Date.now());
     session.summary = rec.summary;
     if (rec.createdAt) session.createdAt = rec.createdAt;
     this.sessions.set(session.hubId, session);
