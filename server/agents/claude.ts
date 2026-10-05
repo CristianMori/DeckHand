@@ -227,6 +227,14 @@ export const claudeAdapter: AgentAdapter = {
   },
 
   outputWaitingRegex: OUTPUT_WAITING_REGEX,
+  screenActivity: (screen) => {
+    const tail = screen.split('\n').slice(-14);
+    // "✻ Kerfuffling… (3m 40s · ↓ 7.9k tokens)" / "… (esc to interrupt)"
+    if (tail.some((l) => /…\s*\([^)]*(?:tokens|esc to interrupt|\d+[smh]\b)[^)]*\)/.test(l))) return 'working';
+    // an empty composer with nothing above it running
+    if (tail.some((l) => /^\s?[>›]\s*$/.test(l))) return 'idle';
+    return null;
+  },
   acceptKeystroke: '\r',
   isProtectedPrompt: (screen) => PLAN_EXIT_MARKER.test(screen),
 

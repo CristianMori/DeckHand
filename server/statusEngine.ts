@@ -4,7 +4,8 @@ import type { HubSession, SessionManager } from './sessionManager.js';
 import type { SessionState } from './types.js';
 import { SIG_HOOK, SIG_OUTPUT } from './types.js';
 
-const HIGHER_SIGNAL_SHIELD_MS = 3000; // lower-precedence signals can't override within this window
+const HIGHER_SIGNAL_SHIELD_MS = 3000;
+const SETTLE_MS = 1200; // output burst must be over this long before the screen is read // lower-precedence signals can't override within this window
 const ALERT_DEBOUNCE_MS = 1500; // state must persist this long before alerting
 const QUIET_IDLE_MS = 120_000; // a WORKING card with a silent PTY this long is idle
 
@@ -17,6 +18,27 @@ const ALERT_STATES: SessionState[] = ['WAITING_QUESTION', 'WAITING_PERMISSION', 
  */
 export class StatusEngine extends EventEmitter {
   private alertTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private scheduleSettle(session: HubSession) {
+    const prev = this.settleTimers.get(session.hubId);
+    if (prev) clearTimeout(prev);
+    this.settleTimers.set(
+      session.hubId,
+      setTimeout(() => {
+        this.settleTimers.delete(session.hubId);
+        if (!session.proc || session.hooksSeen) return;
+        let activity: 'working' | 'idle' | null = null;
+        try {
+          activity = agentFor(session).screenActivity?.(session.screenText()) ?? null;
+        } catch {
+          /* mirror mid-resize */
+        }
+        if (activity === 'idle') this.signal(session, SIG_OUTPUT, 'IDLE', 'ready');
+        else this.signal(session, SIG_OUTPUT, 'WORKING');
+      }, SETTLE_MS),
+    );
+  }
 
   constructor(private manager: SessionManager) {
     super();
@@ -34,7 +56,10 @@ export class StatusEngine extends EventEmitter {
         // when hook delivery is broken on a machine — output is proof of life
         (session.state !== 'STARTING' || Date.now() - session.createdAt > 15_000)
       ) {
-        this.signal(session, SIG_OUTPUT, 'WORKING');
+        // Output alone is not work: a resize or an opened tab repaints the whole
+        // screen. Let the burst settle, then read the screen the TUI drew — its
+        // activity line means WORKING, an empty composer means IDLE.
+        this.scheduleSettle(session);
       }
     });
     manager.on('exit', (session: HubSession) => this.clearAlert(session.hubId));

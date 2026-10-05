@@ -390,6 +390,12 @@ export const codexAdapter: AgentAdapter = {
   // a resumed session paints its composer and then fires no hook until the
   // first prompt — without this it would sit at STARTING
   outputIdleRegex: /Ask Codex to do anything/,
+  screenActivity: (screen) => {
+    const tail = screen.split('\n').slice(-14);
+    if (tail.some((l) => /\(\s*\d+[smh]\s*[•·].*(?:interrupt|esc)|esc to interrupt/i.test(l))) return 'working';
+    if (tail.some((l) => /Ask Codex to do anything|^\s?›\s*$/.test(l))) return 'idle';
+    return null;
+  },
   acceptKeystroke: '\r',
 
   transcript: {

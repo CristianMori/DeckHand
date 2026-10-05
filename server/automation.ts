@@ -112,11 +112,5 @@ export async function replyTo(session: HubSession, prompt: string): Promise<stri
 
 /** The screen as plain text: the visible rows plus `scrollback` lines above. */
 export function screenText(session: HubSession, scrollback = 0): string {
-  const mirror = session.mirror;
-  if (!mirror) return '';
-  const buf = mirror.buffer.active;
-  const from = Math.max(0, buf.length - mirror.rows - Math.max(0, scrollback));
-  const lines: string[] = [];
-  for (let i = from; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '');
-  return lines.join('\n').replace(/\s+$/, '');
+  return session.screenText(scrollback);
 }

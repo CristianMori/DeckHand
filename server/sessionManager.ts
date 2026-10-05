@@ -117,6 +117,17 @@ export class HubSession {
     }
   }
 
+  /** The visible screen (plus optional scrollback rows) as plain text, bottom row last. */
+  screenText(scrollback = 0): string {
+    const mirror = this.mirror;
+    if (!mirror) return '';
+    const buf = mirror.buffer.active;
+    const from = Math.max(0, buf.length - mirror.rows - Math.max(0, scrollback));
+    const lines: string[] = [];
+    for (let i = from; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+    return lines.join('\n').replace(/\s+$/, '');
+  }
+
   /** Exact current screen state (incl. colors, cursor, alt-screen) as an ANSI stream. */
   snapshot(): string {
     try {

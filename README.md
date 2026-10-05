@@ -145,7 +145,11 @@ Four signals fused with precedence (higher wins, 3-second shield):
    conversation id; the SessionStart hook reports it and the hub binds it to
    the card it just launched.
 3. `~/.claude/sessions/*.json` watcher — Claude Code's own status feed.
-4. Output heuristics — fallback until the first hook arrives; each agent
+4. Output heuristics — fallback until the first hook arrives (a resumed
+   session fires none until its first prompt). Output alone is not work: a
+   resize or an opened tab repaints the whole screen. Once a burst settles the
+   hub reads the screen the TUI drew — its activity line ("✻ Thinking… (12s ·
+   tokens)") means WORKING, an empty composer means IDLE — and each agent
    contributes its own prompt patterns.
 
 Codex conversations are found through the `threads` table of

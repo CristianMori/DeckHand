@@ -92,6 +92,14 @@ export interface AgentAdapter {
   outputWaitingRegex?: RegExp;
   /** the agent's idle composer, for agents that fire no hook on resume */
   outputIdleRegex?: RegExp;
+  /**
+   * Read the rendered screen (plain text, bottom rows last) once output has
+   * settled: 'working' when the TUI shows its activity line, 'idle' when it
+   * shows an empty composer and nothing running, null when unsure. Used until
+   * the first hook arrives, so a repaint (resize, tab opened) is not mistaken
+   * for work.
+   */
+  screenActivity?(screen: string): 'working' | 'idle' | null;
   /** keystroke that accepts the highlighted default of a permission prompt */
   acceptKeystroke: string;
   /** prompts auto-yes must leave to a human (screen text test) */
