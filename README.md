@@ -417,7 +417,7 @@ unit on Linux).
 | `HUB_URL` | probe localhost | `deckhand` CLI: explicit hub address |
 
 `data/` contents: `hub-hooks.json` (generated hook settings injected into
-sessions), `hub-sessions.json` (resume records for EXITED cards),
+sessions), `hub-sessions.json` (resume records for EXITED cards; sessions that were running when the hub went down are relaunched at the next boot, a couple of seconds apart — `HUB_RESTORE=0` turns that off),
 `sync.json` (Syncthing endpoints — contains API keys, never commit),
 `api-token` (the LAN bearer token — same rule),
 `drops/` (drag-and-drop uploads), `hub.log` (launcher-captured output),

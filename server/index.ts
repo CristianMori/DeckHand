@@ -116,7 +116,45 @@ const syncBootstrapTimer = setInterval(() => {
 }, 60_000);
 syncBootstrapTimer.unref();
 
-for (const rec of loadPersisted()) manager.addExitedRecord(rec);
+// Cards from the previous run come back as EXITED; the ones that were running
+// when the hub went down are relaunched once we listen (restoreSessions).
+const toRestore: HubSession[] = [];
+for (const rec of loadPersisted()) {
+  const s = manager.addExitedRecord(rec);
+  s.autoYes = !!rec.autoYes;
+  if (rec.alive) toRestore.push(s);
+}
+
+/**
+ * Relaunch the sessions that were live before the restart, one every couple
+ * of seconds so a dozen agents don't start at once. Skipped for a session
+ * whose engine is missing here, whose folder is gone, or whose conversation
+ * never got an id (an unbound Codex card). HUB_RESTORE=0 disables it.
+ */
+function restoreSessions() {
+  if (process.env.HUB_RESTORE === '0' || !toRestore.length) return;
+  const eligible = toRestore.filter((s) => {
+    if (s.claudeSessionId.startsWith('pending-')) return false;
+    if (!existsSync(s.cwd)) return false;
+    try {
+      return getAgent(s.agentType).available();
+    } catch {
+      return false;
+    }
+  });
+  console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
+  eligible.forEach((s, i) => {
+    setTimeout(() => {
+      if (s.proc || !manager.sessions.has(s.hubId)) return; // resumed by hand meanwhile, or removed
+      try {
+        manager.resume(s.hubId);
+        console.log(`[restore] resumed ${s.name} (${s.agentType}, ${s.claudeSessionId.slice(0, 8)})`);
+      } catch (err) {
+        console.error(`[restore] could not resume ${s.name}:`, err);
+      }
+    }, 1500 + i * 2500).unref();
+  });
+}
 
 /** Local sessions tagged with this machine's name — the shape peers rely on. */
 function localList(): SessionInfo[] {
@@ -218,6 +256,7 @@ app.post('/api/admin/check', async (req, res) => {
 
 app.post('/api/admin/update', (req, res) => {
   if (adminForward(req, res)) return;
+  savePersisted(manager); // which sessions are live right now — restored after the restart
   updater.apply().catch((err) => {
     updater.status.updating = false;
     updater.status.error = err instanceof Error ? err.message : String(err);
@@ -239,6 +278,7 @@ app.get('/api/admin/log', (req, res) => {
 
 app.post('/api/admin/restart', (req, res) => {
   if (adminForward(req, res)) return;
+  savePersisted(manager); // which sessions are live right now — restored after the restart
   res.json({ ok: true });
   setTimeout(() => {
     if (process.platform === 'win32' && !(process.env.DECKHAND_SERVICE || process.env.CLAUDEHUB_SERVICE)) {
@@ -1308,6 +1348,7 @@ function listen(port: number, attemptsLeft: number) {
     // the tailnet name arrives with the first discovery tick; keep the briefing current
     setTimeout(() => (manager.identity.machine = discovery.selfName), 5_000).unref();
     writeHooksJson(port);
+    restoreSessions();
     discovery.start();
     loadApiToken();
     if (LAN_ENABLED) {

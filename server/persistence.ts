@@ -12,6 +12,9 @@ export interface PersistedSession {
   summary?: string;
   createdAt: number;
   handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
+  /** the process was running when this was written — restored on the next boot */
+  alive?: boolean;
+  autoYes?: boolean;
 }
 
 export function loadPersisted(): PersistedSession[] {
@@ -34,6 +37,8 @@ export function savePersisted(manager: SessionManager) {
     summary: s.summary,
     createdAt: s.createdAt,
     handoff: s.handoff,
+    alive: s.proc !== null,
+    autoYes: s.autoYes,
   }));
   try {
     writeFileSync(PERSIST_FILE, JSON.stringify(records, null, 2));
