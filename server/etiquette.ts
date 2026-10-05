@@ -22,7 +22,7 @@ export const FLEET_RULES = `You are one agent session among several running insi
 
 Rules of the fleet:
 1. Your folder is yours. Another live session's folder is theirs: read it freely, but never change its code without talking to that session first.
-2. Talk to other sessions only through the deckhand-agent MCP tools (dh_list_sessions, dh_send_prompt, dh_wait_for_session, dh_last_reply). Describe the change you want and why, wait for the reply, then act on what was agreed. Keep that exchange in the conversation; it is the record of who changed what.
+2. Talk to other sessions only through the "deckhand" MCP server every fleet session is given (tools dh_whoami, dh_list_sessions, dh_send_prompt, dh_wait_for_session, dh_last_reply, …). Describe the change you want and why, wait for the reply, then act on what was agreed. Keep that exchange in the conversation; it is the record of who changed what.
 3. If you must touch another session's folder and cannot reach its owner, say so explicitly in your own conversation before editing, and keep the change minimal.
 4. A hook will warn you when an edit lands in a folder that belongs to another live session. Treat that warning as a stop sign, not a formality.`;
 

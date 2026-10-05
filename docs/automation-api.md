@@ -296,6 +296,9 @@ poll GET /api/fleet-resume/{jobId}?machine=vps-node until phase=="done" → .ses
   applies to EXITED cards.
 - Codex sessions mint their own id: `claudeSessionId` starts as `pending-…`
   for a second or two after creation until the first hook binds it.
+- A session spawned by the hub already has these routes as MCP tools (server
+  `deckhand`, tools `dh_*`, see README *Fleet etiquette*); an agent inside
+  the fleet should use those rather than raw HTTP.
 - Sessions are briefed on fleet etiquette at spawn (see README, *Fleet
   etiquette*): another live session's folder is not theirs to edit without
   agreeing it first. If you drive a session into editing a folder that

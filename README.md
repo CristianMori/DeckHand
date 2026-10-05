@@ -173,6 +173,19 @@ and how to behave towards the others.
   environment as `DECKHAND_SESSION`, `DECKHAND_CONVERSATION`,
   `DECKHAND_MACHINE`, `DECKHAND_ENGINE`, `DECKHAND_FOLDER`,
   `DECKHAND_HUB_URL`. The rules text is served at `GET /api/etiquette`.
+- **Reach (the `deckhand` MCP server).** Every spawned session is also handed
+  the hub's own MCP server, `mcp/deckhand-mcp.mjs` (stdio, no dependencies,
+  runs under the hub's node). Claude Code gets it through `--mcp-config`
+  (`data/hub-mcp.json`, next to the project's own `.mcp.json`), Codex
+  through `-c mcp_servers.deckhand.*`. Its tools mirror the RavenAgents
+  `deckhand-agent` server with the same names and camelCase parameters:
+  `dh_whoami`, `dh_list_sessions`, `dh_get_session`, `dh_read_screen`,
+  `dh_read_exchanges`, `dh_last_reply`, `dh_wait_for_session`,
+  `dh_send_prompt`, `dh_send_keys`, `dh_set_autoyes`, `dh_create_session`,
+  `dh_kill_session`, `dh_resume_session`, `dh_remove_session`,
+  `dh_fleet_resume`, `dh_handoff`, `dh_list_fleet`, `dh_list_agents`,
+  `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`.
+  It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
 - **Warning (level 2).** The PreToolUse hook the hub already injects answers
   an edit (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Codex
   `apply_patch`) that lands in a project folder owned by *another live

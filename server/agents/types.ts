@@ -20,6 +20,8 @@ export interface BuildArgsInput {
   initialPrompt?: string;
   /** fleet identity + etiquette, delivered as extra system/developer instructions */
   briefing?: string;
+  /** the hub's own MCP server (stdio), handed to the session so it can reach the fleet */
+  mcp?: { name: string; command: string; args: string[]; env: Record<string, string> };
 }
 
 export interface TranscriptRef {

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { DATA_DIR } from '../config.js';
 import {
   CLAUDE_PROJECTS_DIR,
   CLAUDE_SESSIONS_DIR,
@@ -11,6 +12,9 @@ import {
   encodeProjectDir,
 } from '../config.js';
 import type { AgentAdapter, StatusRecord, TranscriptRef, TranscriptTail } from './types.js';
+
+/** the hub's MCP server entry handed to every Claude session via --mcp-config */
+const MCP_JSON = join(DATA_DIR, 'hub-mcp.json');
 
 const OUTPUT_WAITING_REGEX = /Do you want|Would you like|❯\s*1\.|\(y\/n\)|Yes, and don't ask again/;
 // The plan-mode exit prompt is the one permission auto-yes never answers —
@@ -157,7 +161,7 @@ export const claudeAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing }) {
+  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing, mcp }) {
     const args: string[] = [];
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
@@ -165,6 +169,12 @@ export const claudeAdapter: AgentAdapter = {
     if (permissionMode) args.push('--permission-mode', permissionMode);
     if (model) args.push('--model', model);
     if (briefing) args.push('--append-system-prompt', briefing);
+    if (mcp) {
+      // the hub's MCP server rides along as an extra server; the project's own
+      // .mcp.json and the user's servers are untouched (no --strict-mcp-config)
+      writeFileSync(MCP_JSON, JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2));
+      args.push('--mcp-config', MCP_JSON);
+    }
     if (initialPrompt) args.push(initialPrompt);
     return args;
   },

@@ -303,12 +303,24 @@ export const codexAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, cwd, model, permissionMode, initialPrompt, briefing }) {
+  buildArgs({ sessionId, resume, cwd, model, permissionMode, initialPrompt, briefing, mcp }) {
     const args: string[] = [];
     if (resume) args.push('resume', sessionId);
     args.push('--dangerously-bypass-hook-trust', '-C', cwd);
     // fleet identity + etiquette as developer instructions (TOML basic string)
     if (briefing) args.push('-c', `developer_instructions=${JSON.stringify(briefing)}`);
+    // the hub's MCP server as an extra entry under [mcp_servers] (TOML via -c; JSON
+    // strings/arrays are valid TOML values)
+    if (mcp) {
+      args.push('-c', `mcp_servers.${mcp.name}.command=${JSON.stringify(mcp.command)}`);
+      args.push('-c', `mcp_servers.${mcp.name}.args=${JSON.stringify(mcp.args)}`);
+      // the hub's own tools need no per-call approval (an approval policy of
+      // "never" would otherwise refuse every call outright)
+      args.push('-c', `mcp_servers.${mcp.name}.default_tools_approval_mode="approve"`);
+      // TOML inline table; Codex starts MCP servers with a clean environment
+      const table = Object.entries(mcp.env).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(', ');
+      args.push('-c', `mcp_servers.${mcp.name}.env={ ${table} }`);
+    }
     // "local/<id>" selects a model served by the machine's llama-server router
     // (provider [model_providers.llamacpp] in ~/.codex/config.toml). Local
     // sessions run without Codex's Windows sandbox: it cannot start processes

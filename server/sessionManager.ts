@@ -1,12 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as pty from '@lydell/node-pty';
 import type { Terminal as HeadlessTerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import { agentFor, getAgent } from './agents/index.js';
+import { HUB_ROOT } from './config.js';
 import { fleetBriefing, identityEnv, type Identity } from './etiquette.js';
 
 // @xterm packages ship CJS without named ESM exports
@@ -196,6 +197,9 @@ export class SessionManager extends EventEmitter {
       permissionMode: session.permissionMode,
       initialPrompt,
       briefing: fleetBriefing(identity),
+      // the node running the hub runs the server too — no PATH lookup in a service session
+      // identity goes in explicitly: Codex does not hand its own environment to MCP servers
+      mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: identityEnv(identity) },
     });
 
     const proc = pty.spawn(this.exeFor(session.agentType), args, {
