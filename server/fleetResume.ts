@@ -34,6 +34,73 @@ export interface ResumeJob {
 
 const jobs = new Map<string, ResumeJob>();
 
+/**
+ * Make sure a conversation's transcript is on this machine, at the path the
+ * agent will look for it. Where a fresher copy may live, in order of
+ * preference: the source machine (if given and up), then the durable store on
+ * the store machine, then this machine's own store directory. The newest copy
+ * wins — a conversation that migrated away may have left a stale copy here.
+ * Returns the local path; throws when no copy exists anywhere reachable.
+ */
+export async function ensureTranscript(opts: {
+  folder: string;
+  localPath: string;
+  agentType: string;
+  claudeSessionId: string;
+  sourceMachine?: string;
+  selfName: string;
+  federation: Federation;
+}): Promise<string> {
+  const agent = getAgent(opts.agentType);
+  const ops = agent.transcript;
+  if (!ops) throw new Error(`${agent.label} conversations cannot be moved between machines`);
+  let transcriptPath = ops.file(opts.localPath, opts.claudeSessionId);
+  const candidates: { label: string; url: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of [opts.sourceMachine ?? '', STORE_MACHINE]) {
+    if (!m || m === opts.selfName || seen.has(m)) continue;
+    seen.add(m);
+    const peer = opts.federation.peerByMachine(m);
+    if (peer) {
+      candidates.push({
+        label: m,
+        url:
+          `${peer.info.url}/api/transcripts/${opts.claudeSessionId}` +
+          `?folder=${encodeURIComponent(opts.folder)}&agent=${encodeURIComponent(agent.id)}`,
+      });
+    }
+  }
+  const localMtime = () => (existsSync(transcriptPath) ? stat(transcriptPath).then((s) => s.mtimeMs) : Promise.resolve(0));
+  for (const c of candidates) {
+    try {
+      const res = await fetch(c.url, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) continue;
+      const remoteMtime = Date.parse(res.headers.get('last-modified') ?? '') || Date.now();
+      if (remoteMtime > (await localMtime()) + 1000) {
+        transcriptPath = await ops.install(opts.localPath, opts.claudeSessionId, Buffer.from(await res.arrayBuffer()));
+      }
+      break;
+    } catch {
+      /* that hub did not answer — try the next source */
+    }
+  }
+  if (!existsSync(transcriptPath)) {
+    // this machine may itself be the store machine
+    const stored = storeFilePath(opts.folder, opts.claudeSessionId, agent.id);
+    if (existsSync(stored)) {
+      transcriptPath = await ops.install(opts.localPath, opts.claudeSessionId, await readFile(stored));
+    }
+  }
+  if (!existsSync(transcriptPath)) {
+    const tried = candidates.map((c) => c.label).join(', ') || 'no reachable hub';
+    throw new Error(
+      `transcript not found here, on ${tried}, or in the store — ` +
+        `${opts.sourceMachine ? `${opts.sourceMachine} is ${opts.federation.peerByMachine(opts.sourceMachine) ? 'up' : 'offline'} and ` : ''}its copy was never pushed`,
+    );
+  }
+  return transcriptPath;
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -135,57 +202,17 @@ export function startFleetResume(opts: {
       // transcript: fetch from the hub that holds it, re-homed for our path
       const ops = agent.transcript;
       if (!ops) throw new Error(`${agent.label} conversations cannot be moved between machines`);
-      let transcriptPath = ops.file(localPath, opts.claudeSessionId);
-      // Where a fresher copy may live, in order of preference: the source
-      // machine (if it is up), then the durable store on the store machine.
-      // An offline source is not an error — the store exists for exactly that.
       job.phase = 'transcript';
       job.pct = 0;
-      const candidates: { label: string; url: string }[] = [];
-      const seen = new Set<string>();
-      for (const m of [remoteSource ? opts.sourceMachine! : '', STORE_MACHINE]) {
-        if (!m || m === opts.selfName || seen.has(m)) continue;
-        seen.add(m);
-        const peer = opts.federation.peerByMachine(m);
-        if (peer) {
-          candidates.push({
-            label: m,
-            url:
-              `${peer.info.url}/api/transcripts/${opts.claudeSessionId}` +
-              `?folder=${encodeURIComponent(opts.folder)}&agent=${encodeURIComponent(agent.id)}`,
-          });
-        }
-      }
-      const localMtime = () => (existsSync(transcriptPath) ? stat(transcriptPath).then((s) => s.mtimeMs) : Promise.resolve(0));
-      for (const c of candidates) {
-        try {
-          const res = await fetch(c.url, { signal: AbortSignal.timeout(60_000) });
-          if (!res.ok) continue;
-          // the newest copy wins: a conversation that migrated away may have
-          // left a stale copy here
-          const remoteMtime = Date.parse(res.headers.get('last-modified') ?? '') || Date.now();
-          if (remoteMtime > (await localMtime()) + 1000) {
-            transcriptPath = await ops.install(localPath, opts.claudeSessionId, Buffer.from(await res.arrayBuffer()));
-          }
-          break;
-        } catch {
-          /* that hub did not answer — try the next source */
-        }
-      }
-      if (!existsSync(transcriptPath)) {
-        // this machine may itself be the store machine
-        const stored = storeFilePath(opts.folder, opts.claudeSessionId, agent.id);
-        if (existsSync(stored)) {
-          transcriptPath = await ops.install(localPath, opts.claudeSessionId, await readFile(stored));
-        }
-      }
-      if (!existsSync(transcriptPath)) {
-        const tried = candidates.map((c) => c.label).join(', ') || 'no reachable hub';
-        throw new Error(
-          `transcript not found here, on ${tried}, or in the store — ` +
-            `${remoteSource ? `${opts.sourceMachine} is ${opts.federation.peerByMachine(opts.sourceMachine!) ? 'up' : 'offline'} and ` : ''}its copy was never pushed`,
-        );
-      }
+      const transcriptPath = await ensureTranscript({
+        folder: opts.folder,
+        localPath,
+        agentType: agent.id,
+        claudeSessionId: opts.claudeSessionId,
+        sourceMachine: remoteSource ? opts.sourceMachine : undefined,
+        selfName: opts.selfName,
+        federation: opts.federation,
+      });
 
       // migrated conversations remember their old absolute paths — when the
       // folder now lives somewhere else, orient the resumed session up front

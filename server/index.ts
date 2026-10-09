@@ -35,7 +35,7 @@ import {
   type StoreEntry,
 } from './transcriptStore.js';
 import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
-import { startFleetResume, getResumeJob } from './fleetResume.js';
+import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import {
@@ -510,7 +510,7 @@ function byConversationPrefix(prefix: string): HubSession | undefined {
 
 /** Route a per-session action to this hub or the owning peer. */
 function sessionAction(
-  local: (id: string, req: express.Request, res: express.Response) => void,
+  local: (id: string, req: express.Request, res: express.Response) => unknown,
 ): express.RequestHandler {
   return async (req, res) => {
     let id = String(req.params.id);
@@ -577,12 +577,34 @@ app.post('/api/sessions/:id/kill', sessionAction((id, _req, res) => {
   res.json({ ok: true });
 }));
 
-app.post('/api/sessions/:id/resume', sessionAction((id, req, res) => {
+app.post('/api/sessions/:id/resume', sessionAction(async (id, req, res) => {
   const existing = manager.sessions.get(id);
-  if (existing && !req.body?.force) {
-    const folderName = existing.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  if (!existing) return res.status(404).json({ error: 'unknown session' });
+  const folderName = existing.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  if (!req.body?.force) {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
+  }
+  // The agent keeps its transcript outside the project folder, and its own
+  // retention cleanup can remove it. A card whose transcript is gone is still
+  // resumable from the fleet store — fetch it back first.
+  if (!existing.proc && !existing.claudeSessionId.startsWith('pending-')) {
+    const ops = agentFor(existing).transcript;
+    if (ops && !existsSync(ops.file(existing.cwd, existing.claudeSessionId))) {
+      try {
+        await ensureTranscript({
+          folder: folderName,
+          localPath: existing.cwd,
+          agentType: existing.agentType,
+          claudeSessionId: existing.claudeSessionId,
+          selfName: discovery.selfName,
+          federation,
+        });
+        console.log(`[resume] ${existing.name}: transcript restored from the fleet store`);
+      } catch (err) {
+        return res.status(409).json({ error: `cannot resume: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
   }
   const session = manager.resume(id);
   if (!session) return res.status(404).json({ error: 'unknown session' });
