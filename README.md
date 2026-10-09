@@ -61,7 +61,11 @@ when any session on any machine needs a human.
 - **Durable conversation store.** Every hub pushes transcripts to the home
   machine. Conversations outlive their origin machine, local retention
   cleanup, and folder moves — the resume dialog backfills from the store when
-  no machine can offer a copy. Transcripts are append-only, so only the new
+  no machine can offer a copy, and an EXITED card whose transcript Claude
+  Code's retention cleanup has removed (default: 30 days idle) fetches it back
+  from the store when you press RESUME. Hub-spawned Claude sessions also get
+  `cleanupPeriodDays` set to 100 years through the injected settings, so the
+  local copy stays. Transcripts are append-only, so only the new
   bytes travel (gzipped, verified by size + sha256, whole file as fallback);
   a live session's transcript goes at most every 10 minutes and right when
   the session goes idle or exits, and one sweep sends at most 32 MB
