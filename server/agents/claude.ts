@@ -163,18 +163,21 @@ export const claudeAdapter: AgentAdapter = {
 
   buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing, mcp }) {
     const args: string[] = [];
+    if (mcp) {
+      // the hub's MCP server rides along as an extra server; the project's own
+      // .mcp.json and the user's servers are untouched (no --strict-mcp-config).
+      // --mcp-config is variadic (<configs...>): it must come FIRST, or the
+      // positional initial prompt after it is read as another config path and
+      // Claude dies with ENAMETOOLONG
+      writeFileSync(MCP_JSON, JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2));
+      args.push('--mcp-config', MCP_JSON);
+    }
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
     args.push('-n', name, '--settings', HOOKS_JSON);
     if (permissionMode) args.push('--permission-mode', permissionMode);
     if (model) args.push('--model', model);
     if (briefing) args.push('--append-system-prompt', briefing);
-    if (mcp) {
-      // the hub's MCP server rides along as an extra server; the project's own
-      // .mcp.json and the user's servers are untouched (no --strict-mcp-config)
-      writeFileSync(MCP_JSON, JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2));
-      args.push('--mcp-config', MCP_JSON);
-    }
     if (initialPrompt) args.push(initialPrompt);
     return args;
   },
