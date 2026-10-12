@@ -92,10 +92,6 @@ export class Discovery {
           }
           return resolve(null);
         }
-        if (this.statusDown) {
-          console.log('[discovery] tailscale is answering again');
-          this.statusDown = false;
-        }
         try {
           resolve(JSON.parse(stdout) as TailscaleStatus);
         } catch {
@@ -107,7 +103,19 @@ export class Discovery {
 
   private async sweep() {
     const status = await this.status();
-    if (!status?.Self) return;
+    if (!status?.Self) {
+      // the CLI answered but the backend had no identity yet (still starting
+      // after login) — same once-per-outage note as a failed call
+      if (!this.statusDown) {
+        console.log(`[discovery] tailscale has no self identity yet — running solo as ${this.selfName} until it does`);
+        this.statusDown = true;
+      }
+      return;
+    }
+    if (this.statusDown) {
+      console.log(`[discovery] tailscale is answering again`);
+      this.statusDown = false;
+    }
 
     // prefer the tailnet device name (matches MagicDNS URLs) over the OS hostname
     const dnsLabel = status.Self.DNSName?.split('.')[0];
