@@ -55,6 +55,8 @@ async function probe(ip: string, port: number): Promise<DiscoveredHub | null> {
 export class Discovery {
   private tailscaleExe = resolveTailscaleExe();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** true while the last `tailscale status` failed — logged once per outage, not every minute */
+  private statusDown = false;
   selfName = hostname();
 
   constructor(
@@ -78,8 +80,22 @@ export class Discovery {
 
   private status(): Promise<TailscaleStatus | null> {
     return new Promise((resolve) => {
-      execFile(this.tailscaleExe!, ['status', '--json'], { encoding: 'utf8' }, (err, stdout) => {
-        if (err) return resolve(null);
+      execFile(this.tailscaleExe!, ['status', '--json'], { encoding: 'utf8' }, (err, stdout, stderr) => {
+        if (err) {
+          // The CLI inside the macOS app bundle only answers while the Tailscale
+          // app is running — a hub that starts at login before the app does
+          // (or when the app is not a login item) lands here. Say so once.
+          if (!this.statusDown) {
+            const why = (stderr || err.message).trim().split(/\r?\n/)[0];
+            console.log(`[discovery] tailscale status failed (${why}) — running solo as ${this.selfName} until it answers`);
+            this.statusDown = true;
+          }
+          return resolve(null);
+        }
+        if (this.statusDown) {
+          console.log('[discovery] tailscale is answering again');
+          this.statusDown = false;
+        }
         try {
           resolve(JSON.parse(stdout) as TailscaleStatus);
         } catch {

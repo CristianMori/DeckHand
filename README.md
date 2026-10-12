@@ -259,6 +259,11 @@ works as the original standalone dashboard.
    bash scripts/install-macos.sh
    bash scripts/install-macos.sh --uninstall
    ```
+   To survive a reboot unattended, turn on automatic login (System Settings
+   → Users & Groups), which requires FileVault off. The hub usually starts
+   before the Tailscale app at login and runs solo under its OS hostname for
+   a minute or two (the log says `tailscale status failed`); it joins the
+   fleet under its tailnet name as soon as the app answers.
 
    **Linux** (systemd; also how updates apply):
    ```
