@@ -435,7 +435,7 @@ or the LaunchAgent on macOS, the systemd unit on Linux).
 | Variable | Default | Meaning |
 |---|---|---|
 | `HUB_PORT` | `5959` | listen port; if taken, walks up to +10 (fleet probes 5959–5969) |
-| `HUB_PROJECTS_ROOT` | `C:\DataDrive` / `/srv/sync` | where projects live and fleet folders materialize; the hub refuses to materialize folders if it doesn't exist |
+| `HUB_PROJECTS_ROOT` | `~Projects` / `~/Projects` / `/srv/sync` | where projects live and fleet folders materialize; the hub refuses to materialize folders if it doesn't exist |
 | `HUB_DATA_DIR` | `<repo>\data` | runtime state (below) |
 | `HUB_STORE_MACHINE` | `vps-node` | fleet machine holding the durable transcript store |
 | `HUB_UPDATE_MACHINE` | `vps-node` | fleet machine holding the release shelf |
