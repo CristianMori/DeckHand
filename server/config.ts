@@ -16,7 +16,7 @@ export const CLAUDE_PROJECTS_DIR = join(CLAUDE_HOME, 'projects');
 
 export const PROJECTS_ROOT =
   process.env.HUB_PROJECTS_ROOT ||
-  (process.platform === 'win32' ? join(homedir(), 'Projects') : '/srv/sync');
+  (process.platform === 'linux' ? '/srv/sync' : join(homedir(), 'Projects'));
 export const DEFAULT_PORT = Number(process.env.HUB_PORT) || 5959;
 
 /** Port range sibling hubs are probed on (DEFAULT_PORT may walk up when taken). */
@@ -35,7 +35,13 @@ export function resolveTailscaleExe(): string | null {
   const candidates =
     process.platform === 'win32'
       ? ['C:\\Program Files\\Tailscale\\tailscale.exe']
-      : ['/usr/bin/tailscale', '/usr/local/bin/tailscale'];
+      : [
+          '/usr/bin/tailscale',
+          '/usr/local/bin/tailscale',
+          '/opt/homebrew/bin/tailscale',
+          // macOS app (App Store / standalone) ships the CLI inside the bundle
+          '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+        ];
   for (const c of candidates) if (existsSync(c)) return c;
   try {
     const probe = process.platform === 'win32' ? 'where.exe' : 'which';

@@ -311,6 +311,7 @@ function localSyncthingConfigPaths(): string[] {
   }
   const home = process.env.HOME ?? '';
   return [
+    join(home, 'Library', 'Application Support', 'Syncthing', 'config.xml'), // macOS
     join(home, '.local', 'state', 'syncthing', 'config.xml'),
     join(home, '.config', 'syncthing', 'config.xml'),
   ];

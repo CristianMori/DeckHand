@@ -1,0 +1,4 @@
+# shell scripts and node entry points run on macOS/Linux: never CRLF
+*.sh text eol=lf
+*.mjs text eol=lf
+start-hub.cmd text eol=crlf

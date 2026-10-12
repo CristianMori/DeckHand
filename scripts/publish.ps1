@@ -21,7 +21,7 @@ $tmp = Join-Path $env:TEMP "deckhand-release-$build.tgz"
 # explicit Windows tar - a unix tar earlier on PATH mis-parses C:\ as a hostname
 & "$env:SystemRoot\System32\tar.exe" -czf $tmp --exclude 'server/public/claudehub.zip' `
   server web hooks mcp scripts cli version.json `
-  package.json package-lock.json tsconfig.json start-hub.cmd README.md .gitignore
+  package.json package-lock.json tsconfig.json start-hub.cmd start-hub.sh README.md .gitignore
 if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
 
 Write-Host '== upload to vps-node =='

@@ -121,15 +121,15 @@ export class Updater {
       console.log('[updater] handing off to runner, exiting');
       setTimeout(() => process.exit(0), 400);
     } else {
-      // extraction over a running node process is safe on Linux
+      // extraction over a running node process is safe on Linux and macOS
       await new Promise<void>((resolve, reject) => {
         execFile('tar', ['-xzf', tgz, '-C', HUB_ROOT], (err) => (err ? reject(err) : resolve()));
       });
       await new Promise<void>((resolve) => {
         execFile('npm', ['install', '--no-audit', '--no-fund'], { cwd: HUB_ROOT }, () => resolve());
       });
-      console.log('[updater] extracted, exiting for systemd relaunch');
-      setTimeout(() => process.exit(1), 400); // non-zero → Restart=on-failure fires
+      console.log('[updater] extracted, exiting for the supervisor (systemd/launchd) to relaunch');
+      setTimeout(() => process.exit(1), 400); // non-zero → systemd Restart=on-failure / launchd KeepAlive fires
     }
   }
 }

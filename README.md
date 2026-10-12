@@ -207,9 +207,9 @@ and how to behave towards the others.
 
 | What | Why | Notes |
 |---|---|---|
-| Windows 10/11 or Linux | hub runs on both | macOS untested |
+| Windows 10/11, macOS, or Linux | hub runs on all three | macOS: Apple silicon or Intel, LaunchAgent |
 | [Tailscale](https://tailscale.com) (free) | discovery, transport, trust boundary | required for any multi-machine features |
-| Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / distro package |
+| Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / `brew install node` / distro package |
 | [Claude Code](https://claude.com/claude-code) | the sessions themselves | logged in on each machine that runs sessions |
 | [Codex CLI](https://developers.openai.com/codex) | optional second agent | `npm i -g @openai/codex`, logged in; machines without it simply don't offer it |
 | [Syncthing](https://syncthing.net) (free) | folder replication | optional — skip it and everything but folder sync works |
@@ -233,7 +233,9 @@ works as the original standalone dashboard.
    ```
    set HUB_PROJECTS_ROOT=D:\Projects
    ```
-   Linux: pass `HUB_PROJECTS_ROOT` to the installer (defaults `/srv/sync`).
+   macOS/Linux: pass `HUB_PROJECTS_ROOT` to the installer (defaults
+   `~/Projects` on macOS, `/srv/sync` on Linux), or create `hub-env.sh` next
+   to `start-hub.sh` with `export HUB_PROJECTS_ROOT=…`.
 4. **Install the always-on runner:**
 
    **Windows** — one installer, two modes (it asks if you don't pick):
@@ -249,6 +251,14 @@ works as the original standalone dashboard.
      an elevated shell and a **local-account** password (Microsoft-account
      sign-ins usually reject service logon — either switch the account to
      local sign-in or use `startup` mode).
+
+   **macOS** (per-user LaunchAgent: starts at login, kept alive, also how
+   updates apply; runs in your login session so Claude Code and Codex see
+   your sign-ins — keep the Mac from sleeping):
+   ```
+   bash scripts/install-macos.sh
+   bash scripts/install-macos.sh --uninstall
+   ```
 
    **Linux** (systemd; also how updates apply):
    ```
@@ -412,15 +422,15 @@ monotonic build number), tars the tree, uploads to the home machine's
 release shelf. Every hub notices within 6 hours, or immediately via
 ADMIN → CHECK FOR UPDATES. Applying: Windows hands off to a detached runner
 (swap files, `npm install`, relaunch — or let the service manager relaunch);
-Linux extracts in place and exits for systemd to restart. A dev checkout
+macOS/Linux extract in place and exit for launchd/systemd to restart. A dev checkout
 (no `version.json` → build 0) reports `DEV` in ADMIN and never auto-updates.
 
 ---
 
 ## Configuration reference
 
-All optional; set in the environment (`hub-env.cmd` on Windows, the systemd
-unit on Linux).
+All optional; set in the environment (`hub-env.cmd` on Windows, `hub-env.sh`
+or the LaunchAgent on macOS, the systemd unit on Linux).
 
 | Variable | Default | Meaning |
 |---|---|---|
