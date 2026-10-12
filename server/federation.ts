@@ -198,11 +198,25 @@ export class Federation extends EventEmitter {
     return list;
   }
 
-  peerBySession(hubId: string): Peer | undefined {
+  /** The peer that owns a session, by hubId, by the agent's conversation id,
+   *  or by a unique (>= 8 char) prefix of it — the same handles the local
+   *  lookup accepts, so a client may address any fleet session by the id
+   *  that survives hub restarts. The owning hub resolves the id again on
+   *  its side when the request is forwarded. */
+  peerBySession(id: string): Peer | undefined {
     for (const peer of this.peers.values()) {
-      if (peer.sessions.some((s) => s.hubId === hubId)) return peer;
+      if (peer.sessions.some((s) => s.hubId === id || s.claudeSessionId === id)) return peer;
     }
-    return undefined;
+    if (id.length < 8) return undefined;
+    const hits: { peer: Peer; alive: boolean }[] = [];
+    for (const peer of this.peers.values()) {
+      for (const s of peer.sessions) {
+        if (s.claudeSessionId.startsWith(id)) hits.push({ peer, alive: s.alive });
+      }
+    }
+    const live = hits.filter((h) => h.alive);
+    const pool = live.length ? live : hits;
+    return pool.length === 1 ? pool[0].peer : undefined;
   }
 
   connectedPeers(): Peer[] {
