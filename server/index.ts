@@ -530,7 +530,8 @@ function sessionAction(
         method: req.method,
         body: Object.keys(req.body ?? {}).length ? req.body : undefined,
       });
-      res.status(out.status).json(out.body);
+      if (typeof out.body === 'string') res.status(out.status).type(out.contentType || 'text/plain').send(out.body);
+      else res.status(out.status).json(out.body);
     } catch {
       res.status(502).json({ error: `forward to ${peer.info.machine} failed` });
     }

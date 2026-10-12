@@ -221,14 +221,22 @@ export class Federation extends EventEmitter {
     peer: Peer,
     path: string,
     init?: { method?: string; body?: unknown },
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<{ status: number; body: unknown; contentType: string }> {
     const res = await fetch(`${peer.info.url}${path}`, {
       method: init?.method ?? 'GET',
       headers: init?.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
     });
-    const body = await res.json().catch(() => ({}));
-    return { status: res.status, body };
+    // most routes answer JSON, but the screen (and export) routes answer
+    // text/plain or HTML — hand those back as the string they are
+    const contentType = res.headers.get('content-type') ?? '';
+    const text = await res.text();
+    if (/json/i.test(contentType)) {
+      let body: unknown = {};
+      try { body = JSON.parse(text); } catch { /* malformed — empty object as before */ }
+      return { status: res.status, body, contentType };
+    }
+    return { status: res.status, body: text, contentType };
   }
 
   termWsUrl(peer: Peer, hubId: string): string {
