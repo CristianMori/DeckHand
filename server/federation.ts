@@ -144,6 +144,13 @@ export class Federation extends EventEmitter {
       if (existing && existing.info.instanceId !== hub.instanceId) {
         existing.close();
         this.peers.delete(hub.url);
+      } else if (existing && existing.info.machine !== hub.machine) {
+        // same hub, new name: a hub that started before its tailscale answered
+        // (macOS at login) first called itself by its OS hostname and renamed
+        // once the tailnet replied — follow it, or ADMIN and fleet resume
+        // keep addressing a name nobody answers to
+        existing.info.machine = hub.machine;
+        this.emit('change');
       }
       if (!this.peers.get(hub.url)) {
         // same machine may have re-appeared on a new port — drop the stale entry
