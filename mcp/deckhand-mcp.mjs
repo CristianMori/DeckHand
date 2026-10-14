@@ -366,7 +366,8 @@ async function handle(msg) {
       const tool = TOOLS.find((t) => t.name === params?.name);
       if (!tool) return fail(id, -32602, `unknown tool ${params?.name}`);
       try {
-        const text = await tool.run(params?.arguments ?? {});
+        const args = normalizeArgs(tool, params?.arguments ?? {});
+        const text = await tool.run(args);
         return reply(id, { content: [{ type: 'text', text: String(text) }] });
       } catch (err) {
         const text = err instanceof HubError ? err.message : `error: ${err?.message ?? err}`;
@@ -384,6 +385,31 @@ async function handle(msg) {
     default:
       return fail(id, -32601, `method not found: ${method}`);
   }
+}
+
+/**
+ * Models do not always use the schema's argument names: a session id arrives as
+ * session_id, sessionId or id as often as hubId, and a missing id used to reach
+ * the hub as the string "undefined" and come back as "404: unknown session".
+ * Map the common aliases onto the declared names, then refuse any call that
+ * still lacks a required argument, naming the argument it expects.
+ */
+const ALIASES = { hubId: ['session_id', 'sessionId', 'session', 'id', 'hub_id', 'conversationId', 'conversation_id'] };
+function normalizeArgs(tool, raw) {
+  const args = { ...raw };
+  for (const [name, aliases] of Object.entries(ALIASES)) {
+    if (!(name in (tool.schema ?? {})) || nz(args[name])) continue;
+    const alias = aliases.find((k) => nz(args[k]));
+    if (alias) {
+      args[name] = args[alias];
+      delete args[alias];
+    }
+  }
+  const missing = (tool.required ?? []).filter((k) => !nz(args[k]));
+  if (missing.length) {
+    throw new HubError(`${tool.name}: missing required argument ${missing.map((k) => `"${k}"`).join(', ')} (got: ${Object.keys(raw).join(', ') || 'no arguments'})`);
+  }
+  return args;
 }
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
