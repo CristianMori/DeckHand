@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,12 @@ import {
 import type { AgentAdapter, StatusRecord, TranscriptRef, TranscriptTail } from './types.js';
 
 /** the hub's MCP server entry handed to every Claude session via --mcp-config */
-const MCP_JSON = join(DATA_DIR, 'hub-mcp.json');
+/** one MCP config per conversation: the env inside carries that session's
+ *  identity, and Claude reads the file some time after spawn — a shared file
+ *  rewritten by the next spawn (session restore starts them seconds apart)
+ *  handed sessions each other's identity */
+const MCP_DIR = join(DATA_DIR, 'mcp');
+const mcpJsonFor = (sessionId: string) => join(MCP_DIR, `${sessionId.replace(/[^\w-]/g, '_')}.json`);
 
 const OUTPUT_WAITING_REGEX = /Do you want|Would you like|❯\s*1\.|\(y\/n\)|Yes, and don't ask again/;
 // The plan-mode exit prompt is the one permission auto-yes never answers —
@@ -169,8 +174,10 @@ export const claudeAdapter: AgentAdapter = {
       // --mcp-config is variadic (<configs...>): it must come FIRST, or the
       // positional initial prompt after it is read as another config path and
       // Claude dies with ENAMETOOLONG
-      writeFileSync(MCP_JSON, JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2));
-      args.push('--mcp-config', MCP_JSON);
+      const mcpJson = mcpJsonFor(sessionId);
+      mkdirSync(MCP_DIR, { recursive: true });
+      writeFileSync(mcpJson, JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, 2));
+      args.push('--mcp-config', mcpJson);
     }
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
