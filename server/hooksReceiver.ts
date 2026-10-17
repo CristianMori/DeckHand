@@ -1,56 +1,100 @@
 import type { Request, Response } from 'express';
+import { agentFor, listAgents } from './agents/index.js';
+import type { HookPayload } from './agents/types.js';
+import { editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
 import type { SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
+import { normCwd } from './transcriptIo.js';
+import type { SessionInfo } from './types.js';
 import { SIG_HOOK } from './types.js';
 
-interface HookPayload {
-  session_id?: string;
-  hook_event_name?: string;
-  tool_name?: string;
-  message?: string;
-}
+const BIND_WINDOW_MS = 120_000;
 
 /**
- * Receives hook POSTs from claude sessions (injected via --settings hub-hooks.json).
- * Responds 204 immediately so hooks never slow Claude down.
+ * Receives hook POSTs from agent sessions (Claude: injected via --settings;
+ * others: hub-owned hooks.json). Agents that mint their own conversation id
+ * are bound here: the first hook from an unknown id whose cwd matches a
+ * freshly spawned, still-unbound session of that agent claims it.
+ *
+ * Replies are normally an empty 204 so hooks never slow the agent down. The
+ * one exception is fleet etiquette: a PreToolUse edit into a folder owned by
+ * another live session gets a JSON warning back, which both Claude Code and
+ * Codex surface to the agent (additionalContext) and the user (systemMessage).
  */
-export function makeHookHandler(manager: SessionManager, engine: StatusEngine) {
+export function makeHookHandler(
+  manager: SessionManager,
+  engine: StatusEngine,
+  fleetSessions: () => SessionInfo[],
+) {
   return (req: Request, res: Response) => {
-    res.status(204).end();
-
     const event = String(req.query.event ?? '');
-    const body = (req.body ?? {}) as HookPayload;
+    const agentId = typeof req.query.agent === 'string' ? req.query.agent : undefined;
+    const body = (req.body ?? {}) as HookPayload & { tool_input?: unknown };
     const sessionId = body.session_id;
-    if (!sessionId) return;
-    const session = manager.byClaudeSessionId(sessionId);
-    console.log(`[hook] ${event} from ${sessionId.slice(0, 8)}${session ? ` (${session.name})` : ' (not hub-owned)'}${body.message ? `: ${body.message}` : ''}`);
-    if (!session) return;
-    session.hooksSeen = true;
+    if (!sessionId) return res.status(204).end();
 
-    switch (event) {
-      case 'UserPromptSubmit':
-        engine.signal(session, SIG_HOOK, 'WORKING');
-        break;
-      case 'AskUserQuestion':
-        engine.signal(session, SIG_HOOK, 'WAITING_QUESTION', 'Claude is asking you a question');
-        break;
-      case 'PreToolUse':
-        engine.signal(session, SIG_HOOK, 'WORKING', body.tool_name ? `using ${body.tool_name}` : undefined);
-        break;
-      case 'Stop':
-        engine.signal(session, SIG_HOOK, 'IDLE', 'turn finished');
-        break;
-      case 'Notification': {
-        const msg = body.message ?? '';
-        if (/permission/i.test(msg)) {
-          engine.signal(session, SIG_HOOK, 'WAITING_PERMISSION', msg);
-        } else if (/waiting for your input/i.test(msg)) {
-          engine.signal(session, SIG_HOOK, 'IDLE', msg);
-        } else if (msg) {
-          engine.signal(session, SIG_HOOK, 'WAITING_QUESTION', msg);
+    let session = manager.byClaudeSessionId(sessionId);
+    if (!session && body.cwd) {
+      const want = normCwd(body.cwd);
+      const now = Date.now();
+      for (const agent of listAgents()) {
+        if (agent.clientChosenId || (agentId && agentId !== agent.id)) continue;
+        const candidate = [...manager.sessions.values()]
+          .filter(
+            (s) =>
+              s.proc &&
+              s.agentType === agent.id &&
+              s.claudeSessionId.startsWith('pending-') &&
+              normCwd(s.cwd) === want &&
+              now - s.createdAt < BIND_WINDOW_MS,
+          )
+          .sort((a, b) => b.createdAt - a.createdAt)[0];
+        if (candidate) {
+          manager.bindSessionId(candidate, sessionId);
+          session = candidate;
+          break;
         }
-        break;
       }
     }
+
+    console.log(
+      `[hook] ${event} from ${sessionId.slice(0, 8)}${session ? ` (${session.name})` : ' (not hub-owned)'}${body.message ? `: ${body.message}` : ''}`,
+    );
+    if (!session) return res.status(204).end();
+    session.hooksSeen = true;
+
+    const sig = agentFor(session).mapHookEvent(event, body);
+    if (sig) engine.signal(session, SIG_HOOK, sig.state, sig.detail);
+
+    // etiquette level 2: warn on edits into another live session's folder
+    if (event === 'PreToolUse') {
+      try {
+        const warning = ownershipCheck(session.claudeSessionId, body, fleetSessions());
+        if (warning) {
+          console.log(`[etiquette] ${session.name}: ${warning.slice(0, 120)}…`);
+          return res.json({
+            systemMessage: warning,
+            hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: warning },
+          });
+        }
+      } catch {
+        /* never let etiquette break a hook */
+      }
+    }
+    res.status(204).end();
   };
+}
+
+function ownershipCheck(
+  editingConversationId: string,
+  body: HookPayload & { tool_input?: unknown },
+  live: SessionInfo[],
+): string | null {
+  for (const file of editedPaths(body.tool_name, body.tool_input, body.cwd)) {
+    const folder = projectFolderOf(file);
+    if (!folder) continue;
+    const owner = folderOwner(folder, editingConversationId, live);
+    if (owner) return ownershipWarning(owner, folder, file);
+  }
+  return null;
 }

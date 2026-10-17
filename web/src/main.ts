@@ -6,7 +6,9 @@ import { showTerminal, hideTerminal, dropTerminal, activeTerminal } from './term
 import { buildQuickBar } from './quickAnswers';
 import { openNewSessionDialog } from './newSessionDialog';
 import { openResumeDialog } from './resumeDialog';
+import { openHandoffDialog } from './handoffDialog';
 import { openAdminDialog } from './adminDialog';
+import { openFilesDialog } from './filesDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
 
 let sessions: SessionInfo[] = [];
@@ -24,6 +26,7 @@ const el = {
   quickBar: document.getElementById('quick-bar')!,
   killBtn: document.getElementById('kill-btn') as HTMLButtonElement,
   autoYesBtn: document.getElementById('autoyes-btn') as HTMLButtonElement,
+  frozenBtn: document.getElementById('frozen-btn') as HTMLButtonElement,
   soundToggle: document.getElementById('sound-toggle') as HTMLButtonElement,
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
 };
@@ -45,6 +48,13 @@ const TAB_DOT: Record<string, string> = {
   EXITED: 'exited',
 };
 
+/** "local/qwen3-30b-a3b" -> "qwen3-30b-a3b" (shortened); undefined for hosted models */
+export function localModelLabel(model?: string): string | undefined {
+  if (!model || !model.startsWith('local/')) return undefined;
+  const id = model.slice('local/'.length);
+  return id.length > 18 ? id.slice(0, 17) + '…' : id;
+}
+
 function renderTabs() {
   // drop tabs whose sessions vanished (removed on another dashboard, etc.)
   tabs = tabs.filter((id) => sessions.some((s) => s.hubId === id));
@@ -60,9 +70,18 @@ function renderTabs() {
       <span class="tab-min" title="Close tab — session keeps running">–</span>
       <span class="tab-x" title="End session and close tab">×</span>
     `;
-    (tab.querySelector('.tab-name') as HTMLElement).textContent = s.machine
-      ? `${s.name} @ ${s.machine}`
-      : s.name;
+    const agentSuffix = ` · ${s.agentType || 'claude'}`;
+    (tab.querySelector('.tab-name') as HTMLElement).textContent =
+      (s.machine ? `${s.name} @ ${s.machine}` : s.name) + agentSuffix;
+    // sessions on a locally served model wear LOCAL plus the model name
+    const local = localModelLabel(s.model);
+    if (local) {
+      const t1 = document.createElement('span');
+      t1.className = 'tag local';
+      t1.textContent = 'LOCAL';
+      t1.title = `local model: ${local}`;
+      (tab.querySelector('.tab-name') as HTMLElement).after(t1);
+    }
     tab.onclick = () => select(s);
     tab.onauxclick = (e) => {
       if (e.button === 1) {
@@ -127,6 +146,8 @@ function render() {
       if (selected === s.hubId) deselect();
       await api.remove(s.hubId);
     },
+    onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
+    onFiles: (s) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
   });
 
   const waiting = waitingCount();
@@ -138,10 +159,34 @@ function render() {
       el.termTitle.textContent = `${s.name}${s.machine ? ` @ ${s.machine}` : ''} — ${s.cwd} — ${s.unreachable ? 'UNREACHABLE' : s.state}`;
       el.autoYesBtn.textContent = s.autoYes ? 'AUTO-YES ON' : 'AUTO-YES OFF';
       el.autoYesBtn.classList.toggle('active', !!s.autoYes);
+      el.frozenBtn.textContent = s.frozen ? '❄ FROZEN' : 'FREEZE';
+      el.frozenBtn.classList.toggle('active', !!s.frozen);
+      el.frozenBtn.hidden = !!s.unreachable;
     }
   }
   renderTabs();
 }
+
+el.frozenBtn.onclick = async () => {
+  if (!selected) return;
+  const s = sessions.find((x) => x.hubId === selected);
+  if (!s) return;
+  const folder = s.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  const next = !s.frozen;
+  if (
+    next &&
+    !confirm(
+      `Freeze "${folder}" to ${s.machine ?? 'this machine'}?\n\nIt will never sync to the VPS or other machines, and its conversations can only be resumed here. Existing replication of this folder stops.`,
+    )
+  ) {
+    return;
+  }
+  try {
+    await api.setFrozen(folder, next, s.machine);
+  } catch (err) {
+    alert(`Could not change freeze state: ${err}`);
+  }
+};
 
 function select(s: SessionInfo) {
   selected = s.hubId;
@@ -212,6 +257,7 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
 (document.getElementById('resume-btn') as HTMLButtonElement).onclick = () =>
   openResumeDialog((s) => select(s));
 (document.getElementById('admin-btn') as HTMLButtonElement).onclick = () => void openAdminDialog();
+(document.getElementById('files-btn') as HTMLButtonElement).onclick = () => void openFilesDialog();
 
 el.killBtn.onclick = () => {
   if (selected) api.kill(selected);

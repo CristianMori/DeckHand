@@ -1,13 +1,20 @@
 import type { SessionInfo, SessionState } from './types';
 
+// needs attention first, then what is being worked on, then the rest;
+// cards of an unreachable machine always sink to the bottom
 const STATE_RANK: Record<SessionState, number> = {
   WAITING_QUESTION: 0,
   WAITING_PERMISSION: 0,
-  IDLE: 1,
-  STARTING: 2,
-  WORKING: 2,
+  WORKING: 1,
+  STARTING: 1,
+  IDLE: 2,
   EXITED: 3,
 };
+const UNREACHABLE_RANK = 4;
+
+function rankOf(s: SessionInfo): number {
+  return s.unreachable ? UNREACHABLE_RANK : STATE_RANK[s.state];
+}
 
 const CHIP: Record<SessionState, { cls: string; label: string }> = {
   WAITING_QUESTION: { cls: 'waiting', label: 'QUESTION' },
@@ -32,9 +39,14 @@ function elapsed(since: number): string {
 
 export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort((a, b) => {
-    const rank = STATE_RANK[a.state] - STATE_RANK[b.state];
+    const rank = rankOf(a) - rankOf(b);
     if (rank !== 0) return rank;
-    if (STATE_RANK[a.state] === 0) return a.stateSince - b.stateSince; // oldest wait first
+    if (rankOf(a) === 0) return a.stateSince - b.stateSince; // oldest wait first
+    // within working, idle and exited: the card that entered the state most
+    // recently sits at the top of its band — a session that just finished
+    // lands right under the working ones, a session that just exited lands
+    // right under the idle ones, each pushing its older siblings down one
+    if (rankOf(a) >= 1 && rankOf(a) <= 3) return b.stateSince - a.stateSince;
     return b.createdAt - a.createdAt;
   });
 }
@@ -47,6 +59,8 @@ export function renderSessionList(
     onSelect: (s: SessionInfo) => void;
     onResume: (s: SessionInfo) => void;
     onRemove: (s: SessionInfo) => void;
+    onHandoff: (s: SessionInfo) => void;
+    onFiles: (s: SessionInfo) => void;
   },
 ) {
   root.innerHTML = '';
@@ -69,36 +83,67 @@ export function renderSessionList(
     card.innerHTML = `
       <div class="card-top">
         <span class="card-name"></span>
+        <span class="agent-tag"></span>
+        ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
+        ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
         <span class="chip ${chip.cls}">${chip.label}</span>
       </div>
       <div class="card-meta">
         <span class="cwd"></span>
         <span class="elapsed">${stateWord} ${elapsed(s.stateSince)}</span>
       </div>
+      ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
+      <div class="card-foot">
+        ${s.model?.startsWith('local/') ? '<span class="tag model"></span>' : ''}
+        <button class="ghost-btn card-files" title="Browse this session's folder on its machine">FILES</button>
+      </div>
       <div class="card-actions"></div>
     `;
+    (card.querySelector('.card-files') as HTMLButtonElement).onclick = (e) => {
+      e.stopPropagation();
+      handlers.onFiles(s);
+    };
+    if (s.handoff) {
+      (card.querySelector('.card-lineage') as HTMLElement).textContent =
+        `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;
+    }
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
+    const engine = s.agentType || 'claude';
+    (card.querySelector('.agent-tag') as HTMLElement).textContent = engine;
+    const modelTag = card.querySelector('.tag.model') as HTMLElement | null;
+    if (modelTag && s.model) {
+      const id = s.model.slice('local/'.length);
+      modelTag.textContent = id.length > 18 ? id.slice(0, 17) + '…' : id;
+      modelTag.title = s.model;
+    }
     if (s.machine) (card.querySelector('.machine-tag') as HTMLElement).textContent = s.machine;
     (card.querySelector('.cwd') as HTMLElement).textContent = shortPath(s.cwd);
     if (s.summary) (card.querySelector('.card-summary') as HTMLElement).textContent = s.summary;
     if (s.detail && waiting) (card.querySelector('.card-detail') as HTMLElement).textContent = `⚠ ${s.detail}`;
 
     const actions = card.querySelector('.card-actions') as HTMLElement;
+    const handoff = document.createElement('button');
+    handoff.className = 'ghost-btn';
+    handoff.textContent = 'HAND OFF';
+    handoff.title = 'Continue this work with another engine, machine or folder';
+    handoff.onclick = (e) => { e.stopPropagation(); handlers.onHandoff(s); };
     if (s.unreachable) {
       actions.remove(); // owning hub is down — nothing can act on this session
     } else if (s.state === 'EXITED') {
       const resume = document.createElement('button');
       resume.className = 'primary-btn';
-      resume.textContent = 'RESUME';
+      resume.textContent = `RESUME · ${engine.toUpperCase()}`;
       resume.onclick = (e) => { e.stopPropagation(); handlers.onResume(s); };
       const remove = document.createElement('button');
       remove.className = 'ghost-btn danger';
       remove.textContent = 'REMOVE';
       remove.onclick = (e) => { e.stopPropagation(); handlers.onRemove(s); };
-      actions.append(resume, remove);
+      actions.append(resume, handoff, remove);
+    } else if (s.hubId === selected) {
+      actions.append(handoff); // live: offered on the selected card only, keeps the list quiet
     } else {
       actions.remove();
     }

@@ -5,7 +5,11 @@ import { DATA_DIR, PROJECTS_ROOT } from './config.js';
 
 const SYNC_CONFIG = join(DATA_DIR, 'sync.json');
 
-/** Ignore patterns written into every synced folder — heavy, regenerable dirs. */
+/**
+ * Ignore patterns written into every synced folder — heavy, regenerable dirs
+ * and build output. Never .git: fleet sessions work inside these folders and
+ * need the history on every machine.
+ */
 const DEFAULT_IGNORES = [
   'node_modules',
   '.venv',
@@ -14,6 +18,17 @@ const DEFAULT_IGNORES = [
   'dist',
   '(?d).DS_Store',
   '(?d)Thumbs.db',
+  // build artifacts: .NET output alone was rewriting gigabytes per build
+  'bin',
+  'obj',
+  '.vs',
+  '.idea',
+  'TestResults',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '*.pyc',
+  '*.user',
 ];
 
 interface SyncEndpoint {
@@ -120,6 +135,41 @@ export class SyncManager {
    * VPS, VPS folder entry (path <folderRoot>/<id>, staggered versioning)
    * sharing back. Idempotent; used both for first-push and for pull-to-here.
    */
+  /**
+   * Bring every folder this machine syncs up to the current DEFAULT_IGNORES.
+   * Append-only: patterns someone added by hand are kept, patterns missing
+   * from the defaults are added, nothing is removed. Runs at every hub boot,
+   * so an ignore rule shipped in a release reaches each machine as it takes
+   * the update. Only folders under the projects root are touched.
+   */
+  async reconcileIgnores(): Promise<{ folder: string; added: string[] }[]> {
+    const changed: { folder: string; added: string[] }[] = [];
+    const root = PROJECTS_ROOT.replace(/[\\/]+$/, '').toLowerCase();
+    const folders = await rest<StFolder[]>(this.cfg.local, 'GET', '/rest/config/folders');
+    for (const f of folders) {
+      const p = (f.path ?? '').replace(/[\\/]+$/, '').toLowerCase();
+      if (!p.startsWith(root)) continue;
+      try {
+        const cur = await rest<{ ignore?: string[] }>(
+          this.cfg.local,
+          'GET',
+          `/rest/db/ignores?folder=${encodeURIComponent(f.id)}`,
+        );
+        const have = new Set((cur.ignore ?? []).map((l) => l.trim()));
+        const added = DEFAULT_IGNORES.filter((d) => !have.has(d));
+        if (added.length === 0) continue;
+        await rest(this.cfg.local, 'POST', `/rest/db/ignores?folder=${encodeURIComponent(f.id)}`, {
+          ignore: [...(cur.ignore ?? []), ...added],
+        });
+        await rest(this.cfg.local, 'POST', `/rest/db/scan?folder=${encodeURIComponent(f.id)}`).catch(() => {});
+        changed.push({ folder: f.id, added });
+      } catch (err) {
+        console.warn(`[sync] ignore reconcile failed for ${f.id}: ${err}`);
+      }
+    }
+    return changed;
+  }
+
   /** Set ignore patterns through the API — reliable even before the first scan. */
   private async setIgnores(ep: SyncEndpoint, folderId: string): Promise<void> {
     await rest(ep, 'POST', `/rest/db/ignores?folder=${encodeURIComponent(folderId)}`, {
@@ -201,6 +251,22 @@ export class SyncManager {
     }
   }
 
+  /**
+   * Stop replicating a folder: drop its entry from the local Syncthing and
+   * from the VPS (files stay on disk everywhere; Syncthing never deletes on
+   * config removal). Used when a folder is frozen to this machine.
+   */
+  async unregisterFolder(folderId: string): Promise<void> {
+    const id = encodeURIComponent(folderId);
+    for (const ep of [this.cfg.local, this.cfg.vps]) {
+      try {
+        await rest(ep, 'DELETE', `/rest/config/folders/${id}`);
+      } catch {
+        /* not registered there */
+      }
+    }
+  }
+
   /** This device's completion (0-100) for a folder — 100 means fully pulled. */
   async localCompletion(folderId: string): Promise<number> {
     const c = await rest<{ completion: number }>(
@@ -245,6 +311,7 @@ function localSyncthingConfigPaths(): string[] {
   }
   const home = process.env.HOME ?? '';
   return [
+    join(home, 'Library', 'Application Support', 'Syncthing', 'config.xml'), // macOS
     join(home, '.local', 'state', 'syncthing', 'config.xml'),
     join(home, '.config', 'syncthing', 'config.xml'),
   ];

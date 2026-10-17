@@ -55,6 +55,8 @@ async function probe(ip: string, port: number): Promise<DiscoveredHub | null> {
 export class Discovery {
   private tailscaleExe = resolveTailscaleExe();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** true while the last `tailscale status` failed — logged once per outage, not every minute */
+  private statusDown = false;
   selfName = hostname();
 
   constructor(
@@ -63,6 +65,10 @@ export class Discovery {
   ) {}
 
   start() {
+    if (process.env.HUB_SOLO) {
+      console.log('[discovery] HUB_SOLO set — running solo (no fleet)');
+      return;
+    }
     if (!this.tailscaleExe) {
       console.log('[discovery] tailscale not found — running solo (no fleet)');
       return;
@@ -74,8 +80,18 @@ export class Discovery {
 
   private status(): Promise<TailscaleStatus | null> {
     return new Promise((resolve) => {
-      execFile(this.tailscaleExe!, ['status', '--json'], { encoding: 'utf8' }, (err, stdout) => {
-        if (err) return resolve(null);
+      execFile(this.tailscaleExe!, ['status', '--json'], { encoding: 'utf8' }, (err, stdout, stderr) => {
+        if (err) {
+          // The CLI inside the macOS app bundle only answers while the Tailscale
+          // app is running — a hub that starts at login before the app does
+          // (or when the app is not a login item) lands here. Say so once.
+          if (!this.statusDown) {
+            const why = (stderr || err.message).trim().split(/\r?\n/)[0];
+            console.log(`[discovery] tailscale status failed (${why}) — running solo as ${this.selfName} until it answers`);
+            this.statusDown = true;
+          }
+          return resolve(null);
+        }
         try {
           resolve(JSON.parse(stdout) as TailscaleStatus);
         } catch {
@@ -87,7 +103,19 @@ export class Discovery {
 
   private async sweep() {
     const status = await this.status();
-    if (!status?.Self) return;
+    if (!status?.Self) {
+      // the CLI answered but the backend had no identity yet (still starting
+      // after login) — same once-per-outage note as a failed call
+      if (!this.statusDown) {
+        console.log(`[discovery] tailscale has no self identity yet — running solo as ${this.selfName} until it does`);
+        this.statusDown = true;
+      }
+      return;
+    }
+    if (this.statusDown) {
+      console.log(`[discovery] tailscale is answering again`);
+      this.statusDown = false;
+    }
 
     // prefer the tailnet device name (matches MagicDNS URLs) over the OS hostname
     const dnsLabel = status.Self.DNSName?.split('.')[0];

@@ -8,6 +8,7 @@ export type SessionState =
 
 export interface SessionInfo {
   hubId: string;
+  agentType?: string;
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -22,6 +23,16 @@ export interface SessionInfo {
   autoYes?: boolean;
   machine?: string;
   unreachable?: boolean;
+  handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
+  frozen?: boolean;
+}
+
+export interface HandoffJob {
+  id: string;
+  phase: string;
+  pct: number;
+  error?: string;
+  session?: SessionInfo;
 }
 
 export interface FleetMachine {
@@ -31,7 +42,25 @@ export interface FleetMachine {
   url?: string;
 }
 
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  mtime: number;
+}
+
+export interface AgentInfo {
+  id: string;
+  label: string;
+  /** CLI installed on that machine (old hubs omit it — treat as available) */
+  available?: boolean;
+  models: { value: string; label: string }[];
+  permissionModes: { value: string; label: string }[];
+  canResume: boolean;
+}
+
 export interface FolderConversation {
+  agentType?: string;
   claudeSessionId: string;
   title?: string;
   lastText?: string;
@@ -44,6 +73,7 @@ export interface FolderInfo {
   path: string;
   machine?: string;
   synced: boolean;
+  frozen?: boolean;
   activeHubSessions: number;
   updatedAt: number;
   conversations: FolderConversation[];

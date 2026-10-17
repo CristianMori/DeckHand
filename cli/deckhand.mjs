@@ -9,9 +9,54 @@
 // including the web dashboard. Closing the window never kills the session.
 
 import WebSocket from 'ws';
+import { createSocket } from 'node:dgram';
+import { networkInterfaces } from 'node:os';
 import { basename } from 'node:path';
 
 const DETACH = 0x11; // Ctrl+Q
+
+// A hub on another LAN machine wants the API token (data/api-token on that
+// machine); localhost and tailnet hubs don't. HUB_TOKEN supplies it.
+const authHeaders = process.env.HUB_TOKEN ? { Authorization: `Bearer ${process.env.HUB_TOKEN}` } : {};
+
+/** Ask the LAN: broadcast DECKHAND? and take the first hub that answers. */
+function broadcastFind(timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const sock = createSocket({ type: 'udp4' });
+    const done = (url) => {
+      clearTimeout(timer);
+      try {
+        sock.close();
+      } catch {
+        /* closed */
+      }
+      resolve(url);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    sock.on('error', () => done(null));
+    sock.on('message', (msg, rinfo) => {
+      try {
+        const info = JSON.parse(msg.toString('utf8'));
+        if (info.hub === 'deckhand') done(`http://${rinfo.address}:${info.port}`);
+      } catch {
+        /* not ours */
+      }
+    });
+    sock.bind(() => {
+      sock.setBroadcast(true);
+      // the limited broadcast leaves on whichever interface Windows favours
+      // (often the tailscale one) — also hit each LAN's directed broadcast
+      const targets = new Set(['255.255.255.255']);
+      for (const i of Object.values(networkInterfaces()).flat()) {
+        if (!i || i.family !== 'IPv4' || i.internal) continue;
+        const a = i.address.split('.').map(Number);
+        const m = i.netmask.split('.').map(Number);
+        targets.add(a.map((o, k) => (o | (~m[k] & 255)) & 255).join('.'));
+      }
+      for (const t of targets) sock.send('DECKHAND?', 5959, t, () => {});
+    });
+  });
+}
 
 async function findHub() {
   if (process.env.HUB_URL) return process.env.HUB_URL;
@@ -28,7 +73,7 @@ async function findHub() {
       /* next port */
     }
   }
-  return null;
+  return broadcastFind();
 }
 
 function die(msg) {
@@ -37,14 +82,14 @@ function die(msg) {
 }
 
 async function api(hub, path, init) {
-  const res = await fetch(`${hub}${path}`, init);
+  const res = await fetch(`${hub}${path}`, { ...init, headers: { ...authHeaders, ...(init?.headers ?? {}) } });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
 function attach(hub, session) {
   const wsUrl = hub.replace(/^http/, 'ws') + `/ws/term/${session.hubId}`;
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(wsUrl, { headers: authHeaders });
   let initialized = false;
   let refreshTimer = null;
 
@@ -106,7 +151,7 @@ function attach(hub, session) {
 }
 
 const hub = await findHub();
-if (!hub) die('no hub found on 127.0.0.1:5959-5969 — is Deckhand running? (npm run start)');
+if (!hub) die('no hub found on 127.0.0.1:5959-5969 or by LAN broadcast — is Deckhand running? (set HUB_URL to point at one)');
 
 const [cmd, arg] = process.argv.slice(2);
 

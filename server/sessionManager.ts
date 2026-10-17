@@ -1,18 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as pty from '@lydell/node-pty';
 import type { Terminal as HeadlessTerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
-import { HOOKS_JSON, resolveClaudeExe } from './config.js';
+import { agentFor, getAgent } from './agents/index.js';
+import { HUB_ROOT } from './config.js';
+import { fleetBriefing, identityEnv, type Identity } from './etiquette.js';
 
 // @xterm packages ship CJS without named ESM exports
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { SessionInfo, SessionState, SpawnOptions } from './types.js';
+import type { HandoffLineage, SessionInfo, SessionState, SpawnOptions } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -40,11 +42,15 @@ class RingBuffer {
 
 export class HubSession {
   hubId = randomUUID().slice(0, 8);
+  agentType: string;
+  /** the agent's own conversation id; `pending-*` until an agent that mints
+   *  its own id reports it through its first hook */
   claudeSessionId: string;
   name: string;
   cwd: string;
   model?: string;
   permissionMode?: string;
+  handoff?: HandoffLineage;
   state: SessionState = 'STARTING';
   stateSince = Date.now();
   detail?: string;
@@ -68,16 +74,21 @@ export class HubSession {
   lastSignalAt: Record<number, number> = {};
 
   constructor(opts: SpawnOptions) {
-    this.claudeSessionId = opts.resumeSessionId ?? randomUUID();
+    this.agentType = getAgent(opts.agentType).id;
+    this.claudeSessionId =
+      opts.resumeSessionId ??
+      (agentFor(this).clientChosenId ? randomUUID() : `pending-${this.hubId}`);
     this.cwd = opts.cwd;
     this.name = opts.name || basename(opts.cwd);
     this.model = opts.model;
     this.permissionMode = opts.permissionMode;
+    this.handoff = opts.handoff;
   }
 
   info(): SessionInfo {
     return {
       hubId: this.hubId,
+      agentType: this.agentType,
       claudeSessionId: this.claudeSessionId,
       name: this.name,
       cwd: this.cwd,
@@ -90,6 +101,7 @@ export class HubSession {
       createdAt: this.createdAt,
       alive: this.proc !== null,
       autoYes: this.autoYes,
+      handoff: this.handoff,
     };
   }
 
@@ -105,6 +117,17 @@ export class HubSession {
     }
   }
 
+  /** The visible screen (plus optional scrollback rows) as plain text, bottom row last. */
+  screenText(scrollback = 0): string {
+    const mirror = this.mirror;
+    if (!mirror) return '';
+    const buf = mirror.buffer.active;
+    const from = Math.max(0, buf.length - mirror.rows - Math.max(0, scrollback));
+    const lines: string[] = [];
+    for (let i = from; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+    return lines.join('\n').replace(/\s+$/, '');
+  }
+
   /** Exact current screen state (incl. colors, cursor, alt-screen) as an ANSI stream. */
   snapshot(): string {
     try {
@@ -116,12 +139,31 @@ export class HubSession {
 }
 
 /**
- * Owns all claude PTYs.
+ * Owns all agent PTYs.
  * Events: 'data' (session, chunk), 'change' (session), 'exit' (session).
  */
 export class SessionManager extends EventEmitter {
   sessions = new Map<string, HubSession>();
-  private claudeExe = resolveClaudeExe();
+  /** who this hub is, for the briefing every session receives (set by the hub at boot) */
+  identity: { machine: string; hubUrl: string } = { machine: 'this machine', hubUrl: 'http://127.0.0.1:5959' };
+  /** agent id -> resolved executable (install paths move on updates; resolve once) */
+  private exeCache = new Map<string, string>();
+
+  private exeFor(agentType: string): string {
+    let exe = this.exeCache.get(agentType);
+    if (!exe) {
+      exe = getAgent(agentType).resolveExe();
+      this.exeCache.set(agentType, exe);
+    }
+    return exe;
+  }
+
+  /** An agent that mints its own conversation id has reported it — adopt it. */
+  bindSessionId(session: HubSession, id: string) {
+    if (session.claudeSessionId === id) return;
+    session.claudeSessionId = id;
+    this.emit('change', session);
+  }
 
   create(opts: SpawnOptions): HubSession {
     // resuming a conversation supersedes its EXITED cards — leaving them
@@ -147,23 +189,36 @@ export class SessionManager extends EventEmitter {
   }
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean) {
-    const args: string[] = [];
-    if (isResume) {
-      args.push('--resume', session.claudeSessionId);
-    } else {
-      args.push('--session-id', session.claudeSessionId);
-    }
-    args.push('-n', session.name, '--settings', HOOKS_JSON);
-    if (session.permissionMode) args.push('--permission-mode', session.permissionMode);
-    if (session.model) args.push('--model', session.model);
-    if (initialPrompt) args.push(initialPrompt);
+    const adapter = agentFor(session);
+    const identity: Identity = {
+      hubId: session.hubId,
+      conversationId: session.claudeSessionId,
+      machine: this.identity.machine,
+      engine: session.agentType,
+      cwd: session.cwd,
+      hubUrl: this.identity.hubUrl,
+    };
+    adapter.beforeSpawn?.(session.cwd);
+    const args = adapter.buildArgs({
+      sessionId: session.claudeSessionId,
+      resume: isResume,
+      name: session.name,
+      cwd: session.cwd,
+      model: session.model,
+      permissionMode: session.permissionMode,
+      initialPrompt,
+      briefing: fleetBriefing(identity),
+      // the node running the hub runs the server too — no PATH lookup in a service session
+      // identity goes in explicitly: Codex does not hand its own environment to MCP servers
+      mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: identityEnv(identity) },
+    });
 
-    const proc = pty.spawn(this.claudeExe, args, {
+    const proc = pty.spawn(this.exeFor(session.agentType), args, {
       name: 'xterm-256color',
       cols: session.cols,
       rows: session.rows,
       cwd: session.cwd,
-      env: { ...process.env } as Record<string, string>,
+      env: { ...process.env, ...identityEnv(identity) } as Record<string, string>,
       useConpty: true,
     });
     session.proc = proc;
@@ -252,6 +307,7 @@ export class SessionManager extends EventEmitter {
 
   /** Register a persisted record from a previous hub run as an EXITED card with Resume available. */
   addExitedRecord(rec: {
+    agentType?: string;
     claudeSessionId: string;
     name: string;
     cwd: string;
@@ -259,16 +315,26 @@ export class SessionManager extends EventEmitter {
     permissionMode?: string;
     summary?: string;
     createdAt?: number;
+    handoff?: HandoffLineage;
+    alive?: boolean;
+    stateSince?: number;
+    savedAt?: number;
   }) {
     const session = new HubSession({
       cwd: rec.cwd,
+      agentType: rec.agentType,
       name: rec.name,
       model: rec.model,
       permissionMode: rec.permissionMode,
       resumeSessionId: rec.claudeSessionId,
+      handoff: rec.handoff,
     });
     session.state = 'EXITED';
     session.detail = 'hub restarted';
+    // a card that was running when the hub went down exited at that moment;
+    // one that was already EXITED keeps its original exit time — so the
+    // sidebar's "most recently exited first" order survives the restart
+    session.stateSince = rec.alive ? (rec.savedAt ?? Date.now()) : (rec.stateSince ?? rec.createdAt ?? Date.now());
     session.summary = rec.summary;
     if (rec.createdAt) session.createdAt = rec.createdAt;
     this.sessions.set(session.hubId, session);

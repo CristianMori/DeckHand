@@ -144,6 +144,13 @@ export class Federation extends EventEmitter {
       if (existing && existing.info.instanceId !== hub.instanceId) {
         existing.close();
         this.peers.delete(hub.url);
+      } else if (existing && existing.info.machine !== hub.machine) {
+        // same hub, new name: a hub that started before its tailscale answered
+        // (macOS at login) first called itself by its OS hostname and renamed
+        // once the tailnet replied — follow it, or ADMIN and fleet resume
+        // keep addressing a name nobody answers to
+        existing.info.machine = hub.machine;
+        this.emit('change');
       }
       if (!this.peers.get(hub.url)) {
         // same machine may have re-appeared on a new port — drop the stale entry
@@ -191,11 +198,25 @@ export class Federation extends EventEmitter {
     return list;
   }
 
-  peerBySession(hubId: string): Peer | undefined {
+  /** The peer that owns a session, by hubId, by the agent's conversation id,
+   *  or by a unique (>= 8 char) prefix of it — the same handles the local
+   *  lookup accepts, so a client may address any fleet session by the id
+   *  that survives hub restarts. The owning hub resolves the id again on
+   *  its side when the request is forwarded. */
+  peerBySession(id: string): Peer | undefined {
     for (const peer of this.peers.values()) {
-      if (peer.sessions.some((s) => s.hubId === hubId)) return peer;
+      if (peer.sessions.some((s) => s.hubId === id || s.claudeSessionId === id)) return peer;
     }
-    return undefined;
+    if (id.length < 8) return undefined;
+    const hits: { peer: Peer; alive: boolean }[] = [];
+    for (const peer of this.peers.values()) {
+      for (const s of peer.sessions) {
+        if (s.claudeSessionId.startsWith(id)) hits.push({ peer, alive: s.alive });
+      }
+    }
+    const live = hits.filter((h) => h.alive);
+    const pool = live.length ? live : hits;
+    return pool.length === 1 ? pool[0].peer : undefined;
   }
 
   connectedPeers(): Peer[] {
@@ -214,14 +235,22 @@ export class Federation extends EventEmitter {
     peer: Peer,
     path: string,
     init?: { method?: string; body?: unknown },
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<{ status: number; body: unknown; contentType: string }> {
     const res = await fetch(`${peer.info.url}${path}`, {
       method: init?.method ?? 'GET',
       headers: init?.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
     });
-    const body = await res.json().catch(() => ({}));
-    return { status: res.status, body };
+    // most routes answer JSON, but the screen (and export) routes answer
+    // text/plain or HTML — hand those back as the string they are
+    const contentType = res.headers.get('content-type') ?? '';
+    const text = await res.text();
+    if (/json/i.test(contentType)) {
+      let body: unknown = {};
+      try { body = JSON.parse(text); } catch { /* malformed — empty object as before */ }
+      return { status: res.status, body, contentType };
+    }
+    return { status: res.status, body: text, contentType };
   }
 
   termWsUrl(peer: Peer, hubId: string): string {

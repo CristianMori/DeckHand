@@ -1,4 +1,4 @@
-import type { AdminStatus, FleetFolderGroup, FleetMachine, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, AgentInfo, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -32,12 +32,29 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
   sessions: () => fetch('/api/sessions').then((r) => json<SessionInfo[]>(r)),
   fleet: () => fetch('/api/fleet').then((r) => json<FleetMachine[]>(r)),
+  files: (path: string, machine?: string) =>
+    fetch(`/api/files?path=${encodeURIComponent(path)}${machine ? `&machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
+      json<{ machine: string; root: string; path: string; entries: FileEntry[] }>(r),
+    ),
+  filesCopy: (body: { fromMachine: string; fromPath: string; toMachine: string; toDir: string; overwrite?: boolean }) =>
+    fetch(`/api/files/copy?machine=${encodeURIComponent(body.toMachine)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ ok: boolean; machine: string; path: string; bytes: number }>(r)),
+  agents: (machine?: string) =>
+    fetch(`/api/agents${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
+      json<AgentInfo[]>(r),
+    ),
   projects: (machine?: string) =>
     fetch(`/api/projects${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then((r) =>
       json<{ name: string; path: string }[]>(r),
     ),
   spawn: (body: {
-    cwd: string;
+    cwd?: string;
+    /** create this folder under the target's projects root and start there */
+    newFolder?: string;
+    agentType?: string;
     name?: string;
     model?: string;
     permissionMode?: string;
@@ -78,6 +95,7 @@ export const api = {
   fleetFolders: () => fetch('/api/fleet-folders').then((r) => json<FleetFolderGroup[]>(r)),
   fleetResume: (body: {
     folder: string;
+    agentType?: string;
     claudeSessionId: string;
     sourceMachine?: string;
     machine?: string;
@@ -88,6 +106,32 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ jobId: string; machine: string }>(r)),
+  setFrozen: (folder: string, on: boolean, machine?: string) =>
+    fetch(`/api/folders/${encodeURIComponent(folder)}/frozen${mq(machine)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ on }),
+    }).then((r) => json<{ ok: true; frozen: boolean }>(r)),
+  handoff: (
+    hubId: string,
+    body: {
+      targetAgent: string;
+      targetMachine?: string;
+      targetFolder?: string;
+      newFolder?: string;
+      askBrief: boolean;
+      includeDialogue: boolean;
+      model?: string;
+      permissionMode?: string;
+    },
+  ) =>
+    fetch(`/api/sessions/${hubId}/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ jobId: string; machine: string }>(r)),
+  handoffStatus: (jobId: string, machine?: string) =>
+    fetch(`/api/handoff/${jobId}${mq(machine)}`).then((r) => json<HandoffJob>(r)),
   fleetResumeStatus: (jobId: string, machine?: string) =>
     fetch(`/api/fleet-resume/${jobId}${machine ? `?machine=${encodeURIComponent(machine)}` : ''}`).then(
       (r) => json<ResumeJob>(r),

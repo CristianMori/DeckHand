@@ -4,10 +4,10 @@
 
 ![Deckhand dashboard](docs/screenshot.jpg)
 
-A self-hosted **fleet controller for Claude Code sessions**. Run coding-agent
-sessions on any of your computers, watch and drive all of them from one
-dashboard (or your phone), and let projects and conversations follow you
-between machines. No cloud service, no accounts, no configuration files to
+A self-hosted **fleet controller for coding-agent sessions** — Claude Code and
+OpenAI Codex, side by side. Run agent sessions on any of your computers, watch
+and drive all of them from one dashboard (or your phone), and let projects and
+conversations follow you between machines. No cloud service, no accounts, no configuration files to
 maintain — machines discover each other and the fleet assembles itself.
 
 Deckhand grew out of a simple dashboard whose only job was to make sure you
@@ -19,6 +19,25 @@ when any session on any machine needs a human.
 
 ## What it does
 
+- **Mixed agents.** Claude Code and Codex sessions live in the same session
+  list and tab bar. The launch dialog offers whichever CLIs are installed on
+  the machine you pick, with that agent's own model and permission choices.
+  Status, resume, cross-machine migration, the durable transcript store and
+  PRINT export work for both. Each agent is an adapter under `server/agents/`,
+  so a third CLI is one file away.
+- **Hand a session to another engine.** HAND OFF on any card moves the work
+  to a different engine, machine and/or folder, including a brand-new folder.
+  Not a transcript transplant (each agent's log is its own private replay
+  format): the departing agent is asked to write a brief for its successor,
+  the hub appends the conversation as plain dialogue, drops both into the
+  target folder as `.deckhand/handoff.md`, and starts the target engine with
+  "read it, then continue". The new card shows where it came from.
+- **Freeze a project to a machine.** FREEZE in the terminal header pins the
+  session's folder to the machine it lives on: it is never registered for
+  sync, never pushed to the home machine, and its conversations can only be
+  resumed there (the resume dialog says so). Replication that already started
+  is stopped; files stay where they are. The list lives in the hub's data dir,
+  not in the folder, so the mark itself never travels.
 - **One dashboard, whole fleet.** Every machine runs the same hub; every hub
   shows every machine's sessions. Open `http://<any-machine>:5959` from any
   device on your tailnet — they are all equivalent.
@@ -39,13 +58,26 @@ when any session on any machine needs a human.
   folder. From then on it syncs continuously (file-watch, seconds) to the
   home machine, which keeps the canonical copy plus 30 days of per-file
   version history.
-- **Durable conversation store.** Every hub continuously pushes transcripts
-  to the home machine. Conversations outlive their origin machine, local
-  retention cleanup, and folder moves — the resume dialog backfills from the
-  store when no machine can offer a copy.
+- **Durable conversation store.** Every hub pushes transcripts to the home
+  machine. Conversations outlive their origin machine, local retention
+  cleanup, and folder moves — the resume dialog backfills from the store when
+  no machine can offer a copy, and an EXITED card whose transcript Claude
+  Code's retention cleanup has removed (default: 30 days idle) fetches it back
+  from the store when you press RESUME. Hub-spawned Claude sessions also get
+  `cleanupPeriodDays` set to 100 years through the injected settings, so the
+  local copy stays. Transcripts are append-only, so only the new
+  bytes travel (gzipped, verified by size + sha256, whole file as fallback);
+  a live session's transcript goes at most every 10 minutes and right when
+  the session goes idle or exits, and one sweep sends at most 32 MB
+  (`HUB_TSTORE_SWEEP_MB`).
 - **Fleet auto-update.** Publish a build to the home machine; every hub sees
   it and updates itself from the ADMIN panel (or its 6-hour self-check).
   Dev checkouts (build 0) never auto-update.
+- **Fleet file browser.** FILES walks any connected machine's project folders,
+  downloads a file or a whole folder as a zip to your browser, or copies a file
+  straight to another machine:
+  the target hub pulls the bytes from the source hub, so nothing passes through
+  the dashboard.
 - **Console-first workflow if you want it.** The `deckhand` CLI spawns
   hub-owned sessions bridged into your real terminal, tmux-style: `Ctrl+Q`
   detaches, the session lives on, reattach from anywhere — including a
@@ -62,7 +94,7 @@ when any session on any machine needs a human.
 - Not multi-user. There is no login system; the trust boundary is your
   private network (see Security).
 - Not a CI runner or an agent framework. It hosts and moves interactive
-  Claude Code sessions; the sessions themselves are stock Claude Code.
+  sessions; the sessions themselves are stock Claude Code or stock Codex.
 
 ---
 
@@ -106,15 +138,68 @@ peers; there is no controller. Three subsystems ride on that:
 Four signals fused with precedence (higher wins, 3-second shield):
 
 1. PTY exit → EXITED
-2. **Claude Code hooks** (injected per-session via `--settings`, no changes
-   to your global settings): UserPromptSubmit → WORKING, AskUserQuestion →
-   WAITING_QUESTION, Stop → IDLE, permission notification →
-   WAITING_PERMISSION.
+2. **Agent hooks.** Claude Code: injected per-session via `--settings`, no
+   changes to your global settings — UserPromptSubmit → WORKING,
+   AskUserQuestion → WAITING_QUESTION, Stop → IDLE, permission notification
+   → WAITING_PERMISSION. Codex: the hub keeps its own entries in
+   `~/.codex/hooks.json` (yours are preserved) and launches with
+   `--dangerously-bypass-hook-trust` so they run without the per-hook review
+   prompt — UserPromptSubmit → WORKING, PermissionRequest →
+   WAITING_PERMISSION, Stop/Interrupt → IDLE. Codex mints its own
+   conversation id; the SessionStart hook reports it and the hub binds it to
+   the card it just launched.
 3. `~/.claude/sessions/*.json` watcher — Claude Code's own status feed.
-4. Output heuristics — fallback until the first hook arrives.
+4. Output heuristics — fallback until the first hook arrives (a resumed
+   session fires none until its first prompt). Output alone is not work: a
+   resize or an opened tab repaints the whole screen. Once a burst settles the
+   hub reads the screen the TUI drew — its activity line ("✻ Thinking… (12s ·
+   tokens)") means WORKING, an empty composer means IDLE — and each agent
+   contributes its own prompt patterns.
+
+Codex conversations are found through the `threads` table of
+`~/.codex/state_*.sqlite` (read with Node's built-in sqlite) and live as
+rollout files under `~/.codex/sessions/`. Moving one to another machine is a
+file copy — Codex rebuilds its index on resume. The first launch in a folder
+would ask Codex's "do you trust this directory?" question; the hub records the
+yes answer in `~/.codex/config.toml` beforehand, the same way pressing Yes does.
 
 Alerts fire only after a state persists 1.5 s. They reach every connected
 dashboard (chime + tab badge). There are deliberately no desktop toasts.
+
+### Fleet etiquette
+
+Several agents work side by side in a fleet, so each one is told where it is
+and how to behave towards the others.
+
+- **Briefing (level 1).** Every session the hub spawns is told, as extra
+  system instructions, that it is a Deckhand fleet session, its hub id,
+  conversation id, engine, machine and folder, and the rules: your folder is
+  yours, another live session's folder is theirs, talk to other sessions only
+  through the `deckhand-agent` MCP tools, agree a change before making it in
+  someone else's code. Claude Code receives it via `--append-system-prompt`,
+  Codex via `developer_instructions`. The same identity is in the process
+  environment as `DECKHAND_SESSION`, `DECKHAND_CONVERSATION`,
+  `DECKHAND_MACHINE`, `DECKHAND_ENGINE`, `DECKHAND_FOLDER`,
+  `DECKHAND_HUB_URL`. The rules text is served at `GET /api/etiquette`.
+- **Reach (the `deckhand` MCP server).** Every spawned session is also handed
+  the hub's own MCP server, `mcp/deckhand-mcp.mjs` (stdio, no dependencies,
+  runs under the hub's node). Claude Code gets it through `--mcp-config`
+  (`data/hub-mcp.json`, next to the project's own `.mcp.json`), Codex
+  through `-c mcp_servers.deckhand.*`. Its tools mirror the RavenAgents
+  `deckhand-agent` server with the same names and camelCase parameters:
+  `dh_whoami`, `dh_list_sessions`, `dh_get_session`, `dh_read_screen`,
+  `dh_read_exchanges`, `dh_last_reply`, `dh_wait_for_session`,
+  `dh_send_prompt`, `dh_send_keys`, `dh_set_autoyes`, `dh_create_session`,
+  `dh_kill_session`, `dh_resume_session`, `dh_remove_session`,
+  `dh_fleet_resume`, `dh_handoff`, `dh_list_fleet`, `dh_list_agents`,
+  `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`.
+  It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
+- **Warning (level 2).** The PreToolUse hook the hub already injects answers
+  an edit (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Codex
+  `apply_patch`) that lands in a project folder owned by *another live
+  session* with a warning, delivered to the agent as additional context and
+  to the user as a system message. Nothing is blocked: the agent is told
+  whose folder it is and which hub id to talk to, and decides.
 
 ---
 
@@ -122,10 +207,11 @@ dashboard (chime + tab badge). There are deliberately no desktop toasts.
 
 | What | Why | Notes |
 |---|---|---|
-| Windows 10/11 or Linux | hub runs on both | macOS untested |
+| Windows 10/11, macOS, or Linux | hub runs on all three | macOS: Apple silicon or Intel, LaunchAgent |
 | [Tailscale](https://tailscale.com) (free) | discovery, transport, trust boundary | required for any multi-machine features |
-| Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / distro package |
+| Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / `brew install node` / distro package |
 | [Claude Code](https://claude.com/claude-code) | the sessions themselves | logged in on each machine that runs sessions |
+| [Codex CLI](https://developers.openai.com/codex) | optional second agent | `npm i -g @openai/codex`, logged in; machines without it simply don't offer it |
 | [Syncthing](https://syncthing.net) (free) | folder replication | optional — skip it and everything but folder sync works |
 
 A single machine with none of the above except Node + Claude Code still
@@ -147,7 +233,9 @@ works as the original standalone dashboard.
    ```
    set HUB_PROJECTS_ROOT=D:\Projects
    ```
-   Linux: pass `HUB_PROJECTS_ROOT` to the installer (defaults `/srv/sync`).
+   macOS/Linux: pass `HUB_PROJECTS_ROOT` to the installer (defaults
+   `~/Projects` on macOS, `/srv/sync` on Linux), or create `hub-env.sh` next
+   to `start-hub.sh` with `export HUB_PROJECTS_ROOT=…`.
 4. **Install the always-on runner:**
 
    **Windows** — one installer, two modes (it asks if you don't pick):
@@ -164,6 +252,19 @@ works as the original standalone dashboard.
      sign-ins usually reject service logon — either switch the account to
      local sign-in or use `startup` mode).
 
+   **macOS** (per-user LaunchAgent: starts at login, kept alive, also how
+   updates apply; runs in your login session so Claude Code and Codex see
+   your sign-ins — keep the Mac from sleeping):
+   ```
+   bash scripts/install-macos.sh
+   bash scripts/install-macos.sh --uninstall
+   ```
+   To survive a reboot unattended, turn on automatic login (System Settings
+   → Users & Groups), which requires FileVault off. The hub usually starts
+   before the Tailscale app at login and runs solo under its OS hostname for
+   a minute or two (the log says `tailscale status failed`); it joins the
+   fleet under its tailnet name as soon as the app answers.
+
    **Linux** (systemd; also how updates apply):
    ```
    sudo bash scripts/install.sh
@@ -171,9 +272,10 @@ works as the original standalone dashboard.
    ```
 5. **Windows firewall**: when first run interactively, click **Allow** on
    the prompt. Services get no prompt — if other machines can't reach this
-   hub, add the rule once (elevated):
+   hub, add the rules once (elevated; the UDP one is for LAN discovery):
    ```
    New-NetFirewallRule -DisplayName Deckhand -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5959-5969
+   New-NetFirewallRule -DisplayName "Deckhand beacon" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5959-5969
    ```
 6. Open `http://127.0.0.1:5959`. Within a minute every other dashboard in
    the fleet shows this machine, and vice versa.
@@ -211,8 +313,12 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
 ### Dashboard
 
 - **Cards** (left) — every session in the fleet, machine-tagged, sorted by
-  urgency: WAITING first, then IDLE, WORKING, EXITED. Cards show elapsed
-  time in state and the last assistant message.
+  urgency: WAITING first, then WORKING, IDLE, EXITED, with unreachable
+  machines' cards at the bottom. Inside the working, idle and exited bands
+  the card that entered the state most recently is on top, so a session that
+  just finished sits right under the working ones and one that just exited
+  sits right under the idle ones. Cards show elapsed time in state and the
+  last assistant message.
 - **Terminal tabs** (right) — click a card to open its terminal as a tab.
   `–` (or middle-click) closes the tab and leaves the session running; `×`
   ends the session (it stays resumable). On another machine's session,
@@ -246,8 +352,69 @@ deckhand ls               list fleet sessions
 ```
 
 `Ctrl+Q` detaches; the session keeps running and is also visible in every
-dashboard (both can be attached at once — keystrokes merge live). Set
-`HUB_URL` if your hub is not on `127.0.0.1:5959-5969`.
+dashboard (both can be attached at once — keystrokes merge live). With no
+hub on `127.0.0.1:5959-5969` the CLI broadcasts `DECKHAND?` on the LAN and
+takes the first hub that answers; set `HUB_URL` to skip the search and
+`HUB_TOKEN` (that machine's `data/api-token`) when the hub is a LAN one.
+
+### REST API (automation)
+
+Everything the dashboard does is plain HTTP on the hub, and a few extra
+routes exist only for scripts: type a prompt, wait for the turn to end, read
+the reply, read the screen. The full reference, written to be handed to
+another agent as its briefing, is [`docs/automation-api.md`](docs/automation-api.md). Talk to any hub in the fleet — per-session calls
+are forwarded to the machine that owns the session, and `machine` on a spawn
+picks where it runs. Same trust rule as the dashboard: callers must come from
+localhost or the tailnet.
+
+One-shot question, answer in the response:
+
+```
+curl -X POST http://127.0.0.1:5959/api/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"cwd":"C:\\DataDrive\\myproject","agentType":"claude",
+       "initialPrompt":"Summarize the README in one sentence.","wait":120000}'
+→ { "hubId":"3724583a", "state":"IDLE", "reply":"…", "timedOut":false, … }
+```
+
+Then keep the conversation going:
+
+```
+POST /api/sessions/:id/prompt     {"text":"…","wait":120000}   → same shape, with "reply"
+POST /api/sessions/:id/keys       {"keys":["down","enter"]}     → answer a menu or prompt
+GET  /api/sessions/:id/wait?until=settled&timeout=120000        → long-poll
+GET  /api/sessions/:id/screen[?scrollback=200][&format=ansi]    → the terminal as text
+GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …] oldest first
+GET  /api/sessions/:id                                          → card data
+POST /api/sessions/:id/kill | /resume | /remove | /autoyes {"on":true}
+```
+
+Rules of the road:
+
+- **`wait`** is `true` or a millisecond budget, capped at 240 s per call.
+  A response with `"timedOut": "start"` means the prompt never started a
+  turn (read `screen` — usually a trust or permission prompt is up);
+  `"done"` means the turn is still running: call `wait` again. Long turns
+  are just a loop over `wait`.
+- **`prompt` refuses a WORKING session with 409** unless `"queue": true`;
+  the TUI would stack it behind the running turn.
+- **`reply`** is the agent's text for that prompt, pulled from its transcript.
+  Codex and Claude both provide it; an engine with no readable transcript
+  returns no `reply` and 404 on `exchanges`.
+- `keys` understands `enter esc tab backspace up down left right ctrl-c
+  ctrl-d ctrl-u shift-tab`; anything else is sent as typed. `{"data":"…"}`
+  sends raw bytes.
+- `until` for `wait` is `settled` (default — anything but STARTING/WORKING),
+  `changed` (leaves the current state; pass `&from=WORKING` to name it), or a
+  state: `IDLE WORKING WAITING_PERMISSION WAITING_QUESTION EXITED`.
+- Permission prompts: either turn on `autoyes` for the session or watch for
+  `WAITING_PERMISSION` and answer with `keys`. Plan-mode exit is never
+  auto-approved.
+- Folder trust is handled for you: before every spawn the hub records the
+  folder as trusted for that engine (Claude's `~/.claude.json`, Codex's
+  `config.toml`), so a brand-new project starts its first turn without a
+  "do you trust this folder?" prompt. If some other prompt does appear, the
+  session sits in STARTING — `screen` shows it, `keys` answers it.
 
 ### Publishing updates (the machine you develop on)
 
@@ -260,29 +427,35 @@ monotonic build number), tars the tree, uploads to the home machine's
 release shelf. Every hub notices within 6 hours, or immediately via
 ADMIN → CHECK FOR UPDATES. Applying: Windows hands off to a detached runner
 (swap files, `npm install`, relaunch — or let the service manager relaunch);
-Linux extracts in place and exits for systemd to restart. A dev checkout
+macOS/Linux extract in place and exit for launchd/systemd to restart. A dev checkout
 (no `version.json` → build 0) reports `DEV` in ADMIN and never auto-updates.
 
 ---
 
 ## Configuration reference
 
-All optional; set in the environment (`hub-env.cmd` on Windows, the systemd
-unit on Linux).
+All optional; set in the environment (`hub-env.cmd` on Windows, `hub-env.sh`
+or the LaunchAgent on macOS, the systemd unit on Linux).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `HUB_PORT` | `5959` | listen port; if taken, walks up to +10 (fleet probes 5959–5969) |
-| `HUB_PROJECTS_ROOT` | `C:\DataDrive` / `/srv/sync` | where projects live and fleet folders materialize; the hub refuses to materialize folders if it doesn't exist |
+| `HUB_PROJECTS_ROOT` | `~\Projects` / `~/Projects` / `/srv/sync` | where projects live and fleet folders materialize; the hub refuses to materialize folders if it doesn't exist |
 | `HUB_DATA_DIR` | `<repo>\data` | runtime state (below) |
 | `HUB_STORE_MACHINE` | `vps-node` | fleet machine holding the durable transcript store |
 | `HUB_UPDATE_MACHINE` | `vps-node` | fleet machine holding the release shelf |
 | `DECKHAND_SERVICE` | unset | set by service installers; tells the hub a supervisor handles relaunches |
+| `HUB_SOLO` | unset | skip fleet discovery entirely — for a throwaway test hub on an odd port that must not join the fleet |
+| `HUB_LAN` | `1` | `0` = refuse LAN callers even with the token, and don't run the beacon |
+| `HUB_BEACON` | `1` | `0` = don't answer `DECKHAND?` / announce on UDP |
+| `HUB_BEACON_PORT` | `5959` | UDP port the beacon listens on (walks up to +10 if taken) |
+| `HUB_TOKEN` | unset | `deckhand` CLI: bearer token for a LAN hub (`data/api-token` on that machine) |
 | `HUB_URL` | probe localhost | `deckhand` CLI: explicit hub address |
 
 `data/` contents: `hub-hooks.json` (generated hook settings injected into
-sessions), `hub-sessions.json` (resume records for EXITED cards),
+sessions), `hub-sessions.json` (resume records for EXITED cards; sessions that were running when the hub went down are relaunched at the next boot, a couple of seconds apart — `HUB_RESTORE=0` turns that off),
 `sync.json` (Syncthing endpoints — contains API keys, never commit),
+`api-token` (the LAN bearer token — same rule),
 `drops/` (drag-and-drop uploads), `hub.log` (launcher-captured output),
 `transcripts/` (the durable store, home machine), `releases/` (release
 shelf, home machine), `update.tgz` + `update-runner.cmd` (transient, during
@@ -296,16 +469,29 @@ Read this section before port-forwarding anything.
 
 - The dashboard **executes commands on your machines** by design — treat
   access to it as shell access to the entire fleet.
-- The hub binds `0.0.0.0` but accepts only: loopback, the machine's own
-  interface addresses, and tailnet sources (`100.64.0.0/10`,
-  `fd7a:115c:a1e0::/48`). LAN and internet sources get 403 / dropped.
-  **The tailnet is the trust boundary**: any device you admit to your
-  tailnet can drive your fleet. Don't admit guests.
-- There is no application-level auth and no TLS (WireGuard encrypts
-  transit). Never expose the port publicly; if you want access from
-  browsers outside the tailnet, put an authenticating proxy (e.g.
-  Cloudflare Tunnel + Access) in front — the hub itself should stay
-  unreachable from the internet.
+- The hub binds `0.0.0.0` and sorts callers into three classes:
+  - **loopback, the machine's own addresses, tailnet sources**
+    (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) — trusted, no token.
+    **The tailnet is the trust boundary**: any device you admit to your
+    tailnet can drive your fleet. Don't admit guests.
+  - **private LAN** (`10/8`, `172.16/12`, `192.168/16`) — allowed **with the
+    API token** in `data/api-token` (generated on first start). Present it
+    as `Authorization: Bearer …`, or open `http://<lan-ip>:5959/?token=…`
+    once in a browser — that sets an HttpOnly cookie and the dashboard works
+    from a phone on the Wi-Fi. Wrong or missing token → 401. `HUB_LAN=0`
+    turns LAN access off (tailnet-only, as before).
+  - **everything else** — 403 / dropped, token or not.
+- **LAN discovery**: the hub answers `DECKHAND?` on **UDP 5959** with its
+  hub-info JSON (machine, build, HTTP port, URLs) and announces itself every
+  30 s. Send to the LAN's directed broadcast (`192.168.1.255`), not only
+  `255.255.255.255` — Windows routes the limited broadcast out one
+  interface, often the Tailscale one. `HUB_BEACON=0` disables it. The
+  beacon reveals nothing the token doesn't already protect.
+- There is no TLS (WireGuard encrypts tailnet transit; the LAN is
+  plaintext, so the token is only as private as your Wi-Fi). Never expose
+  the port publicly; if you want access from browsers outside both
+  networks, put an authenticating proxy (e.g. Cloudflare Tunnel + Access)
+  in front — the hub itself should stay unreachable from the internet.
 - Syncthing API keys in `data/sync.json` grant control of file sync; the
   file is gitignored — keep it that way.
 

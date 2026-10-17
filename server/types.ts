@@ -14,6 +14,9 @@ export const SIG_OUTPUT = 4;
 
 export interface SessionInfo {
   hubId: string;
+  /** which agent adapter runs this session ('claude', 'codex', ...) */
+  agentType: string;
+  /** the agent's own conversation id (name kept for wire/persistence compatibility) */
   claudeSessionId: string;
   name: string;
   cwd: string;
@@ -34,6 +37,16 @@ export interface SessionInfo {
   origin?: string;
   /** true when the owning hub is currently unreachable — card data is a cached snapshot */
   unreachable?: boolean;
+  /** this session was started as a handoff from another session */
+  handoff?: HandoffLineage;
+  /** the session's folder is frozen to its machine — never synced or moved */
+  frozen?: boolean;
+}
+
+export interface HandoffLineage {
+  fromAgent: string;
+  fromSessionId: string;
+  fromMachine: string;
 }
 
 export interface FleetMachine {
@@ -45,9 +58,11 @@ export interface FleetMachine {
 
 export interface SpawnOptions {
   cwd: string;
+  agentType?: string;
   name?: string;
   model?: string;
   permissionMode?: string;
   initialPrompt?: string;
   resumeSessionId?: string;
+  handoff?: HandoffLineage;
 }

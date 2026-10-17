@@ -15,7 +15,7 @@ const PHASE_LABEL: Record<string, string> = {
   'push-source': 'source machine pushing to VPS',
   pulling: 'pulling folder to target',
   transcript: 'transferring conversation',
-  spawning: 'starting claude…',
+  spawning: 'starting session…',
 };
 
 /**
@@ -35,6 +35,10 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       <div>
         <label>SOURCE MACHINE</label>
         <select id="rs-source"></select>
+      </div>
+      <div>
+        <label>ENGINE</label>
+        <select id="rs-engine"></select>
       </div>
     </div>
     <label>FOLDER</label>
@@ -71,6 +75,13 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     sourceMachines.map((m) => `<option value="${m}">${m}</option>`).join('') +
     (groups.some((g) => g.onVps) ? '<option value="__vps__">vps only</option>' : '');
 
+  // engine filter: which CLI's conversations to offer
+  const engineSel = get<HTMLSelectElement>('rs-engine');
+  const engineOf = (c: FolderConversation) => c.agentType || 'claude';
+  const engines = [...new Set(groups.flatMap((g) => g.locations.flatMap((l) => l.conversations.map(engineOf))))].sort();
+  engineSel.innerHTML =
+    '<option value="">all engines</option>' + engines.map((e) => `<option value="${e}">${e}</option>`).join('');
+
   const foldersEl = get<HTMLDivElement>('rs-folders');
   const convsWrap = get<HTMLDivElement>('rs-convs-wrap');
   const convsEl = get<HTMLDivElement>('rs-convs');
@@ -78,9 +89,12 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
 
   function visibleGroups(): FleetFolderGroup[] {
     const src = sourceSel.value;
-    if (!src) return groups;
-    if (src === '__vps__') return groups.filter((g) => g.onVps);
-    return groups.filter((g) => g.locations.some((l) => l.machine === src));
+    const engine = engineSel.value;
+    let shown = groups;
+    if (src === '__vps__') shown = groups.filter((g) => g.onVps);
+    else if (src) shown = groups.filter((g) => g.locations.some((l) => l.machine === src));
+    if (engine) shown = shown.filter((g) => g.locations.some((l) => l.conversations.some((c) => engineOf(c) === engine)));
+    return shown;
   }
 
   function renderFolders() {
@@ -88,18 +102,24 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     foldersEl.innerHTML = '';
     const shown = visibleGroups();
     if (shown.length === 0) {
-      foldersEl.innerHTML = '<div class="empty-note">no folders match this source</div>';
+      foldersEl.innerHTML = '<div class="empty-note">no folders match this source and engine</div>';
       return;
     }
     for (const g of shown) {
       const conversationCount = g.locations.reduce((n, l) => n + l.conversations.length, 0);
       const onTarget = g.locations.some((l) => l.machine === target);
       const activeOn = g.locations.filter((l) => l.activeHubSessions > 0).map((l) => l.machine);
+      const frozenOn = g.locations.filter((l) => l.frozen).map((l) => l.machine);
+      // only the durable transcript copy exists — the project folder itself is
+      // on a machine that is offline, so a resume cannot materialize it yet
+      const storeOnly = !g.onVps && g.locations.length > 0 && g.locations.every((l) => l.path === '(fleet store)');
       const where = onTarget
         ? 'local'
         : g.onVps
           ? 'on vps'
-          : `on ${g.locations.map((l) => l.machine).join(', ') || '?'}`;
+          : storeOnly
+            ? 'transcript only · folder on an offline machine'
+            : `on ${g.locations.map((l) => l.machine).join(', ') || '?'}`;
       const row = document.createElement('div');
       row.className = `resume-row${selectedFolder === g ? ' selected' : ''}`;
       row.innerHTML = `
@@ -107,6 +127,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
           <span class="resume-proj"></span>
           <span class="folder-where ${onTarget ? 'local' : 'remote'}">${where.toUpperCase()}</span>
           ${activeOn.length ? `<span class="chip working" title="live hub sessions in this folder">ACTIVE: ${activeOn.join(',')}</span>` : ''}
+          ${frozenOn.length ? `<span class="frozen-tag" title="frozen to ${frozenOn.join(', ')} — resumable only there">❄ ${frozenOn.join(', ')}</span>` : ''}
           <span class="resume-age">${age(Math.max(0, ...g.locations.map((l) => l.updatedAt)))}</span>
         </div>
         <div class="resume-snippet">${conversationCount} conversation${conversationCount === 1 ? '' : 's'}</div>
@@ -126,9 +147,11 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
     convsWrap.hidden = false;
     convsEl.innerHTML = '';
     const src = sourceSel.value;
-    const convs: (FolderConversation & { machine?: string })[] = selectedFolder.locations
+    const engine = engineSel.value;
+    const convs: (FolderConversation & { machine?: string; store?: boolean })[] = selectedFolder.locations
       .filter((l) => !src || src === '__vps__' || l.machine === src)
-      .flatMap((l) => l.conversations.map((c) => ({ ...c, machine: l.machine })))
+      .flatMap((l) => l.conversations.map((c) => ({ ...c, machine: l.machine, store: l.path === '(fleet store)' })))
+      .filter((c) => !engine || engineOf(c) === engine)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     if (convs.length === 0) {
       convsEl.innerHTML =
@@ -145,8 +168,9 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       row.innerHTML = `
         <div class="resume-row-top">
           <span class="resume-proj"></span>
-          <span class="machine-tag">${c.machine ?? ''}</span>
-          ${c.activeElsewhere ? '<span class="chip waiting" title="Open in a claude window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
+          <span class="agent-tag">${c.agentType || 'claude'}</span>
+          <span class="machine-tag">${c.store ? 'fleet store' : (c.machine ?? '')}</span>
+          ${c.activeElsewhere ? '<span class="chip waiting" title="Open in an agent window outside the hub — resuming may fork it">LIVE ELSEWHERE</span>' : ''}
           <span class="resume-age">${age(c.updatedAt)}</span>
         </div>
         <div class="resume-snippet"></div>
@@ -163,11 +187,25 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
   async function resume(c: FolderConversation & { machine?: string }) {
     if (
       c.activeElsewhere &&
-      !confirm('This conversation is open in another claude window. Resuming it may fork the conversation. Continue?')
+      !confirm('This conversation is open in another agent window. Resuming it may fork the conversation. Continue?')
     ) {
       return;
     }
     const target = machineSel.value;
+    const onTarget = selectedFolder!.locations.some((l) => l.machine === target && l.path !== '(fleet store)');
+    const reachable = selectedFolder!.locations.some((l) => l.path !== '(fleet store)') || selectedFolder!.onVps;
+    if (!onTarget && !reachable) {
+      alert(
+        `Only the conversation of "${selectedFolder!.folder}" is reachable (fleet store on ${c.machine}). ` +
+          `The project folder itself is on a machine that is offline — turn it on, wait for it to appear in the fleet, then resume again.`,
+      );
+      return;
+    }
+    const frozenAt = selectedFolder!.locations.find((l) => l.frozen)?.machine;
+    if (frozenAt && frozenAt !== target) {
+      alert(`"${selectedFolder!.folder}" is frozen to ${frozenAt}. Choose ${frozenAt} as the machine to run on, or unfreeze it there first.`);
+      return;
+    }
     const progress = get<HTMLDivElement>('rs-progress');
     const phaseEl = get<HTMLDivElement>('rs-phase');
     const barEl = get<HTMLDivElement>('rs-bar');
@@ -179,6 +217,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
       const { jobId, machine } = await withElsewhereConfirm((force) =>
         api.fleetResume({
           folder: selectedFolder!.folder,
+          agentType: c.agentType,
           claudeSessionId: c.claudeSessionId,
           sourceMachine: c.machine,
           machine: target,
@@ -206,7 +245,7 @@ export async function openResumeDialog(onAdopted: (s: SessionInfo) => void) {
   }
 
   machineSel.onchange = () => renderFolders();
-  sourceSel.onchange = () => {
+  sourceSel.onchange = engineSel.onchange = () => {
     selectedFolder = null;
     convsWrap.hidden = true;
     renderFolders();

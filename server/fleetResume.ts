@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
-import { storeFilePath } from './transcriptStore.js';
-import { readTail, parseTranscriptTail } from './conversations.js';
+import { readFile, stat } from 'node:fs/promises';
+import { STORE_MACHINE, storeFilePath } from './transcriptStore.js';
+import { readTail } from './transcriptIo.js';
 import { join } from 'node:path';
-import { CLAUDE_PROJECTS_DIR, PROJECTS_ROOT, encodeProjectDir } from './config.js';
+import { getAgent } from './agents/index.js';
+import { PROJECTS_ROOT } from './config.js';
+import { isFrozen } from './frozen.js';
 import type { SessionManager } from './sessionManager.js';
 import type { SyncManager } from './syncthing.js';
 import type { Federation } from './federation.js';
@@ -22,6 +24,7 @@ export type ResumePhase =
 export interface ResumeJob {
   id: string;
   folder: string;
+  agentType: string;
   claudeSessionId: string;
   phase: ResumePhase;
   pct: number;
@@ -30,6 +33,73 @@ export interface ResumeJob {
 }
 
 const jobs = new Map<string, ResumeJob>();
+
+/**
+ * Make sure a conversation's transcript is on this machine, at the path the
+ * agent will look for it. Where a fresher copy may live, in order of
+ * preference: the source machine (if given and up), then the durable store on
+ * the store machine, then this machine's own store directory. The newest copy
+ * wins — a conversation that migrated away may have left a stale copy here.
+ * Returns the local path; throws when no copy exists anywhere reachable.
+ */
+export async function ensureTranscript(opts: {
+  folder: string;
+  localPath: string;
+  agentType: string;
+  claudeSessionId: string;
+  sourceMachine?: string;
+  selfName: string;
+  federation: Federation;
+}): Promise<string> {
+  const agent = getAgent(opts.agentType);
+  const ops = agent.transcript;
+  if (!ops) throw new Error(`${agent.label} conversations cannot be moved between machines`);
+  let transcriptPath = ops.file(opts.localPath, opts.claudeSessionId);
+  const candidates: { label: string; url: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of [opts.sourceMachine ?? '', STORE_MACHINE]) {
+    if (!m || m === opts.selfName || seen.has(m)) continue;
+    seen.add(m);
+    const peer = opts.federation.peerByMachine(m);
+    if (peer) {
+      candidates.push({
+        label: m,
+        url:
+          `${peer.info.url}/api/transcripts/${opts.claudeSessionId}` +
+          `?folder=${encodeURIComponent(opts.folder)}&agent=${encodeURIComponent(agent.id)}`,
+      });
+    }
+  }
+  const localMtime = () => (existsSync(transcriptPath) ? stat(transcriptPath).then((s) => s.mtimeMs) : Promise.resolve(0));
+  for (const c of candidates) {
+    try {
+      const res = await fetch(c.url, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) continue;
+      const remoteMtime = Date.parse(res.headers.get('last-modified') ?? '') || Date.now();
+      if (remoteMtime > (await localMtime()) + 1000) {
+        transcriptPath = await ops.install(opts.localPath, opts.claudeSessionId, Buffer.from(await res.arrayBuffer()));
+      }
+      break;
+    } catch {
+      /* that hub did not answer — try the next source */
+    }
+  }
+  if (!existsSync(transcriptPath)) {
+    // this machine may itself be the store machine
+    const stored = storeFilePath(opts.folder, opts.claudeSessionId, agent.id);
+    if (existsSync(stored)) {
+      transcriptPath = await ops.install(opts.localPath, opts.claudeSessionId, await readFile(stored));
+    }
+  }
+  if (!existsSync(transcriptPath)) {
+    const tried = candidates.map((c) => c.label).join(', ') || 'no reachable hub';
+    throw new Error(
+      `transcript not found here, on ${tried}, or in the store — ` +
+        `${opts.sourceMachine ? `${opts.sourceMachine} is ${opts.federation.peerByMachine(opts.sourceMachine) ? 'up' : 'offline'} and ` : ''}its copy was never pushed`,
+    );
+  }
+  return transcriptPath;
+}
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -64,10 +134,11 @@ export function getResumeJob(id: string): ResumeJob | undefined {
 /**
  * Resume a conversation of `folder` on THIS machine, materializing the folder
  * first if needed: source machine pushes to the VPS, we pull from the VPS,
- * the transcript is fetched from whichever hub holds it, then claude --resume.
+ * the transcript is fetched from whichever hub holds it, then the agent resumes it.
  */
 export function startFleetResume(opts: {
   folder: string;
+  agentType?: string;
   claudeSessionId: string;
   sourceMachine?: string;
   selfName: string;
@@ -75,9 +146,11 @@ export function startFleetResume(opts: {
   sync: SyncManager | null;
   federation: Federation;
 }): ResumeJob {
+  const agent = getAgent(opts.agentType);
   const job: ResumeJob = {
     id: randomUUID().slice(0, 8),
     folder: opts.folder,
+    agentType: agent.id,
     claudeSessionId: opts.claudeSessionId,
     phase: 'checking',
     pct: 0,
@@ -114,49 +187,38 @@ export function startFleetResume(opts: {
             method: 'POST',
             body: { folder: opts.folder },
           });
+          if (out.status === 409) throw new Error(String((out.body as { error?: string })?.error ?? 'folder is frozen'));
           if (out.status !== 200) throw new Error(`source push failed: ${JSON.stringify(out.body)}`);
           await poll(job, 'push-source', () => opts.sync!.vpsCompletion(opts.folder), 30 * 60_000);
         }
         await opts.sync.registerFolder(opts.folder);
         await poll(job, 'pulling', () => opts.sync!.localCompletion(opts.folder), 30 * 60_000);
-      } else if (opts.sync) {
+      } else if (opts.sync && !isFrozen(opts.folder)) {
         // folder already here — make sure it's on the sync rails for next time
         job.phase = 'checking';
         await opts.sync.registerFolder(opts.folder).catch(() => {});
       }
 
       // transcript: fetch from the hub that holds it, re-homed for our path
-      const transcriptDir = join(CLAUDE_PROJECTS_DIR, encodeProjectDir(localPath));
-      const transcriptPath = join(transcriptDir, `${opts.claudeSessionId}.jsonl`);
-      if (remoteSource && !existsSync(transcriptPath)) {
-        job.phase = 'transcript';
-        job.pct = 0;
-        const peer = opts.federation.peerByMachine(opts.sourceMachine!);
-        if (!peer) throw new Error(`machine ${opts.sourceMachine} is not connected`);
-        const res = await fetch(
-          `${peer.info.url}/api/transcripts/${opts.claudeSessionId}?folder=${encodeURIComponent(opts.folder)}`,
-        );
-        if (!res.ok) throw new Error(`transcript fetch failed: ${res.status}`);
-        await mkdir(transcriptDir, { recursive: true });
-        await writeFile(transcriptPath, Buffer.from(await res.arrayBuffer()));
-      }
-      if (!existsSync(transcriptPath)) {
-        // last resort: this machine may itself hold the durable store
-        const stored = storeFilePath(opts.folder, opts.claudeSessionId);
-        if (existsSync(stored)) {
-          await mkdir(transcriptDir, { recursive: true });
-          await copyFile(stored, transcriptPath);
-        }
-      }
-      if (!existsSync(transcriptPath)) {
-        throw new Error('transcript not found — cannot resume this conversation here');
-      }
+      const ops = agent.transcript;
+      if (!ops) throw new Error(`${agent.label} conversations cannot be moved between machines`);
+      job.phase = 'transcript';
+      job.pct = 0;
+      const transcriptPath = await ensureTranscript({
+        folder: opts.folder,
+        localPath,
+        agentType: agent.id,
+        claudeSessionId: opts.claudeSessionId,
+        sourceMachine: remoteSource ? opts.sourceMachine : undefined,
+        selfName: opts.selfName,
+        federation: opts.federation,
+      });
 
       // migrated conversations remember their old absolute paths — when the
       // folder now lives somewhere else, orient the resumed session up front
       let nudge: string | undefined;
       try {
-        const oldCwd = parseTranscriptTail(await readTail(transcriptPath)).cwd;
+        const oldCwd = ops.parseTail(await readTail(transcriptPath)).cwd;
         if (oldCwd && oldCwd.toLowerCase() !== localPath.toLowerCase()) {
           nudge =
             `Heads up: this session was migrated — the project folder now lives at ${localPath} ` +
@@ -171,6 +233,7 @@ export function startFleetResume(opts: {
       job.pct = 100;
       const session = opts.manager.create({
         cwd: localPath,
+        agentType: agent.id,
         name: opts.folder,
         resumeSessionId: opts.claudeSessionId,
         initialPrompt: nudge,

@@ -1,26 +1,20 @@
 import { createServer } from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { authorize, cookieHeader, loadApiToken, LAN_ENABLED } from './access.js';
+import { startBeacon } from './beacon.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import express from 'express';
+import { copyIn, listDir, safePath, zipFolder } from './files.js';
+import { FLEET_RULES } from './etiquette.js';
 import { WebSocketServer, WebSocket } from 'ws';
-import {
-  CLAUDE_PROJECTS_DIR,
-  DATA_DIR,
-  DEFAULT_PORT,
-  HOOKS_JSON,
-  HOOKS_TEMPLATE,
-  HUB_ROOT,
-  PROJECTS_ROOT,
-  PUBLIC_DIR,
-  encodeProjectDir,
-} from './config.js';
+import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
+import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { makeHookHandler } from './hooksReceiver.js';
-import { startClaudeSessionsWatcher } from './claudeSessionsWatcher.js';
+import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { loadPersisted, savePersisted } from './persistence.js';
@@ -31,6 +25,8 @@ import { createSyncManager, bootstrapSyncConfig, type SyncManager } from './sync
 import { loadVersionInfo } from './version.js';
 import { Updater } from './updater.js';
 import {
+  storeMeta,
+  applyUpload,
   STORE_MACHINE,
   TranscriptPusher,
   saveToStore,
@@ -39,7 +35,19 @@ import {
   type StoreEntry,
 } from './transcriptStore.js';
 import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
-import { startFleetResume, getResumeJob } from './fleetResume.js';
+import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.js';
+import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
+import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
+import {
+  KEYS,
+  isSettled,
+  lastExchanges,
+  replyTo,
+  screenText,
+  typePrompt,
+  waitForTurn,
+  waitUntil,
+} from './automation.js';
 import type { SessionInfo } from './types.js';
 
 // a rejected promise in some background sweep must never take the hub down
@@ -63,9 +71,28 @@ const selfRef = {
   baseUrl: () => `http://127.0.0.1:${actualPort}`,
 };
 const updater = new Updater(VERSION, federation, selfRef);
-new TranscriptPusher(federation, selfRef);
+const pusher = new TranscriptPusher(federation, selfRef, {
+  isLive: (id) => !!manager.byClaudeSessionId(id)?.proc,
+});
+// a session that went idle or exited gets its transcript pushed right away
+manager.on('change', (session: HubSession) => {
+  if (session.state === 'IDLE' || session.state === 'EXITED') pusher.nudge(session.claudeSessionId);
+});
 
 let sync: SyncManager | null = createSyncManager();
+
+/** Ignore rules shipped in a release propagate on boot: every synced folder is topped up. */
+function reconcileIgnoresSoon(m: SyncManager, delayMs: number) {
+  setTimeout(() => {
+    m.reconcileIgnores()
+      .then((changed) => {
+        if (changed.length === 0) return console.log('[sync] ignore rules up to date on all folders');
+        for (const c of changed) console.log(`[sync] ${c.folder}: added ignore rules ${c.added.join(', ')}`);
+      })
+      .catch((err) => console.warn(`[sync] ignore reconcile skipped: ${err}`));
+  }, delayMs).unref();
+}
+if (sync) reconcileIgnoresSoon(sync, 20_000);
 // machines without a data/sync.json learn the VPS endpoint from a fleet peer
 const syncBootstrapTimer = setInterval(() => {
   if (sync) return clearInterval(syncBootstrapTimer);
@@ -81,16 +108,62 @@ const syncBootstrapTimer = setInterval(() => {
     }
     return null;
   }).then((m) => {
-    if (m) sync = m;
+    if (m) {
+      sync = m;
+      reconcileIgnoresSoon(m, 5_000);
+    }
   });
 }, 60_000);
 syncBootstrapTimer.unref();
 
-for (const rec of loadPersisted()) manager.addExitedRecord(rec);
+// Cards from the previous run come back as EXITED; the ones that were running
+// when the hub went down are relaunched once we listen (restoreSessions).
+const toRestore: HubSession[] = [];
+for (const rec of loadPersisted()) {
+  const s = manager.addExitedRecord(rec);
+  s.autoYes = !!rec.autoYes;
+  if (rec.alive) toRestore.push(s);
+}
+
+/**
+ * Relaunch the sessions that were live before the restart, one every couple
+ * of seconds so a dozen agents don't start at once. Skipped for a session
+ * whose engine is missing here, whose folder is gone, or whose conversation
+ * never got an id (an unbound Codex card). HUB_RESTORE=0 disables it.
+ */
+function restoreSessions() {
+  if (process.env.HUB_RESTORE === '0' || !toRestore.length) return;
+  const eligible = toRestore.filter((s) => {
+    if (s.claudeSessionId.startsWith('pending-')) return false;
+    if (!existsSync(s.cwd)) return false;
+    try {
+      return getAgent(s.agentType).available();
+    } catch {
+      return false;
+    }
+  });
+  console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
+  eligible.forEach((s, i) => {
+    setTimeout(() => {
+      if (s.proc || !manager.sessions.has(s.hubId)) return; // resumed by hand meanwhile, or removed
+      try {
+        manager.resume(s.hubId);
+        console.log(`[restore] resumed ${s.name} (${s.agentType}, ${s.claudeSessionId.slice(0, 8)})`);
+      } catch (err) {
+        console.error(`[restore] could not resume ${s.name}:`, err);
+      }
+    }, 1500 + i * 2500).unref();
+  });
+}
 
 /** Local sessions tagged with this machine's name — the shape peers rely on. */
 function localList(): SessionInfo[] {
-  return manager.list().map((s) => ({ ...s, machine: discovery.selfName, origin: INSTANCE_ID }));
+  return manager.list().map((s) => ({
+    ...s,
+    machine: discovery.selfName,
+    origin: INSTANCE_ID,
+    frozen: isFrozen(folderNameOf(s.cwd)) || undefined,
+  }));
 }
 
 function mergedList(): SessionInfo[] {
@@ -123,41 +196,15 @@ function activeElsewhereError(res: express.Response, machines: string[]) {
 
 const app = express();
 
-// The hub listens on the tailnet, but only loopback, tailnet sources
-// (100.64.0.0/10 v4, fd7a:115c:a1e0::/48 v6) and this machine's own addresses
-// are trusted. Own addresses matter because Windows resolves the machine's own
-// name to its LAN IP — browsing your own hub by name arrives from that IP.
-let ownAddrs = new Set<string>();
-let ownAddrsAt = 0;
-function isOwnAddress(ip: string): boolean {
-  const now = Date.now();
-  if (now - ownAddrsAt > 30_000) {
-    ownAddrs = new Set(
-      Object.values(networkInterfaces())
-        .flat()
-        .filter((i): i is NonNullable<typeof i> => !!i)
-        .map((i) => i.address.toLowerCase()),
-    );
-    ownAddrsAt = now;
-  }
-  return ownAddrs.has(ip.toLowerCase());
-}
-
-function isTrustedSource(addr: string | undefined): boolean {
-  if (!addr) return false;
-  const ip = addr.replace(/^::ffff:/, '');
-  if (ip === '127.0.0.1' || ip === '::1') return true;
-  const m = ip.match(/^100\.(\d+)\./);
-  if (m) {
-    const octet = Number(m[1]);
-    return octet >= 64 && octet <= 127;
-  }
-  if (ip.toLowerCase().startsWith('fd7a:115c:a1e0')) return true;
-  return isOwnAddress(ip);
-}
-
+// Who gets in is decided in access.ts: loopback/own-address/tailnet freely,
+// the private LAN with the API token, nobody else.
 app.use((req, res, next) => {
-  if (!isTrustedSource(req.socket.remoteAddress)) return res.status(403).end();
+  const verdict = authorize(req.socket.remoteAddress, req.headers, req.url);
+  if (verdict.status === 403) return res.status(403).end();
+  if (verdict.status === 401) {
+    return res.status(401).json({ error: 'API token required (Authorization: Bearer …, or open /?token=… once)' });
+  }
+  if (verdict.setCookie) res.setHeader('Set-Cookie', cookieHeader());
   next();
 });
 
@@ -209,6 +256,7 @@ app.post('/api/admin/check', async (req, res) => {
 
 app.post('/api/admin/update', (req, res) => {
   if (adminForward(req, res)) return;
+  savePersisted(manager); // which sessions are live right now — restored after the restart
   updater.apply().catch((err) => {
     updater.status.updating = false;
     updater.status.error = err instanceof Error ? err.message : String(err);
@@ -230,6 +278,7 @@ app.get('/api/admin/log', (req, res) => {
 
 app.post('/api/admin/restart', (req, res) => {
   if (adminForward(req, res)) return;
+  savePersisted(manager); // which sessions are live right now — restored after the restart
   res.json({ ok: true });
   setTimeout(() => {
     if (process.platform === 'win32' && !(process.env.DECKHAND_SERVICE || process.env.CLAUDEHUB_SERVICE)) {
@@ -248,6 +297,31 @@ app.post('/api/admin/restart', (req, res) => {
 });
 
 app.get('/api/fleet', (_req, res) => res.json(federation.machines(discovery.selfName)));
+
+/** Agents a machine can run, with their launch-dialog vocabularies. */
+app.get('/api/agents', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, '/api/agents');
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  res.json(
+    listAgents().map((a) => ({
+      id: a.id,
+      label: a.label,
+      available: a.available(),
+      models: a.models,
+      permissionModes: a.permissionModes,
+      canResume: !!a.transcript,
+    })),
+  );
+});
 
 // Drag-and-drop upload: the browser can't reveal a dropped file's real path, so
 // the client sends the bytes here and pastes the saved path into the prompt.
@@ -278,20 +352,35 @@ app.post(
 
 // Durable conversation store (lives on STORE_MACHINE, normally vps-node).
 // Push route takes raw bytes — registered before the JSON body parser.
+// Bodies may be gzipped (Content-Encoding) — express.raw inflates them. A
+// request carrying size+sha256 is a verified whole-file or append-only delta
+// upload (see applyUpload); without them it is a legacy whole-file push.
 app.post(
   '/api/tstore/:folder/:id',
-  express.raw({ type: () => true, limit: '200mb' }),
+  express.raw({ type: () => true, limit: '400mb', inflate: true }),
   async (req, res) => {
     const mtime = Number(req.query.mtime);
     if (!Number.isFinite(mtime)) return res.status(400).json({ error: 'mtime required' });
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const agent = typeof req.query.agent === 'string' ? req.query.agent : undefined;
+    const folder = String(req.params.folder);
+    const id = String(req.params.id);
     try {
-      const out = await saveToStore(
-        String(req.params.folder),
-        String(req.params.id),
-        Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
-        mtime,
-      );
-      res.json(out);
+      if (typeof req.query.size === 'string' && typeof req.query.sha256 === 'string') {
+        const out = await applyUpload(folder, id, agent, {
+          offset: Number(req.query.offset) || 0,
+          size: Number(req.query.size),
+          sha256: req.query.sha256,
+          mtime,
+          body,
+        });
+        if (!out.stored && (out.reason === 'offset-mismatch' || out.reason === 'hash-mismatch' || out.reason === 'size-mismatch')) {
+          console.log(`[tstore] ${folder}/${id.slice(0, 8)}: rejected ${out.reason} (have ${out.size} bytes)`);
+          return res.status(409).json(out);
+        }
+        return res.json(out);
+      }
+      res.json(await saveToStore(folder, id, body, mtime, agent));
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -300,8 +389,27 @@ app.post(
 
 app.get('/api/tstore', async (_req, res) => res.json(await storeCatalog()));
 
+/** What the store holds for one transcript (size, mtime, sha256) — the pusher's delta base. */
+app.get('/api/tstore/:folder/:id/meta', async (req, res) => {
+  try {
+    res.json(
+      await storeMeta(
+        String(req.params.folder),
+        String(req.params.id),
+        typeof req.query.agent === 'string' ? req.query.agent : undefined,
+      ),
+    );
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get('/api/tstore/:folder/:id', (req, res) => {
-  const path = storeFilePath(String(req.params.folder), String(req.params.id));
+  const path = storeFilePath(
+    String(req.params.folder),
+    String(req.params.id),
+    typeof req.query.agent === 'string' ? req.query.agent : undefined,
+  );
   if (!existsSync(path)) return res.status(404).json({ error: 'not in store' });
   res.sendFile(path, { dotfiles: 'allow' });
 });
@@ -325,12 +433,29 @@ app.use(
   }),
 );
 
-app.post('/api/hook', makeHookHandler(manager, engine));
+app.post('/api/hook', makeHookHandler(manager, engine, () => mergedList()));
+
+/** The etiquette every fleet session is briefed with (level 1), for humans and agents to read. */
+app.get('/api/etiquette', (_req, res) => res.type('text/plain').send(FLEET_RULES));
 
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
+// Forwarded waits ride on a peer's fetch, whose header timeout is 5 minutes —
+// every long-poll is capped below that and returns timedOut so callers loop.
+const WAIT_DEFAULT_MS = 120_000;
+const WAIT_MAX_MS = 240_000;
+const clampWait = (v: unknown, fallback = WAIT_DEFAULT_MS) =>
+  Math.max(1000, Math.min(WAIT_MAX_MS, Number(v) || fallback));
+
+/** Turn outcome for automation callers: state plus the agent's reply text. */
+async function turnResult(session: HubSession, prompt: string | undefined, timedOut: string | null) {
+  const reply = !timedOut && prompt && isSettled(session) ? await replyTo(session, prompt) : undefined;
+  return { ...session.info(), machine: discovery.selfName, timedOut: timedOut ?? false, reply };
+}
+
 app.post('/api/sessions', async (req, res) => {
-  const { cwd, name, model, permissionMode, initialPrompt, machine, force } = req.body ?? {};
+  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait } = req.body ?? {};
+  let cwd: string | undefined = req.body?.cwd;
   // spawn requested on another fleet machine — hand it to the owning hub
   if (machine && machine !== discovery.selfName) {
     const peer = federation.peerByMachine(machine);
@@ -338,12 +463,22 @@ app.post('/api/sessions', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/sessions', {
         method: 'POST',
-        body: { cwd, name, model, permissionMode, initialPrompt, force },
+        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder, wait },
       });
       return res.status(out.status).json(out.body);
     } catch {
       return res.status(502).json({ error: `forward to ${machine} failed` });
     }
+  }
+  // a brand-new project: create its folder under the projects root first
+  if (newFolder) {
+    const safe = String(newFolder).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+    if (!safe || safe.startsWith('.')) return res.status(400).json({ error: 'bad folder name' });
+    if (!existsSync(PROJECTS_ROOT)) {
+      return res.status(400).json({ error: `projects root ${PROJECTS_ROOT} does not exist — set HUB_PROJECTS_ROOT` });
+    }
+    cwd = join(PROJECTS_ROOT, safe);
+    mkdirSync(cwd, { recursive: true });
   }
   if (!cwd || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
     return res.status(400).json({ error: `not a directory: ${cwd}` });
@@ -353,17 +488,41 @@ app.post('/api/sessions', async (req, res) => {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
   }
-  const session = manager.create({ cwd, name, model, permissionMode, initialPrompt });
-  res.json({ ...session.info(), machine: discovery.selfName });
+  const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt });
+  if (!wait) return res.json({ ...session.info(), machine: discovery.selfName });
+  // automation: block until the first turn (the initial prompt, or just the
+  // startup) settles, and hand back the reply with the session
+  const timeoutMs = clampWait(wait);
+  const timedOut = initialPrompt
+    ? await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs })
+    : (await waitUntil(manager, () => isSettled(session), timeoutMs)) ? null : 'done';
+  res.json(await turnResult(session, initialPrompt, timedOut));
 });
+
+/** A live session whose conversation id starts with `prefix` (8+ chars), if exactly one matches. */
+function byConversationPrefix(prefix: string): HubSession | undefined {
+  if (prefix.length < 8) return undefined;
+  const hits = [...manager.sessions.values()].filter((s) => s.claudeSessionId.startsWith(prefix));
+  const live = hits.filter((s) => s.proc);
+  const pool = live.length ? live : hits;
+  return pool.length === 1 ? pool[0] : undefined;
+}
 
 /** Route a per-session action to this hub or the owning peer. */
 function sessionAction(
-  local: (id: string, req: express.Request, res: express.Response) => void,
+  local: (id: string, req: express.Request, res: express.Response) => unknown,
 ): express.RequestHandler {
   return async (req, res) => {
-    const id = String(req.params.id);
+    let id = String(req.params.id);
     if (manager.sessions.get(id)) return local(id, req, res);
+    // hub ids change on every hub restart and migration; the agent's own
+    // conversation id does not — accept it (or a unique prefix) so automation
+    // keeps a stable handle on a session
+    const byConv = manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+    if (byConv) {
+      id = byConv.hubId;
+      return local(id, req, res);
+    }
     const peer = federation.peerBySession(id);
     if (!peer) return res.status(404).json({ error: 'unknown session' });
     try {
@@ -371,7 +530,8 @@ function sessionAction(
         method: req.method,
         body: Object.keys(req.body ?? {}).length ? req.body : undefined,
       });
-      res.status(out.status).json(out.body);
+      if (typeof out.body === 'string') res.status(out.status).type(out.contentType || 'text/plain').send(out.body);
+      else res.status(out.status).json(out.body);
     } catch {
       res.status(502).json({ error: `forward to ${peer.info.machine} failed` });
     }
@@ -384,11 +544,9 @@ function sessionAction(
 // The plan-mode exit prompt is the one permission we never auto-approve —
 // leaving plan mode is a real decision. It's recognizable by its options,
 // which offer to keep planning (ordinary permission prompts don't).
-const PLAN_EXIT_MARKER = /keep planning|exit plan mode|ready to (code|proceed)/i;
-
-function isPlanExitPrompt(session: HubSession): boolean {
+function isProtectedPrompt(session: HubSession): boolean {
   try {
-    return PLAN_EXIT_MARKER.test(session.snapshot());
+    return agentFor(session).isProtectedPrompt?.(session.snapshot()) ?? false;
   } catch {
     return false;
   }
@@ -402,8 +560,8 @@ function maybeAutoAnswer(session: HubSession) {
   // let the prompt finish rendering, then accept the highlighted default (Yes)
   setTimeout(() => {
     if (!session.autoYes || !session.proc || session.state !== 'WAITING_PERMISSION') return;
-    if (isPlanExitPrompt(session)) return; // plan-mode exit needs a human
-    manager.write(session.hubId, '\r');
+    if (isProtectedPrompt(session)) return; // e.g. plan-mode exit needs a human
+    manager.write(session.hubId, agentFor(session).acceptKeystroke);
   }, 600);
 }
 
@@ -420,12 +578,34 @@ app.post('/api/sessions/:id/kill', sessionAction((id, _req, res) => {
   res.json({ ok: true });
 }));
 
-app.post('/api/sessions/:id/resume', sessionAction((id, req, res) => {
+app.post('/api/sessions/:id/resume', sessionAction(async (id, req, res) => {
   const existing = manager.sessions.get(id);
-  if (existing && !req.body?.force) {
-    const folderName = existing.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  if (!existing) return res.status(404).json({ error: 'unknown session' });
+  const folderName = existing.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  if (!req.body?.force) {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
+  }
+  // The agent keeps its transcript outside the project folder, and its own
+  // retention cleanup can remove it. A card whose transcript is gone is still
+  // resumable from the fleet store — fetch it back first.
+  if (!existing.proc && !existing.claudeSessionId.startsWith('pending-')) {
+    const ops = agentFor(existing).transcript;
+    if (ops && !existsSync(ops.file(existing.cwd, existing.claudeSessionId))) {
+      try {
+        await ensureTranscript({
+          folder: folderName,
+          localPath: existing.cwd,
+          agentType: existing.agentType,
+          claudeSessionId: existing.claudeSessionId,
+          selfName: discovery.selfName,
+          federation,
+        });
+        console.log(`[resume] ${existing.name}: transcript restored from the fleet store`);
+      } catch (err) {
+        return res.status(409).json({ error: `cannot resume: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
   }
   const session = manager.resume(id);
   if (!session) return res.status(404).json({ error: 'unknown session' });
@@ -437,21 +617,197 @@ app.post('/api/sessions/:id/remove', sessionAction((id, _req, res) => {
   res.json({ ok: true });
 }));
 
+// ----------------------------------------------------------- Automation
+// Drive a session from a script: read it, type into it, wait on it. Every
+// route goes through sessionAction, so a script talks to any hub in the
+// fleet and the owning machine answers.
+
+app.get('/api/sessions/:id', sessionAction((id, _req, res) => {
+  res.json({ ...manager.sessions.get(id)!.info(), machine: discovery.selfName });
+}));
+
+// Submit a prompt. With `wait` (true or a ms budget) the call blocks until
+// the turn settles and returns the reply; a WORKING session is refused
+// unless `queue` is set (the TUI would stack the prompt behind the current turn).
+app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (!text.trim()) return res.status(400).json({ error: 'text required' });
+  if (!session.proc) return res.status(409).json({ error: 'session has exited — resume it first' });
+  if (session.state === 'WORKING' && !req.body?.queue) {
+    return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
+  }
+  await typePrompt(manager, session, text);
+  if (!req.body?.wait) return res.json({ ...session.info(), machine: discovery.selfName });
+  const timeoutMs = clampWait(req.body.wait);
+  const timedOut = await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs });
+  res.json(await turnResult(session, text, timedOut));
+}));
+
+// Raw keystrokes: `keys` is a list of named keys (enter, esc, up, down, 1…)
+// or literal strings; `data` is sent verbatim. For answering prompts and menus.
+app.post('/api/sessions/:id/keys', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  if (!session.proc) return res.status(409).json({ error: 'session has exited' });
+  const keys: unknown[] = Array.isArray(req.body?.keys) ? req.body.keys : [];
+  let data = typeof req.body?.data === 'string' ? req.body.data : '';
+  for (const k of keys) {
+    if (typeof k !== 'string') continue;
+    data += KEYS[k.toLowerCase()] ?? k;
+  }
+  if (!data) return res.status(400).json({ error: 'keys or data required' });
+  manager.write(id, data);
+  res.json({ ok: true, sent: data.length });
+}));
+
+// Long-poll until the session reaches a state. `until` is a state name,
+// `settled` (default: anything but STARTING/WORKING) or `changed` (any
+// state other than `from`). Returns timedOut:true instead of erroring so
+// callers can simply loop.
+app.get('/api/sessions/:id/wait', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const until = String(req.query.until ?? 'settled').toUpperCase();
+  const from = typeof req.query.from === 'string' ? req.query.from.toUpperCase() : session.state;
+  const pred =
+    until === 'SETTLED'
+      ? () => isSettled(session)
+      : until === 'CHANGED'
+        ? () => session.state !== from
+        : () => session.state === until || (!session.proc && until === 'EXITED');
+  const ok = await waitUntil(manager, pred, clampWait(req.query.timeout));
+  res.json({ ...session.info(), machine: discovery.selfName, timedOut: !ok });
+}));
+
+// The screen as text (default: what a viewer sees; ?scrollback=N adds lines
+// above). ?format=ansi returns the exact serialized stream instead.
+app.get('/api/sessions/:id/screen', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  if (req.query.format === 'ansi') return res.type('text/plain').send(session.snapshot());
+  res.type('text/plain').send(screenText(session, Math.min(5000, Number(req.query.scrollback) || 0)));
+}));
+
+// The last N question→reply exchanges as JSON (oldest first) — the same
+// text the PRINT export renders.
+app.get('/api/sessions/:id/exchanges', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const n = Math.max(1, Math.min(200, Number(req.query.n) || 5));
+  try {
+    const exchanges = await lastExchanges(session, n);
+    if (!exchanges) return res.status(404).json({ error: 'this agent keeps no readable transcript' });
+    res.json(exchanges);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+}));
+
 app.get('/api/conversations', async (_req, res) => {
   const inHub = new Set([...manager.sessions.values()].map((s) => s.claudeSessionId));
   res.json(await listRecentConversations(inHub));
 });
 
 app.post('/api/sessions/adopt', (req, res) => {
-  const { claudeSessionId, cwd, name } = req.body ?? {};
+  const { claudeSessionId, cwd, name, agentType } = req.body ?? {};
   if (!claudeSessionId || !cwd || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
     return res.status(400).json({ error: `bad session id or directory` });
   }
   if (manager.byClaudeSessionId(claudeSessionId)) {
     return res.status(409).json({ error: 'already in hub' });
   }
-  const session = manager.create({ cwd, name, resumeSessionId: claudeSessionId });
+  const session = manager.create({ cwd, agentType, name, resumeSessionId: claudeSessionId });
   res.json({ ...session.info(), machine: discovery.selfName });
+});
+
+// ------------------------------------------------------------ file browser
+
+/** Directory listing under a machine's projects root (forwarded for peers). */
+app.get('/api/files', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/files?path=${encodeURIComponent(path)}`);
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  try {
+    res.json({ machine: discovery.selfName, root: PROJECTS_ROOT, ...(await listDir(path)) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Raw bytes of one file on THIS machine — browser downloads and hub-to-hub copies. */
+app.get('/api/files/raw', (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  try {
+    const abs = safePath(path);
+    if (!existsSync(abs) || !statSync(abs).isFile()) return res.status(404).json({ error: 'not a file' });
+    res.download(abs, basename(abs), { dotfiles: 'allow' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** A folder on THIS machine as a zip stream. node_modules and .git are skipped unless ?full=1. */
+app.get('/api/files/zip', (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  try {
+    const abs = safePath(path);
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) return res.status(404).json({ error: 'not a folder' });
+    const name = basename(abs) || 'projects';
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/["\\]/g, '_')}.zip"`);
+    zipFolder(abs, name, req.query.full === '1', res);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
+ * Copy a file between machines: runs on the TARGET machine, which pulls the
+ * bytes from the source hub. { fromMachine, fromPath, toMachine, toDir, overwrite }
+ */
+app.post('/api/files/copy', async (req, res) => {
+  const { fromMachine, fromPath, toMachine, toDir, overwrite } = req.body ?? {};
+  if (!fromMachine || !fromPath || !toMachine) {
+    return res.status(400).json({ error: 'fromMachine, fromPath and toMachine required' });
+  }
+  if (toMachine !== discovery.selfName) {
+    const peer = federation.peerByMachine(String(toMachine));
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${toMachine}` });
+    try {
+      const out = await federation.forward(peer, '/api/files/copy', {
+        method: 'POST',
+        body: { fromMachine, fromPath, toMachine, toDir, overwrite },
+      });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${toMachine} failed` });
+    }
+  }
+  try {
+    const name = String(fromPath).split('/').pop() ?? '';
+    let out;
+    if (fromMachine === discovery.selfName) {
+      out = await copyIn({ sourceAbs: safePath(String(fromPath)), toDir: String(toDir ?? ''), name, overwrite: !!overwrite });
+    } else {
+      const peer = federation.peerByMachine(String(fromMachine));
+      if (!peer) return res.status(502).json({ error: `machine not connected: ${fromMachine}` });
+      out = await copyIn({
+        sourceUrl: `${peer.info.url}/api/files/raw?path=${encodeURIComponent(String(fromPath))}`,
+        toDir: String(toDir ?? ''),
+        name,
+        overwrite: !!overwrite,
+      });
+    }
+    res.json({ ok: true, machine: discovery.selfName, ...out });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.get('/api/projects', async (req, res) => {
@@ -474,9 +830,55 @@ app.get('/api/projects', async (req, res) => {
 
 // ---------------------------------------------------------- Fleet folders & sync
 
+/** Force the ignore-rule top-up now (it also runs at every boot). */
+app.post('/api/sync/reconcile', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, '/api/sync/reconcile', { method: 'POST' });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  if (!sync) return res.status(503).json({ error: 'sync not configured on this machine' });
+  try {
+    res.json({ machine: discovery.selfName, changed: await sync.reconcileIgnores() });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.get('/api/sync/config', (_req, res) => {
   if (!sync) return res.status(404).json({ error: 'sync not configured on this machine' });
   res.json({ vps: sync.cfg.vps });
+});
+
+/** Freeze/unfreeze a folder to this machine (forwarded with ?machine=). */
+app.post('/api/folders/:name/frozen', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/folders/${encodeURIComponent(String(req.params.name))}/frozen`, {
+        method: 'POST',
+        body: req.body,
+      });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  const name = String(req.params.name);
+  if (!existsSync(join(PROJECTS_ROOT, name))) return res.status(400).json({ error: `unknown folder: ${name}` });
+  const on = !!req.body?.on;
+  setFrozen(name, on);
+  if (on && sync) await sync.unregisterFolder(name).catch(() => {}); // stop replication that already started
+  broadcastSessions();
+  res.json({ ok: true, folder: name, frozen: on, machine: discovery.selfName });
 });
 
 app.post('/api/sync/register', async (req, res) => {
@@ -484,6 +886,9 @@ app.post('/api/sync/register', async (req, res) => {
   if (!sync) return res.status(503).json({ error: 'sync not configured' });
   if (!folder || !existsSync(join(PROJECTS_ROOT, folder))) {
     return res.status(400).json({ error: `unknown folder: ${folder}` });
+  }
+  if (isFrozen(String(folder))) {
+    return res.status(409).json({ error: `folder ${folder} is frozen to ${discovery.selfName} — it does not leave this machine` });
   }
   try {
     await sync.registerFolder(String(folder));
@@ -582,6 +987,7 @@ app.get('/api/fleet-folders', async (_req, res) => {
       activeHubSessions: 0,
       updatedAt: Math.max(...fresh.map((e) => e.updatedAt)),
       conversations: fresh.map((e) => ({
+        agentType: e.agentType ?? 'claude',
         claudeSessionId: e.claudeSessionId,
         title: e.title,
         lastText: e.lastText,
@@ -605,57 +1011,15 @@ app.get('/api/sessions/:id/export', async (req, res) => {
   const session = manager.sessions.get(String(req.params.id));
   if (!session) return res.status(404).send('session not on this machine');
   const n = Math.max(1, Math.min(100, Number(req.query.replies) || 5));
-  const path = join(
-    CLAUDE_PROJECTS_DIR,
-    encodeProjectDir(session.cwd),
-    `${session.claudeSessionId}.jsonl`,
-  );
+  const ops = agentFor(session).transcript;
+  if (!ops) return res.status(404).send('this agent keeps no readable transcript');
+  const path = ops.file(session.cwd, session.claudeSessionId);
   if (!existsSync(path)) return res.status(404).send('no transcript for this session yet');
 
-  interface Exchange { q: string; r: string }
-  const exchanges: Exchange[] = [];
+  let exchanges: { q: string; r: string }[];
   try {
     const { readFile } = await import('node:fs/promises');
-    const lines = (await readFile(path, 'utf8')).split('\n');
-    let replyParts: string[] = [];
-    // walk backwards: gather assistant text until the owning user question
-    for (let i = lines.length - 1; i >= 0 && exchanges.length < n; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      let obj: {
-        type?: string;
-        isSidechain?: boolean;
-        isMeta?: boolean;
-        message?: { content?: unknown };
-      };
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (obj.isSidechain || obj.isMeta) continue;
-      const content = obj.message?.content;
-      if (obj.type === 'assistant' && Array.isArray(content)) {
-        const text = (content as { type: string; text?: string }[])
-          .filter((c) => c.type === 'text' && c.text)
-          .map((c) => c.text)
-          .join('\n');
-        if (text) replyParts.unshift(text);
-      } else if (obj.type === 'user') {
-        let q = '';
-        if (typeof content === 'string') q = content;
-        else if (Array.isArray(content)) {
-          q = (content as { type: string; text?: string }[])
-            .filter((c) => c.type === 'text' && c.text)
-            .map((c) => c.text)
-            .join('\n');
-        }
-        if (q && replyParts.length) {
-          exchanges.unshift({ q, r: replyParts.join('\n\n') });
-          replyParts = [];
-        }
-      }
-    }
+    exchanges = ops.parseExchanges(await readFile(path, 'utf8'), n);
   } catch (err) {
     return res.status(500).send(String(err));
   }
@@ -687,24 +1051,70 @@ app.get('/api/transcripts/:id', (req, res) => {
   const folder = String(req.query.folder ?? '');
   const id = String(req.params.id).replace(/[^a-zA-Z0-9-]/g, '');
   if (!folder || !id) return res.status(400).json({ error: 'folder and id required' });
-  const path = join(
-    CLAUDE_PROJECTS_DIR,
-    encodeProjectDir(join(PROJECTS_ROOT, folder)),
-    `${id}.jsonl`,
-  );
-  if (existsSync(path)) {
-    // the path runs through ~/.claude — sendFile rejects dot-segments by default
+  const agent = getAgent(typeof req.query.agent === 'string' ? req.query.agent : undefined);
+  const path = agent.transcript?.file(join(PROJECTS_ROOT, folder), id);
+  if (path && existsSync(path)) {
+    // the path runs through a dot-directory — sendFile rejects those by default
     return res.sendFile(path, { dotfiles: 'allow' });
   }
   // not on this machine — the durable store may still have it (this is how
   // conversations survive their origin machine being wiped or offline)
-  const stored = storeFilePath(folder, id);
+  const stored = storeFilePath(folder, id, agent.id);
   if (existsSync(stored)) return res.sendFile(stored, { dotfiles: 'allow' });
   res.status(404).json({ error: 'transcript not found' });
 });
 
+// ------------------------------------------------------------ Handoff
+// Source hub runs the job (it can talk to the live session); the target hub
+// receives the document and starts the engine.
+app.post('/api/sessions/:id/handoff', sessionAction((id, req, res) => {
+  const b = req.body ?? {};
+  if (!b.targetAgent) return res.status(400).json({ error: 'targetAgent required' });
+  const job = startHandoff(
+    {
+      sourceHubId: id,
+      targetAgent: String(b.targetAgent),
+      targetMachine: b.targetMachine ? String(b.targetMachine) : undefined,
+      targetFolder: b.targetFolder ? String(b.targetFolder) : undefined,
+      newFolder: b.newFolder ? String(b.newFolder) : undefined,
+      askBrief: b.askBrief !== false,
+      includeDialogue: b.includeDialogue !== false,
+      model: b.model ? String(b.model) : undefined,
+      permissionMode: b.permissionMode ? String(b.permissionMode) : undefined,
+    },
+    { manager, federation, selfName: discovery.selfName },
+  );
+  res.json({ jobId: job.id, machine: discovery.selfName });
+}));
+
+app.get('/api/handoff/:jobId', async (req, res) => {
+  const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, `/api/handoff/${req.params.jobId}`);
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  const job = getHandoffJob(String(req.params.jobId));
+  if (!job) return res.status(404).json({ error: 'unknown job' });
+  res.json(job);
+});
+
+app.post('/api/handoff/receive', async (req, res) => {
+  try {
+    const session = await receiveHandoff(req.body as HandoffPayload, { manager, selfName: discovery.selfName });
+    res.json({ ...session.info(), machine: discovery.selfName });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post('/api/fleet-resume', async (req, res) => {
-  const { folder, claudeSessionId, sourceMachine, machine, force } = req.body ?? {};
+  const { folder, agentType, claudeSessionId, sourceMachine, machine, force } = req.body ?? {};
   if (!folder || !claudeSessionId) {
     return res.status(400).json({ error: 'folder and claudeSessionId required' });
   }
@@ -715,7 +1125,7 @@ app.post('/api/fleet-resume', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/fleet-resume', {
         method: 'POST',
-        body: { folder, claudeSessionId, sourceMachine, force },
+        body: { folder, agentType, claudeSessionId, sourceMachine, force },
       });
       return res.status(out.status).json(out.body);
     } catch {
@@ -728,6 +1138,7 @@ app.post('/api/fleet-resume', async (req, res) => {
   }
   const job = startFleetResume({
     folder: String(folder),
+    agentType: agentType ? String(agentType) : undefined,
     claudeSessionId: String(claudeSessionId),
     sourceMachine: sourceMachine ? String(sourceMachine) : undefined,
     selfName: discovery.selfName,
@@ -775,7 +1186,7 @@ async function findPeerForTerm(hubId: string) {
 
 httpServer.on('upgrade', (req, socket, head) => {
   const remoteAddress = (socket as import('node:net').Socket).remoteAddress;
-  if (!isTrustedSource(remoteAddress)) return socket.destroy();
+  if (authorize(remoteAddress, req.headers, req.url ?? '/').status !== 0) return socket.destroy();
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/ws/control') {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -881,7 +1292,7 @@ manager.on('change', (session: HubSession) => {
   // Small delay: the transcript jsonl flushes slightly after the Stop hook fires.
   if (['IDLE', 'WAITING_QUESTION', 'WAITING_PERMISSION'].includes(session.state)) {
     setTimeout(() => {
-      lastAssistantText(session.claudeSessionId, session.cwd).then((text) => {
+      lastAssistantText(session).then((text) => {
         if (text && text !== session.summary) {
           session.summary = text;
           broadcastSessions();
@@ -924,7 +1335,7 @@ federation.on('alert', (alert: PeerAlert) => {
   broadcastAlert({ ...alert, type: 'alert' });
 });
 
-startClaudeSessionsWatcher(manager, engine);
+startStatusFileWatcher(manager, engine);
 startSessionPusher();
 
 // Broadcast every 15 s so elapsed-in-state timers stay honest even without events.
@@ -932,13 +1343,15 @@ setInterval(broadcastSessions, 15_000).unref();
 
 // ----------------------------------------------------------------- Boot
 
+/** Every agent materializes its hook config against the port we actually got. */
 function writeHooksJson(port: number) {
-  let template = readFileSync(HOOKS_TEMPLATE, 'utf8').replaceAll('{{PORT}}', String(port));
-  // hooks run under bash everywhere; the hard-coded curl path is Windows-only
-  if (process.platform !== 'win32') {
-    template = template.replaceAll('C:/Windows/System32/curl.exe', 'curl');
+  for (const agent of listAgents()) {
+    try {
+      agent.writeHooks?.(port);
+    } catch (err) {
+      console.error(`[hooks] ${agent.id}: ${err}`);
+    }
   }
-  writeFileSync(HOOKS_JSON, template);
 }
 
 function listen(port: number, attemptsLeft: number) {
@@ -950,12 +1363,26 @@ function listen(port: number, attemptsLeft: number) {
       throw err;
     }
   });
-  // 0.0.0.0 so tailnet peers can reach us; isTrustedSource() rejects everything
-  // that is not loopback or tailnet, so LAN/internet sources get 403/destroyed.
+  // 0.0.0.0 so tailnet peers can reach us; authorize() rejects everything
+  // that is not loopback, tailnet or a token-bearing LAN caller.
   httpServer.listen(port, '0.0.0.0', () => {
     actualPort = port;
+    manager.identity = { machine: discovery.selfName, hubUrl: `http://127.0.0.1:${port}` };
+    // the tailnet name arrives with the first discovery tick; keep the briefing current
+    setTimeout(() => (manager.identity.machine = discovery.selfName), 5_000).unref();
     writeHooksJson(port);
+    restoreSessions();
     discovery.start();
+    loadApiToken();
+    if (LAN_ENABLED) {
+      startBeacon({
+        machine: () => discovery.selfName,
+        instanceId: INSTANCE_ID,
+        version: VERSION.version,
+        build: VERSION.build,
+        port,
+      });
+    }
     if (!existsSync(PROJECTS_ROOT)) {
       console.warn(
         `[hub] WARNING: projects root ${PROJECTS_ROOT} does not exist — set HUB_PROJECTS_ROOT in hub-env.cmd`,
