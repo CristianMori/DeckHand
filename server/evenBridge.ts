@@ -34,6 +34,8 @@ import type { SessionInfo, SessionState, SharedFile } from './types.js';
 /** what the Even app is told it is talking to — the release this mirrors */
 const EVEN_TERMINAL_VERSION = '0.10.5';
 const TRACK_MS = 400;
+/** how long an auto-yes session gets to answer its own prompt before the wearer hears of it */
+const AUTO_YES_GRACE_MS = 3000;
 const MAX_MESSAGES = 500;
 
 type Msg = Record<string, unknown> & { type: string };
@@ -272,6 +274,13 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
   // Claude reports its question menu (AskUserQuestion) as a permission
   // prompt, so every wait goes through here and is sorted by what it shows.
   async function onWaiting(s: SessionInfo, t: Tracked) {
+    // Auto-yes answers ordinary prompts within a second; only the ones it
+    // leaves alone (leaving plan mode) are worth the wearer's attention.
+    if (s.autoYes) {
+      await sleep(AUTO_YES_GRACE_MS);
+      const now = deps.sessions().find((x) => x.hubId === s.hubId);
+      if (!now || now.state !== s.state || now.stateSince !== s.stateSince) return;
+    }
     const menu = await readMenu(s);
     const local = s.machine === deps.selfName();
     const asking = local
