@@ -470,6 +470,25 @@ Over Tailscale the token isn't checked; on the Wi-Fi it is. Terminal cards are
 not listed. Remote sessions show tool lines from the owning hub's status
 ("using Bash") rather than full summaries.
 
+While you are in one session, the others still reach you: when any session
+needs permission, asks a question or finishes a turn, a notification line
+appears in the session you are watching.
+
+**Phone push (ntfy).** The same moments can go to the
+[ntfy](https://ntfy.sh) app on your phone, which the Even app mirrors onto the
+glasses even when its Terminal client is closed. Configure one hub (the
+always-on one) and it covers the whole fleet:
+
+```
+curl -X POST http://<hub>:5959/api/ntfy -H 'Content-Type: application/json' \
+  -d '{"url":"https://ntfy.sh/<secret-topic>","click":"http://<hub>:5959"}'
+curl -X POST http://<hub>:5959/api/ntfy/test
+```
+
+Optional fields: `token` (an ntfy access token), `done: false` (only
+waiting sessions, no "done" pushes). `{"clear":true}` turns it off. The
+setting lives in `data/ntfy.json`; `GET /api/ntfy` shows it without the token.
+
 ### Publishing updates (the machine you develop on)
 
 ```

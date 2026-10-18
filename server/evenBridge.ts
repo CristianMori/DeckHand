@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import express from 'express';
 import { authorize, cookieHeader } from './access.js';
 import { hookBus } from './hooksReceiver.js';
+import type { AlertKind } from './ntfy.js';
 import type { SessionInfo, SessionState } from './types.js';
 
 /**
@@ -70,6 +71,8 @@ export interface EvenBridgeDeps {
   /** where a session started from the glasses without a folder runs */
   defaultCwd: () => string;
   version: string;
+  /** a session needs the wearer or finished: also tell the phone (ntfy) */
+  onAlert?: (title: string, what: string, kind: AlertKind) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -294,7 +297,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
       options.push({ text: 'No', key: 'deny' });
     }
     t.menu = pending;
-    alertOthers(s, `needs permission: ${summary}`);
+    alertOthers(s, 'permission', `needs permission: ${summary}`);
     emit(sid, {
       type: 'permission_request',
       toolName,
@@ -335,7 +338,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
             options: menu.map((o) => ({ label: clip(o.text, 80), description: '', preview: '' })),
           },
         ];
-    alertOthers(s, `asks: ${questions[0]?.question || 'a question'}`);
+    alertOthers(s, 'question', `asks: ${questions[0]?.question || 'a question'}`);
     emit(sid, { type: 'user_question', questions, toolUseId: `${s.hubId}-${s.stateSince}` });
   }
 
@@ -344,13 +347,14 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
    * goes into every other session stream that has the Even client attached,
    * so switching between agents never hides one that needs attention.
    */
-  function alertOthers(s: SessionInfo, what: string) {
+  function alertOthers(s: SessionInfo, kind: AlertKind, what: string) {
     const sid = evenId(s);
     const title = clip(`${s.name}${s.machine ? ` @ ${s.machine}` : ''}`, 48);
     for (const [other, st] of streams) {
       if (other === sid || !st.clients.size) continue;
       emit(other, { type: 'notification', title, message: clip(what, 120) });
     }
+    deps.onAlert?.(title, what, kind);
   }
 
   /** The turn ended: hand the reply over as one text block plus a result. */
@@ -372,7 +376,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
     // Claude's stand-in reply for an interrupted turn is not worth a screen
     if (reply && key !== t.lastReplyKey && reply.r.trim() !== 'No response requested.') {
       t.lastReplyKey = key;
-      alertOthers(s, `done: ${reply.r}`);
+      alertOthers(s, 'done', `done: ${reply.r}`);
       emit(sid, { type: 'status', state: 'text_start', sessionId: sid, provider: providerOf(s) });
       emit(sid, { type: 'text_delta', text: reply.r });
       emit(sid, { type: 'status', state: 'text_end', sessionId: sid, provider: providerOf(s) });
