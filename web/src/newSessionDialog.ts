@@ -27,16 +27,17 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     </select>` : ''}
     <label>ENGINE</label>
     <select id="ns-agent"></select>
+    <div id="ns-install" class="ns-install" hidden></div>
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
     <input id="ns-newfolder" placeholder="new folder name — created under the projects root" hidden />
     <label>SESSION NAME (optional)</label>
     <input id="ns-name" placeholder="defaults to folder name" />
-    <label>INITIAL PROMPT (optional)</label>
+    <label id="ns-prompt-label">INITIAL PROMPT (optional)</label>
     <textarea id="ns-prompt" placeholder="sent as the first message"></textarea>
-    <label>PERMISSION MODE</label>
+    <label id="ns-mode-label">PERMISSION MODE</label>
     <select id="ns-mode"></select>
-    <label>MODEL</label>
+    <label id="ns-model-label">MODEL</label>
     <select id="ns-model"></select>
     <div class="dialog-actions">
       <button class="ghost-btn" id="ns-cancel">CANCEL</button>
@@ -59,13 +60,38 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const a = selectedAgent();
     const opt = (o: { value: string; label: string }) => `<option value="${o.value}">${o.label}</option>`;
     get<HTMLSelectElement>('ns-mode').innerHTML = '<option value="">default</option>' + a.permissionModes.map(opt).join('');
-    get<HTMLSelectElement>('ns-model').innerHTML = '<option value="">default</option>' + a.models.map(opt).join('');
+    // a terminal lists its shells in the model slot, the machine default first
+    get<HTMLSelectElement>('ns-model').innerHTML = (a.terminal ? '' : '<option value="">default</option>') + a.models.map(opt).join('');
+    get('ns-model-label').textContent = a.optionLabel ?? 'MODEL';
+    const noModes = !a.permissionModes.length;
+    get('ns-mode-label').hidden = noModes;
+    get('ns-mode').hidden = noModes;
+    get('ns-prompt-label').textContent = a.terminal ? 'INITIAL COMMAND (optional)' : 'INITIAL PROMPT (optional)';
+    get<HTMLTextAreaElement>('ns-prompt').placeholder = a.terminal ? 'typed into the shell once it starts' : 'sent as the first message';
+    syncHomeOption();
+  }
+
+  // a terminal can start in the home folder, not only in a project
+  function syncHomeOption() {
+    const folder = get<HTMLSelectElement>('ns-folder');
+    const home = folder.querySelector('option[value="~"]');
+    if (selectedAgent().terminal) {
+      if (!home && folder.options.length) {
+        folder.insertAdjacentHTML('afterbegin', '<option value="~">~ (home folder)</option>');
+        folder.value = '~';
+      }
+    } else if (home) {
+      const wasHome = folder.value === '~';
+      home.remove();
+      if (wasHome) folder.selectedIndex = 0;
+    }
   }
 
   // the agents on offer are the ones installed on the machine that will run the session
   async function loadAgents() {
     const list = await api.agents(selectedMachine()).catch(() => FALLBACK_AGENTS);
     agents = list.filter((a) => a.available !== false);
+    renderInstall(list.filter((a) => a.available === false && a.install));
     const sel = get<HTMLSelectElement>('ns-agent');
     const launch = get<HTMLButtonElement>('ns-launch');
     // a viewer-only machine: nothing to run sessions with
@@ -82,6 +108,38 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     loadAgentOptions();
   }
 
+  // engines missing on that machine: one click opens a terminal there running
+  // the installer, so the user watches it and signs in in the same card
+  function renderInstall(missing: AgentInfo[]) {
+    const box = get('ns-install');
+    box.hidden = !missing.length;
+    box.innerHTML = '';
+    for (const a of missing) {
+      const btn = document.createElement('button');
+      btn.className = 'ghost-btn';
+      btn.textContent = `INSTALL ${a.label.toUpperCase()}`;
+      btn.title = `Opens a terminal on that machine running:\n${a.install}\nThen type "${a.id}" in it to sign in.`;
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          const session = await api.spawn({
+            cwd: '~',
+            agentType: 'shell',
+            name: `install ${a.id}`,
+            initialPrompt: a.install,
+            machine: selectedMachine(),
+          });
+          dialog.close();
+          onSpawned(session);
+        } catch (err) {
+          btn.disabled = false;
+          alert(`Could not open a terminal there: ${err}`);
+        }
+      };
+      box.appendChild(btn);
+    }
+  }
+
   // folder list comes from whichever machine will run the session
   async function loadFolders() {
     const folder = get<HTMLSelectElement>('ns-folder');
@@ -90,6 +148,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     folder.innerHTML =
       projects.map((p) => `<option value="${p.path}">${p.name}</option>`).join('') +
       '<option value="__new__">+ new project folder…</option>';
+    syncHomeOption();
     folder.onchange = () => {
       const isNew = folder.value === '__new__';
       get<HTMLInputElement>('ns-newfolder').hidden = !isNew;

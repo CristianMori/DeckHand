@@ -8,6 +8,10 @@ const HIGHER_SIGNAL_SHIELD_MS = 3000;
 const SETTLE_MS = 1200; // output burst must be over this long before the screen is read // lower-precedence signals can't override within this window
 const ALERT_DEBOUNCE_MS = 1500; // state must persist this long before alerting
 const QUIET_IDLE_MS = 120_000; // a WORKING card with a silent PTY this long is idle
+// terminal sessions (output-only status)
+const ECHO_WINDOW_MS = 400; // output this soon after a keystroke is the echo of typing
+const SHELL_QUIET_MS = 1500; // a shell silent this long is back at its prompt
+const SHELL_ALERT_MIN_MS = 10_000; // only a command that ran at least this long alerts when done
 
 const ALERT_STATES: SessionState[] = ['WAITING_QUESTION', 'WAITING_PERMISSION', 'IDLE'];
 
@@ -40,10 +44,33 @@ export class StatusEngine extends EventEmitter {
     );
   }
 
+  /**
+   * A shell has no hooks and no TUI to read. Output that keeps coming without
+   * a keystroke behind it is a command at work; silence means the prompt is
+   * back. (A command that works silently reads as IDLE — dh_run, which waits
+   * for the exit, is the reliable way to run one.)
+   */
+  private shellOutput(session: HubSession) {
+    if (session.command) return; // a dh_run card is WORKING until it exits
+    if (Date.now() - session.lastInputAt > ECHO_WINDOW_MS && session.state !== 'STARTING') {
+      this.signal(session, SIG_OUTPUT, 'WORKING', 'running');
+    }
+    const prev = this.settleTimers.get(session.hubId);
+    if (prev) clearTimeout(prev);
+    this.settleTimers.set(
+      session.hubId,
+      setTimeout(() => {
+        this.settleTimers.delete(session.hubId);
+        if (session.proc) this.signal(session, SIG_OUTPUT, 'IDLE', 'ready');
+      }, SHELL_QUIET_MS),
+    );
+  }
+
   constructor(private manager: SessionManager) {
     super();
     // S4: raw output flow marks WORKING; prompt-box patterns suggest WAITING.
     manager.on('data', (session: HubSession, chunk: string) => {
+      if (agentFor(session).outputOnlyStatus) return this.shellOutput(session);
       if (session.hooksSeen) return; // hooks + sessions-file carry the load once seen
       const { outputWaitingRegex: waitingRx, outputIdleRegex: idleRx } = agentFor(session);
       if (waitingRx && waitingRx.test(chunk)) {
@@ -72,6 +99,7 @@ export class StatusEngine extends EventEmitter {
     const quiet = setInterval(() => {
       const now = Date.now();
       for (const session of manager.sessions.values()) {
+        if (agentFor(session).outputOnlyStatus) continue;
         if (!session.proc || (session.state !== 'WORKING' && session.state !== 'STARTING')) continue;
         if (now - session.stateSince < QUIET_IDLE_MS) continue;
         if (now - (session.lastOutputAt || 0) < QUIET_IDLE_MS) continue;
@@ -104,10 +132,14 @@ export class StatusEngine extends EventEmitter {
       if (now - (session.lastSignalAt[p] ?? 0) < HIGHER_SIGNAL_SHIELD_MS) return;
     }
 
+    const was = session.state;
+    const wasFor = now - session.stateSince;
     session.state = state;
     session.stateSince = now;
     session.detail = detail;
     this.manager.emit('change', session);
+    // a shell back at its prompt is news only after a long-running command
+    if (agentFor(session).outputOnlyStatus && !(was === 'WORKING' && wasFor >= SHELL_ALERT_MIN_MS)) return;
     this.scheduleAlert(session, state);
   }
 

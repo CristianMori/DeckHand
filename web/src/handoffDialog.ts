@@ -84,7 +84,7 @@ export async function openHandoffDialog(source: SessionInfo, onStarted: (s: Sess
     get<HTMLSelectElement>('hd-model').innerHTML = '<option value="">default</option>' + (a?.models ?? []).map(opt).join('');
   }
   async function loadAgents() {
-    agents = (await api.agents(selectedMachine()).catch(() => [])).filter((a) => a.available !== false);
+    agents = (await api.agents(selectedMachine()).catch(() => [])).filter((a) => a.available !== false && !a.terminal);
     // default to the *other* engine — that is what a handoff is usually for
     const other = agents.find((a) => a.id !== engine) ?? agents[0];
     agentSel.innerHTML = agents.map((a) => `<option value="${a.id}"${a === other ? ' selected' : ''}>${a.label}</option>`).join('');

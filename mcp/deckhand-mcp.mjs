@@ -264,8 +264,8 @@ const TOOLS = [
   },
   {
     name: 'dh_create_session',
-    description: 'Spawn a new coding-agent session on a fleet machine. Provide either cwd (existing absolute folder on the target machine) OR newFolder (created under that machine\'s projects root). agentType: claude|codex. Optional: name, model, permissionMode (see dh_list_agents), initialPrompt, machine (omit = this hub), waitMs (>= 0 blocks until the first turn settles), force (override "folder live elsewhere").',
-    schema: { cwd: S('existing absolute folder on the target machine'), newFolder: S('folder to create under the projects root'), agentType: S('claude | codex (default claude)'), name: S('card name'), model: S('model id'), permissionMode: S('permission mode'), initialPrompt: S('first prompt'), machine: S('target machine; omit for this hub'), waitMs: I('block until the first turn settles'), force: B('override the folder-live-elsewhere guard') },
+    description: 'Spawn a new coding-agent session on a fleet machine. Provide either cwd (existing absolute folder on the target machine, or "~" for its home folder) OR newFolder (created under that machine\'s projects root). agentType: claude|codex|shell (shell = an interactive terminal card; its model is the shell, e.g. bash or pwsh — to run one command and read the result, use dh_run instead). Optional: name, model, permissionMode (see dh_list_agents), initialPrompt, machine (omit = this hub), waitMs (>= 0 blocks until the first turn settles), force (override "folder live elsewhere").',
+    schema: { cwd: S('existing absolute folder on the target machine, or ~ for home'), newFolder: S('folder to create under the projects root'), agentType: S('claude | codex | shell (default claude)'), name: S('card name'), model: S('model id'), permissionMode: S('permission mode'), initialPrompt: S('first prompt'), machine: S('target machine; omit for this hub'), waitMs: I('block until the first turn settles'), force: B('override the folder-live-elsewhere guard') },
     run: async (a) => {
       if (!nz(a.cwd) && !nz(a.newFolder)) return 'Provide either cwd (existing folder) or newFolder (to create one).';
       const body = { agentType: nz(a.agentType) ? a.agentType : 'claude' };
@@ -275,6 +275,30 @@ const TOOLS = [
       if (nz(a.waitMs) && Number.isFinite(w) && w >= 0) body.wait = w;
       const s = await post('/api/sessions', body, waitTimeout(body.wait ?? 0));
       return `Session created on ${s.machine}:\n${replyLine(s)}`;
+    },
+  },
+  {
+    name: 'dh_run',
+    description: 'Run one shell command on a fleet machine and get its output and exit code back. It runs in a visible terminal card on that machine (the user can open it). cwd defaults to the home folder ("~" and "~/sub" work). shell: the target\'s default when omitted (login shell on macOS/Linux, PowerShell on Windows; see dh_list_agents, engine "shell"). A command still running at timeoutMs keeps running: you get timedOut=true and the card\'s hubId for dh_wait_for_session (until=EXITED) and dh_read_screen. Fleet etiquette: a folder a live agent session works in is refused until you have agreed the command with that session (dh_send_prompt) and pass force=true. No sudo/password prompts: the user types those into the card.',
+    schema: {
+      command: S('the command line to run'),
+      machine: S('fleet machine to run it on; omit for this hub\'s machine'),
+      cwd: S('working folder on that machine; default ~ (home)'),
+      shell: S('shell to use, e.g. bash, zsh, pwsh, powershell; omit for the machine default'),
+      timeoutMs: I('how long to wait for it to finish, 1000-240000 (default 120000)'),
+      force: B('run in a folder owned by another live session, after agreeing it with that session'),
+    },
+    required: ['command'],
+    run: async (a) => {
+      const body = { command: a.command, from: ME.conversationId };
+      for (const k of ['machine', 'cwd', 'shell']) if (nz(a[k])) body[k] = a[k];
+      if (Number(a.timeoutMs) > 0) body.timeoutMs = Number(a.timeoutMs);
+      if (a.force) body.force = true;
+      const r = await post('/api/run', body, Math.min(Number(a.timeoutMs) || 120_000, 240_000) + 30_000);
+      const head = r.timedOut
+        ? `STILL RUNNING on ${r.machine} after the timeout (card ${r.hubId}) - dh_wait_for_session until=EXITED, then dh_read_screen.`
+        : `exit code ${r.exitCode} on ${r.machine} (card ${r.hubId}, ${r.shell}, in ${r.cwd})`;
+      return `${head}${r.truncated ? '\n(output truncated to its last 100000 characters)' : ''}\nOUTPUT:\n${r.output || '(no output)'}`;
     },
   },
   {

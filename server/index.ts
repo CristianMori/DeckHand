@@ -5,9 +5,11 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
-import { FLEET_RULES } from './etiquette.js';
+import { FLEET_RULES, folderOwner, projectFolderOf } from './etiquette.js';
+import { runShell } from './agents/shell.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
 import { agentFor, getAgent, listAgents } from './agents/index.js';
@@ -135,6 +137,9 @@ function restoreSessions() {
   if (process.env.HUB_RESTORE === '0' || !toRestore.length) return;
   const eligible = toRestore.filter((s) => {
     if (s.claudeSessionId.startsWith('pending-')) return false;
+    // a terminal has no conversation to pick up — it waits for a manual restart
+    // rather than reopening a shell (and whatever it was doing) on its own
+    if (getAgent(s.agentType).outputOnlyStatus) return false;
     if (!existsSync(s.cwd)) return false;
     try {
       return getAgent(s.agentType).available();
@@ -177,10 +182,18 @@ function liveElsewhere(folderName: string): string[] {
   for (const s of mergedList()) {
     if (!s.alive || s.unreachable || s.state === 'EXITED') continue;
     if (s.machine === discovery.selfName) continue;
+    if (getAgent(s.agentType).ownsFolder === false) continue; // a terminal claims no folder
     const base = s.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.toLowerCase();
     if (base === want) machines.add(s.machine ?? 'unknown');
   }
   return [...machines];
+}
+
+/** "~" and "~/…" mean this machine's home folder (terminal cards, dh_run). */
+function expandHome(p: string): string {
+  if (p === '~') return homedir();
+  if (/^~[\\/]/.test(p)) return join(homedir(), p.slice(2));
+  return p;
 }
 
 /** 400 when the requested engine is not installed here (a viewer-only machine, say). */
@@ -327,6 +340,9 @@ app.get('/api/agents', async (req, res) => {
       models: a.models,
       permissionModes: a.permissionModes,
       canResume: !!a.transcript,
+      optionLabel: a.optionLabel,
+      terminal: !!a.outputOnlyStatus || undefined,
+      install: a.available() ? undefined : a.installCommand,
     })),
   );
 });
@@ -479,6 +495,8 @@ app.post('/api/sessions', async (req, res) => {
     }
   }
   if (engineMissing(res, agentType)) return;
+  const terminal = !!getAgent(agentType).outputOnlyStatus;
+  if (typeof cwd === 'string') cwd = expandHome(cwd);
   // a brand-new project: create its folder under the projects root first
   if (newFolder) {
     const safe = String(newFolder).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
@@ -493,7 +511,7 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(400).json({ error: `not a directory: ${cwd}` });
   }
   const folderName = String(cwd).replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
-  if (!force) {
+  if (!force && !terminal) {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
   }
@@ -506,6 +524,78 @@ app.post('/api/sessions', async (req, res) => {
     ? await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs })
     : (await waitUntil(manager, () => isSettled(session), timeoutMs)) ? null : 'done';
   res.json(await turnResult(session, initialPrompt, timedOut));
+});
+
+// Run one command on this machine (or `machine`) and hand back its output and
+// exit code: what dh_run calls. It runs in a terminal card named after the
+// command, so the user can open it and see what was run. A command still
+// running at the timeout keeps running; the caller gets timedOut plus the
+// card's hubId to wait on. Fleet etiquette applies: a folder a live agent
+// session works in is refused (409) unless the caller passes force after
+// agreeing with that session. Anywhere else (home, /opt, …) just runs.
+const RUN_OUTPUT_MAX = 100_000;
+const RUN_CARDS_KEPT = 10;
+
+app.post('/api/run', async (req, res) => {
+  const b = req.body ?? {};
+  const machine = typeof b.machine === 'string' && b.machine ? b.machine : undefined;
+  if (machine && machine !== discovery.selfName) {
+    const peer = federation.peerByMachine(machine);
+    if (!peer) return res.status(502).json({ error: `machine not connected: ${machine}` });
+    try {
+      const out = await federation.forward(peer, '/api/run', { method: 'POST', body: { ...b, machine: undefined } });
+      return res.status(out.status).json(out.body);
+    } catch {
+      return res.status(502).json({ error: `forward to ${machine} failed` });
+    }
+  }
+  const command = typeof b.command === 'string' ? b.command.trim() : '';
+  if (!command) return res.status(400).json({ error: 'command required' });
+  const cwd = expandHome(typeof b.cwd === 'string' && b.cwd ? b.cwd : '~');
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+    return res.status(400).json({ error: `not a directory on ${discovery.selfName}: ${cwd}` });
+  }
+  const folder = projectFolderOf(cwd);
+  const owner = folder ? folderOwner(folder, String(b.from ?? ''), mergedList()) : undefined;
+  if (owner && !b.force) {
+    return res.status(409).json({
+      error:
+        `${cwd} is in project folder "${folder}", which belongs to the live session "${owner.name}" ` +
+        `(${owner.agentType} on ${owner.machine}, hub id ${owner.hubId}). Agree the command with that session ` +
+        `first (dh_send_prompt), then run again with force.`,
+      owner: { hubId: owner.hubId, name: owner.name, machine: owner.machine },
+    });
+  }
+
+  // finished run cards are a log; keep the newest few
+  const finished = [...manager.sessions.values()]
+    .filter((s) => s.command && !s.proc)
+    .sort((x, y) => x.stateSince - y.stateSince);
+  for (const s of finished.slice(0, Math.max(0, finished.length - (RUN_CARDS_KEPT - 1)))) manager.remove(s.hubId);
+
+  const oneLine = command.replace(/\s+/g, ' ');
+  const session = manager.create({
+    cwd,
+    agentType: 'shell',
+    model: runShell(typeof b.shell === 'string' ? b.shell : undefined),
+    name: typeof b.name === 'string' && b.name ? b.name : `run: ${oneLine.length > 48 ? oneLine.slice(0, 47) + '…' : oneLine}`,
+    command,
+  });
+  const done = await waitUntil(manager, () => !session.proc, clampWait(b.timeoutMs));
+  if (done) await new Promise((r) => setTimeout(r, 300)); // the PTY can deliver its last output after the exit
+  let output = session.fullText();
+  const truncated = output.length > RUN_OUTPUT_MAX;
+  if (truncated) output = output.slice(-RUN_OUTPUT_MAX);
+  res.json({
+    hubId: session.hubId,
+    machine: discovery.selfName,
+    cwd,
+    shell: session.model,
+    exitCode: done ? (session.exitCode ?? null) : null,
+    timedOut: !done,
+    truncated,
+    output,
+  });
 });
 
 /** A live session whose conversation id starts with `prefix` (8+ chars), if exactly one matches. */
@@ -1081,6 +1171,9 @@ app.get('/api/transcripts/:id', (req, res) => {
 app.post('/api/sessions/:id/handoff', sessionAction((id, req, res) => {
   const b = req.body ?? {};
   if (!b.targetAgent) return res.status(400).json({ error: 'targetAgent required' });
+  if (agentFor(manager.sessions.get(id)!).outputOnlyStatus || getAgent(String(b.targetAgent)).outputOnlyStatus) {
+    return res.status(400).json({ error: 'a terminal session has no conversation to hand off' });
+  }
   const job = startHandoff(
     {
       sourceHubId: id,

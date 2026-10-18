@@ -1,5 +1,6 @@
 import { basename, resolve, sep } from 'node:path';
 import { PROJECTS_ROOT } from './config.js';
+import { getAgent } from './agents/index.js';
 import type { SessionInfo } from './types.js';
 
 /**
@@ -95,6 +96,8 @@ export function folderOwner(
   return live.find((s) => {
     if (!s.alive || s.unreachable) return false;
     if (s.claudeSessionId === editingConversationId) return false;
+    // only agents own folders: a terminal cannot be asked for permission
+    if (getAgent(s.agentType).ownsFolder === false) return false;
     const sFolder = projectFolderOfAny(s.cwd);
     return sFolder !== null && sFolder.toLowerCase() === target;
   });

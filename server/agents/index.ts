@@ -1,5 +1,6 @@
 import { claudeAdapter } from './claude.js';
 import { codexAdapter } from './codex.js';
+import { shellAdapter } from './shell.js';
 import type { AgentAdapter } from './types.js';
 
 export const DEFAULT_AGENT = 'claude';
@@ -7,6 +8,7 @@ export const DEFAULT_AGENT = 'claude';
 const registry = new Map<string, AgentAdapter>([
   [claudeAdapter.id, claudeAdapter],
   [codexAdapter.id, codexAdapter],
+  [shellAdapter.id, shellAdapter],
 ]);
 
 export function registerAgent(adapter: AgentAdapter) {

@@ -18,6 +18,8 @@ export interface BuildArgsInput {
   model?: string;
   permissionMode?: string;
   initialPrompt?: string;
+  /** run this command non-interactively and exit with its code (terminal sessions only) */
+  command?: string;
   /** fleet identity + etiquette, delivered as extra system/developer instructions */
   briefing?: string;
   /** the hub's own MCP server (stdio), handed to the session so it can reach the fleet */
@@ -72,7 +74,8 @@ export interface AgentAdapter {
   label: string;
   /** true when the hub picks the conversation id up front (--session-id) */
   clientChosenId: boolean;
-  resolveExe(): string;
+  /** `option` is the session's model slot — the shell, for terminal sessions */
+  resolveExe(option?: string): string;
   /** false when the CLI is not installed on this machine */
   available(): boolean;
   buildArgs(input: BuildArgsInput): string[];
@@ -109,4 +112,18 @@ export interface AgentAdapter {
 
   models: AgentOption[];
   permissionModes: AgentOption[];
+  /** shell command that installs this engine on this machine (offered when it is missing) */
+  installCommand?: string;
+  /** what the dialog calls the models list (default MODEL) */
+  optionLabel?: string;
+  /**
+   * No hooks, no TUI to read: WORKING while output keeps coming that is not
+   * the echo of typing, IDLE once it goes quiet (terminal sessions).
+   */
+  outputOnlyStatus?: boolean;
+  /**
+   * false = a live session of this engine does not claim its folder for fleet
+   * etiquette (a shell cannot be asked for permission). Default true.
+   */
+  ownsFolder?: boolean;
 }

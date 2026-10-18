@@ -122,6 +122,47 @@ Notes:
   session in a folder of the same name (folders sync across the fleet).
   Pass `"force": true` if you really want two.
 - Without `initialPrompt`, `wait` just waits until the TUI is idle.
+- `"agentType": "shell"` starts a plain terminal (no agent). Its `model` is
+  the shell (`pwsh`, `powershell`, `cmd`, `zsh`, `bash`, `sh`, as listed by
+  `/api/agents`); `cwd` may be `"~"` for the home folder; `initialPrompt`
+  is typed in as a command. To run one command and get its result, use
+  `/api/run` instead.
+
+### Run a command — `POST /api/run`
+
+```json
+{
+  "command": "brew list --versions",   // required
+  "machine": "mac-mini",               // omit = this hub's machine
+  "cwd": "~",                          // default ~ (home); "~/sub" works
+  "shell": "zsh",                      // omit = login shell (macOS/Linux), PowerShell (Windows); never cmd
+  "timeoutMs": 120000,                 // 1000–240000
+  "force": false,                      // run in a folder another live agent session owns (after agreeing it)
+  "from": "<your conversation id>"     // so your own folder never counts as someone else's
+}
+```
+
+Response:
+
+```json
+{"hubId":"17711f24","machine":"mac-mini","cwd":"/Users/me","shell":"zsh",
+ "exitCode":0,"timedOut":false,"truncated":false,"output":"node 24.1.0\n…"}
+```
+
+- The command runs in a terminal card named `run: <command>` on that
+  machine, so the user can see it. Finished run cards are kept (newest 10).
+- `output` is the rendered terminal text, soft-wrapped lines rejoined,
+  capped at the last 100 000 characters (`truncated`). PowerShell progress
+  bars are turned off.
+- `timedOut: true` means it is **still running** (`exitCode: null`): wait on
+  `GET /api/sessions/<hubId>/wait?until=EXITED`, then read the screen
+  (`?scrollback=5000`) or `GET /api/sessions/<hubId>` for `exitCode`.
+- 409 when `cwd` is inside a project folder a live Claude/Codex session works
+  in; the error names it. Agree the command with that session
+  (`/prompt`), then repeat with `"force": true`. Terminal sessions own no
+  folders.
+- Nothing can answer a password prompt (sudo): such a command waits until
+  the timeout. Ask the user to type it into the card.
 
 
 > Session routes accept the hub id **or** the agent's own conversation id (any unique prefix of 8+ characters). Hub ids change on every hub restart or migration; the conversation id does not, so automation should store that one.
@@ -196,7 +237,7 @@ each tagged with `machine`).
 | route | returns |
 |---|---|
 | `GET /api/fleet` | machines and whether they are connected |
-| `GET /api/agents?machine=X` | engines on X: `{id,label,available,models,permissionModes,canResume}` |
+| `GET /api/agents?machine=X` | engines on X: `{id,label,available,models,permissionModes,canResume,optionLabel?,terminal?,install?}`; `install` is the command that installs a missing engine there |
 | `GET /api/projects?machine=X` | project folders on X: `[{name,path}]` |
 | `GET /api/fleet-folders` | every folder across the fleet with its resumable conversations |
 | `GET /api/etiquette` | the fleet rules every spawned session is briefed with (plain text) |

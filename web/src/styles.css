@@ -408,6 +408,8 @@ dialog select, dialog input, dialog textarea {
 dialog select:focus, dialog input:focus, dialog textarea:focus { border-color: var(--amber-deep); }
 dialog textarea { resize: vertical; min-height: 60px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.ns-install { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.ns-install[hidden] { display: none; }
 
 /* ── resume dialog ── */
 #resume-dialog { width: 560px; }

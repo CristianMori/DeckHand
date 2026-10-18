@@ -295,6 +295,9 @@ export const codexAdapter: AgentAdapter = {
   clientChosenId: false,
   resolveExe,
   available: () => resolveExe() !== 'codex',
+  // through the npm that runs the hub; a root-owned global prefix (Node from
+  // the nodejs.org pkg) fails with EACCES in the card for the user to see
+  installCommand: 'npm install -g @openai/codex',
   beforeSpawn: (cwd) => {
     try {
       ensureTrusted(cwd);

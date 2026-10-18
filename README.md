@@ -25,6 +25,31 @@ when any session on any machine needs a human.
   Status, resume, cross-machine migration, the durable transcript store and
   PRINT export work for both. Each agent is an adapter under `server/agents/`,
   so a third CLI is one file away.
+- **Plain terminals.** TERMINAL is a third engine in the launch dialog: an
+  interactive shell in a card, on any machine, with no agent. Windows offers
+  PowerShell 7 (when installed), Windows PowerShell and cmd; macOS and Linux
+  your login shell plus bash/zsh/sh. It can start in the home folder (`~`)
+  as well as in a project. It is always available, so even a machine with
+  no Claude or Codex is useful. Its status comes from output alone: WORKING
+  while a command prints, IDLE once the prompt is back, and an alert only
+  when a command that ran 10 s or more finishes. A terminal has no
+  conversation: after a hub restart its card waits as EXITED with
+  RESTART, a fresh shell in the same folder; it is never handed off or
+  moved, and it claims no folder (agents never need its permission).
+- **Run a command anywhere (`dh_run`).** `POST /api/run`, and the `dh_run`
+  MCP tool, run one command on any fleet machine and hand back its output
+  and exit code. It runs in a visible terminal card on that machine, named
+  after the command, so you can open it and see what any session ran there
+  (the newest 10 such cards are kept). A command still running after the
+  wait (max 4 min) keeps running and the caller gets the card to wait on.
+  A command in a folder that a live agent session works in is refused
+  until the caller has agreed it with that session and passes `force`;
+  anywhere else (home, `/opt`, a folder nobody works in) just runs.
+- **Install an engine from the dashboard.** When the machine you pick has
+  no Claude Code (or Codex), the launch dialog offers INSTALL: it opens a
+  terminal there running the official installer, and you sign in in the
+  same card. The hub also looks in the installer's default folders, so a
+  freshly installed Claude shows up without a hub restart.
 - **Hand a session to another engine.** HAND OFF on any card moves the work
   to a different engine, machine and/or folder, including a brand-new folder.
   Not a transcript transplant (each agent's log is its own private replay
@@ -192,7 +217,8 @@ and how to behave towards the others.
   `dh_send_prompt`, `dh_send_keys`, `dh_set_autoyes`, `dh_create_session`,
   `dh_kill_session`, `dh_resume_session`, `dh_remove_session`,
   `dh_fleet_resume`, `dh_handoff`, `dh_list_fleet`, `dh_list_agents`,
-  `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`.
+  `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`,
+  plus `dh_run` (a command on any machine, output and exit code back).
   It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
 - **Warning (level 2).** The PreToolUse hook the hub already injects answers
   an edit (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Codex
@@ -200,6 +226,10 @@ and how to behave towards the others.
   session* with a warning, delivered to the agent as additional context and
   to the user as a system message. Nothing is blocked: the agent is told
   whose folder it is and which hub id to talk to, and decides.
+- **Commands (`dh_run`).** The same ownership rule, enforced: a command
+  whose working folder belongs to another live agent session is refused
+  (409, naming the owner) until it is repeated with `force`. Only Claude and
+  Codex sessions own folders; terminal cards never do.
 
 ---
 
@@ -210,7 +240,7 @@ and how to behave towards the others.
 | Windows 10/11, macOS, or Linux | hub runs on all three | macOS: Apple silicon or Intel, LaunchAgent |
 | [Tailscale](https://tailscale.com) (free) | discovery, transport, trust boundary | required for any multi-machine features |
 | Node.js 20+ | runs the hub | `winget install OpenJS.NodeJS.LTS` / `brew install node` / distro package |
-| [Claude Code](https://claude.com/claude-code) | the sessions themselves | logged in on each machine that runs sessions |
+| [Claude Code](https://claude.com/claude-code) | the sessions themselves | logged in on each machine that runs sessions; a machine without it still runs terminal cards, and the launch dialog can install it |
 | [Codex CLI](https://developers.openai.com/codex) | optional second agent | `npm i -g @openai/codex`, logged in; machines without it simply don't offer it |
 | [Syncthing](https://syncthing.net) (free) | folder replication | optional — skip it and everything but folder sync works |
 
@@ -329,8 +359,11 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
 - **Drag & drop** — drop files onto the terminal panel; they upload to that
   session's machine and the saved path is typed into the prompt (browsers
   can't reveal real file paths — the hub bridges that).
-- **+ NEW SESSION** — pick machine, folder (listed from that machine),
-  permission mode, model, optional first prompt.
+- **+ NEW SESSION** — pick machine, engine (Claude, Codex or Terminal),
+  folder (listed from that machine; `~` for a terminal), permission mode,
+  model (the shell, for a terminal), optional first prompt (typed into a
+  terminal as a command). INSTALL buttons appear for engines that machine
+  lacks.
 - **RESUME ⟳** — the fleet resume dialog: pick the machine that will *run*
   the session, optionally filter by *source* machine, pick a folder
   (badged LOCAL / ON VPS / on other machines, with live-session warnings),

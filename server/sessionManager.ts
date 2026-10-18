@@ -70,6 +70,11 @@ export class HubSession {
   /** stateSince of the last permission prompt we auto-answered (dedupe guard) */
   autoAnsweredAt = 0;
   lastOutputAt = 0;
+  /** last keystroke written into the PTY (tells typing echo from real output) */
+  lastInputAt = 0;
+  /** the one command a dh_run card runs; cleared when it is restarted as a shell */
+  command?: string;
+  exitCode?: number;
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -83,6 +88,7 @@ export class HubSession {
     this.model = opts.model;
     this.permissionMode = opts.permissionMode;
     this.handoff = opts.handoff;
+    this.command = opts.command;
   }
 
   info(): SessionInfo {
@@ -102,6 +108,8 @@ export class HubSession {
       alive: this.proc !== null,
       autoYes: this.autoYes,
       handoff: this.handoff,
+      command: this.command,
+      exitCode: this.exitCode,
     };
   }
 
@@ -115,6 +123,23 @@ export class HubSession {
     } catch {
       return 'none';
     }
+  }
+
+  /** Everything the terminal still holds (scrollback included) as plain text,
+   *  soft-wrapped rows joined back into their logical lines. */
+  fullText(): string {
+    const mirror = this.mirror;
+    if (!mirror) return '';
+    const buf = mirror.buffer.active;
+    const lines: string[] = [];
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(!buf.getLine(i + 1)?.isWrapped);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines.join('\n').replace(/\s+$/, '');
   }
 
   /** The visible screen (plus optional scrollback rows) as plain text, bottom row last. */
@@ -149,11 +174,12 @@ export class SessionManager extends EventEmitter {
   /** agent id -> resolved executable (install paths move on updates; resolve once) */
   private exeCache = new Map<string, string>();
 
-  private exeFor(agentType: string): string {
-    let exe = this.exeCache.get(agentType);
+  private exeFor(agentType: string, option?: string): string {
+    const key = `${agentType}:${option ?? ''}`;
+    let exe = this.exeCache.get(key);
     if (!exe) {
-      exe = getAgent(agentType).resolveExe();
-      this.exeCache.set(agentType, exe);
+      exe = getAgent(agentType).resolveExe(option);
+      this.exeCache.set(key, exe);
     }
     return exe;
   }
@@ -175,7 +201,7 @@ export class SessionManager extends EventEmitter {
     }
     const session = new HubSession(opts);
     this.sessions.set(session.hubId, session);
-    this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId);
+    this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId, opts.command);
     return session;
   }
 
@@ -184,11 +210,13 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(hubId);
     if (!session || session.proc) return session;
     session.buffer.clear();
+    // a finished dh_run card comes back as a plain shell — never re-run its command
+    session.command = undefined;
     this.spawnInto(session, undefined, true);
     return session;
   }
 
-  private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean) {
+  private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean, command?: string) {
     const adapter = agentFor(session);
     const identity: Identity = {
       hubId: session.hubId,
@@ -207,13 +235,14 @@ export class SessionManager extends EventEmitter {
       model: session.model,
       permissionMode: session.permissionMode,
       initialPrompt,
+      command,
       briefing: fleetBriefing(identity),
       // the node running the hub runs the server too — no PATH lookup in a service session
       // identity goes in explicitly: Codex does not hand its own environment to MCP servers
       mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: identityEnv(identity) },
     });
 
-    const proc = pty.spawn(this.exeFor(session.agentType), args, {
+    const proc = pty.spawn(this.exeFor(session.agentType, session.model), args, {
       name: 'xterm-256color',
       cols: session.cols,
       rows: session.rows,
@@ -222,9 +251,11 @@ export class SessionManager extends EventEmitter {
       useConpty: true,
     });
     session.proc = proc;
-    session.state = 'STARTING';
+    // a one-shot command is working from its first instant until it exits
+    session.state = command ? 'WORKING' : 'STARTING';
     session.stateSince = Date.now();
-    session.detail = undefined;
+    session.detail = command ? 'running' : undefined;
+    session.exitCode = undefined;
 
     session.mirror?.dispose();
     session.mirror = new HeadlessTerminal({
@@ -245,6 +276,7 @@ export class SessionManager extends EventEmitter {
 
     proc.onExit(({ exitCode }) => {
       session.proc = null;
+      session.exitCode = exitCode;
       session.state = 'EXITED';
       session.stateSince = Date.now();
       session.detail = `exit code ${exitCode}`;
@@ -252,11 +284,24 @@ export class SessionManager extends EventEmitter {
       this.emit('exit', session);
     });
 
+    // an engine without a prompt flag (a shell) gets its initial prompt typed
+    // in once it has drawn its prompt
+    if (initialPrompt && adapter.outputOnlyStatus && !command) {
+      setTimeout(() => {
+        if (session.proc !== proc) return;
+        this.write(session.hubId, initialPrompt);
+        setTimeout(() => session.proc === proc && this.write(session.hubId, '\r'), 120);
+      }, 1200);
+    }
+
     this.emit('change', session);
   }
 
   write(hubId: string, data: string) {
-    this.sessions.get(hubId)?.proc?.write(data);
+    const session = this.sessions.get(hubId);
+    if (!session?.proc) return;
+    session.lastInputAt = Date.now();
+    session.proc.write(data);
   }
 
   resize(hubId: string, cols: number, rows: number) {

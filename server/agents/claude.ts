@@ -42,8 +42,21 @@ function resolveExe(): string {
   } catch {
     /* fall through */
   }
-  return 'claude'; // let the PTY resolve via PATH
+  // installed after the hub started (the hub's PATH is the one it was born
+  // with), or by the native installer into a folder the service PATH lacks
+  const home = homedir();
+  const known =
+    process.platform === 'win32'
+      ? [join(home, '.local', 'bin', 'claude.exe')]
+      : [join(home, '.local', 'bin', 'claude'), join(home, '.claude', 'local', 'claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'];
+  return known.find((p) => existsSync(p)) ?? 'claude'; // else let the PTY resolve via PATH
 }
+
+/** Claude Code's official native installer: no Node, no sudo, lands in ~/.local/bin. */
+const INSTALL_COMMAND =
+  process.platform === 'win32'
+    ? 'irm https://claude.ai/install.ps1 | iex'
+    : 'curl -fsSL https://claude.ai/install.sh | bash';
 
 function textOf(content: unknown, sep: string): string {
   if (typeof content === 'string') return content;
@@ -158,6 +171,7 @@ export const claudeAdapter: AgentAdapter = {
   clientChosenId: true,
   resolveExe,
   available: () => resolveExe() !== 'claude',
+  installCommand: INSTALL_COMMAND,
   beforeSpawn: (cwd) => {
     try {
       ensureTrusted(cwd);

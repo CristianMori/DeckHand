@@ -41,6 +41,10 @@ export interface SessionInfo {
   handoff?: HandoffLineage;
   /** the session's folder is frozen to its machine — never synced or moved */
   frozen?: boolean;
+  /** terminal card running one command (dh_run), not an interactive shell */
+  command?: string;
+  /** exit code of an EXITED process, when known */
+  exitCode?: number;
 }
 
 export interface HandoffLineage {
@@ -65,4 +69,6 @@ export interface SpawnOptions {
   initialPrompt?: string;
   resumeSessionId?: string;
   handoff?: HandoffLineage;
+  /** terminal sessions: run this command non-interactively, then exit */
+  command?: string;
 }

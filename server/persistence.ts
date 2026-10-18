@@ -32,7 +32,8 @@ export function loadPersisted(): PersistedSession[] {
 
 export function savePersisted(manager: SessionManager) {
   const now = Date.now();
-  const records: PersistedSession[] = [...manager.sessions.values()].map((s) => ({
+  // a dh_run card is a log of one command, not something to bring back
+  const records: PersistedSession[] = [...manager.sessions.values()].filter((s) => !s.command).map((s) => ({
     agentType: s.agentType,
     claudeSessionId: s.claudeSessionId,
     name: s.name,

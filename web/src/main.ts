@@ -70,7 +70,7 @@ function renderTabs() {
       <span class="tab-min" title="Close tab — session keeps running">–</span>
       <span class="tab-x" title="End session and close tab">×</span>
     `;
-    const agentSuffix = ` · ${s.agentType || 'claude'}`;
+    const agentSuffix = ` · ${s.agentType === 'shell' ? 'terminal' : s.agentType || 'claude'}`;
     (tab.querySelector('.tab-name') as HTMLElement).textContent =
       (s.machine ? `${s.name} @ ${s.machine}` : s.name) + agentSuffix;
     // sessions on a locally served model wear LOCAL plus the model name
@@ -161,7 +161,10 @@ function render() {
       el.autoYesBtn.classList.toggle('active', !!s.autoYes);
       el.frozenBtn.textContent = s.frozen ? '❄ FROZEN' : 'FREEZE';
       el.frozenBtn.classList.toggle('active', !!s.frozen);
-      el.frozenBtn.hidden = !!s.unreachable;
+      // a terminal has no prompts to auto-answer and no project folder to pin
+      const terminal = s.agentType === 'shell';
+      el.frozenBtn.hidden = !!s.unreachable || terminal;
+      el.autoYesBtn.hidden = terminal;
     }
   }
   renderTabs();

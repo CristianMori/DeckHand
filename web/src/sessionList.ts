@@ -111,7 +111,8 @@ export function renderSessionList(
         `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;
     }
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
-    const engine = s.agentType || 'claude';
+    const terminal = s.agentType === 'shell';
+    const engine = terminal ? 'terminal' : s.agentType || 'claude';
     (card.querySelector('.agent-tag') as HTMLElement).textContent = engine;
     const modelTag = card.querySelector('.tag.model') as HTMLElement | null;
     if (modelTag && s.model) {
@@ -135,13 +136,17 @@ export function renderSessionList(
     } else if (s.state === 'EXITED') {
       const resume = document.createElement('button');
       resume.className = 'primary-btn';
-      resume.textContent = `RESUME · ${engine.toUpperCase()}`;
+      // a terminal has no conversation: it restarts as a fresh shell in the same folder
+      resume.textContent = terminal ? 'RESTART · TERMINAL' : `RESUME · ${engine.toUpperCase()}`;
       resume.onclick = (e) => { e.stopPropagation(); handlers.onResume(s); };
       const remove = document.createElement('button');
       remove.className = 'ghost-btn danger';
       remove.textContent = 'REMOVE';
       remove.onclick = (e) => { e.stopPropagation(); handlers.onRemove(s); };
-      actions.append(resume, handoff, remove);
+      if (terminal) actions.append(resume, remove);
+      else actions.append(resume, handoff, remove);
+    } else if (terminal) {
+      actions.remove(); // nothing to hand off
     } else if (s.hubId === selected) {
       actions.append(handoff); // live: offered on the selected card only, keeps the list quiet
     } else {

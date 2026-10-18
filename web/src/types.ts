@@ -57,6 +57,12 @@ export interface AgentInfo {
   models: { value: string; label: string }[];
   permissionModes: { value: string; label: string }[];
   canResume: boolean;
+  /** what the models list is called in the dialog (SHELL for terminals) */
+  optionLabel?: string;
+  /** a plain terminal, not a coding agent */
+  terminal?: boolean;
+  /** not installed there: the command that installs it */
+  install?: string;
 }
 
 export interface FolderConversation {
