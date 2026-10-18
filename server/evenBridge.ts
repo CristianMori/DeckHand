@@ -62,6 +62,8 @@ interface Tracked {
   detail?: string;
   lastReplyKey?: string;
   menu?: PendingMenu;
+  /** `at` of the last remote tool call shown */
+  toolAt?: number;
 }
 
 export interface EvenBridgeDeps {
@@ -119,7 +121,7 @@ export function summarizeTool(name: string, input: Record<string, unknown> = {})
 }
 
 /** The first input field worth showing under a permission request. */
-function detailOf(input: Record<string, unknown> = {}): string {
+export function detailOf(input: Record<string, unknown> = {}): string {
   for (const k of ['command', 'file_path', 'url', 'query', 'pattern', 'prompt']) {
     if (typeof input[k] === 'string' && input[k]) return clip(input[k], 200);
   }
@@ -291,7 +293,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
     const local = s.machine === deps.selfName();
     const asking = local
       ? lastTool.get(s.hubId)?.name === 'AskUserQuestion'
-      : menu.length > 0 && !menu.some((o) => /^(yes|no)\b/i.test(o.text));
+      : s.tool?.name === 'AskUserQuestion' || (menu.length > 0 && !menu.some((o) => /^(yes|no)\b/i.test(o.text)));
     if (asking || s.state === 'WAITING_QUESTION') return onQuestion(s, t, menu);
     return onPermission(s, t, menu);
   }
@@ -299,8 +301,10 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
   async function onPermission(s: SessionInfo, t: Tracked, menu: { n: string; text: string }[]) {
     const sid = evenId(s);
     const tool = s.machine === deps.selfName() ? lastTool.get(s.hubId) : undefined;
-    const toolName = tool?.name ?? (s.detail?.match(/use (\S+)/)?.[1] ?? 'Tool');
-    const summary = tool ? summarizeTool(tool.name, tool.input) : clip(s.detail ?? 'Permission needed', 60);
+    // a session on another machine: its hub shares the latest tool call as a display line
+    const remote = !tool && s.tool ? s.tool : undefined;
+    const toolName = tool?.name ?? remote?.name ?? (s.detail?.match(/use (\S+)/)?.[1] ?? 'Tool');
+    const summary = tool ? summarizeTool(tool.name, tool.input) : (remote?.summary ?? clip(s.detail ?? 'Permission needed', 60));
     const pending: PendingMenu = { kind: 'permission', keys: new Map(), labels: new Map(), toolName, summary };
     const options = (menu.length ? menu : [{ n: '1', text: 'Yes' }, { n: '3', text: 'No' }]).map((o) => {
       const key = permissionKey(o.text, `option${o.n}`);
@@ -319,7 +323,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
       type: 'permission_request',
       toolName,
       description: summary,
-      detail: tool ? detailOf(tool.input) : '',
+      detail: tool ? detailOf(tool.input) : (remote?.detail ?? ''),
       toolUseId: `${s.hubId}-${s.stateSince}`,
       options,
       suggestions: null,
@@ -468,17 +472,16 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
           if (prev.lastReplyKey === 'unknown') prev.lastReplyKey = undefined;
           void onSettled(s, prev);
         }
-      } else if (
-        s.state === 'WORKING' &&
-        s.detail !== prev.detail &&
-        s.machine !== deps.selfName() &&
-        s.detail?.startsWith('using ')
-      ) {
-        // a remote session: no hook payloads here, the owning hub's detail line is all there is
-        const name = s.detail.slice('using '.length);
-        const toolId = `${s.hubId}-${Date.now()}`;
-        emit(sid, { type: 'tool_start', name, toolId });
-        emit(sid, { type: 'tool_end', name, toolId, summary: name, detail: {} });
+      }
+      if (s.machine !== deps.selfName() && s.tool && s.tool.at !== prev.toolAt) {
+        // a remote session: its hub shares each tool call; local ones come from the hooks directly
+        const seenBefore = prev.toolAt !== undefined;
+        prev.toolAt = s.tool.at;
+        if (seenBefore && s.tool.name !== 'AskUserQuestion') {
+          const toolId = `${s.hubId}-${s.tool.at}`;
+          emit(sid, { type: 'tool_start', name: s.tool.name, toolId });
+          emit(sid, { type: 'tool_end', name: s.tool.name, toolId, summary: s.tool.summary, detail: {} });
+        }
       }
       prev.detail = s.detail;
     }

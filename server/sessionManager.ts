@@ -77,6 +77,8 @@ export class HubSession {
   exitCode?: number;
   /** files handed to the user with dh_send_file, newest first (kept in memory) */
   files: SharedFile[] = [];
+  /** latest tool call from the PreToolUse hook (shared so other hubs can describe prompts) */
+  lastTool?: SessionInfo['tool'];
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -113,6 +115,7 @@ export class HubSession {
       command: this.command,
       exitCode: this.exitCode,
       files: this.files.length ? this.files : undefined,
+      tool: this.lastTool,
     };
   }
 

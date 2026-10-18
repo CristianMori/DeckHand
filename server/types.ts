@@ -47,6 +47,8 @@ export interface SessionInfo {
   exitCode?: number;
   /** files this session handed to the user (dh_send_file), newest first */
   files?: SharedFile[];
+  /** the latest tool call, as one display line: what a permission prompt is about */
+  tool?: { name: string; summary: string; detail: string; at: number };
 }
 
 /** A file a session gave the user: a download link served by the owning hub. */

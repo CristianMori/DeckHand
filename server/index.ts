@@ -15,8 +15,8 @@ import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './c
 import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
-import { makeHookHandler } from './hooksReceiver.js';
-import { startEvenBridge } from './evenBridge.js';
+import { hookBus, makeHookHandler } from './hooksReceiver.js';
+import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { loadNtfy, saveNtfy, sendNtfy } from './ntfy.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
@@ -460,6 +460,14 @@ app.use(
 );
 
 app.post('/api/hook', makeHookHandler(manager, engine, () => mergedList()));
+
+// Remember each session's latest tool call in the shape other hubs can show:
+// the glasses bridge on another machine has no hook payloads of its own.
+hookBus.on('hook', (session, event, body) => {
+  if (event !== 'PreToolUse' || !body.tool_name) return;
+  const input = (body.tool_input ?? {}) as Record<string, unknown>;
+  session.lastTool = { name: body.tool_name, summary: summarizeTool(body.tool_name, input), detail: detailOf(input), at: Date.now() };
+});
 
 /** The etiquette every fleet session is briefed with (level 1), for humans and agents to read. */
 app.get('/api/etiquette', (_req, res) => res.type('text/plain').send(FLEET_RULES));
