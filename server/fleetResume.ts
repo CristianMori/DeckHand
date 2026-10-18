@@ -165,6 +165,7 @@ export function startFleetResume(opts: {
 
   void (async () => {
     try {
+      if (!agent.available()) throw new Error(`${agent.label} is not installed on ${opts.selfName}`);
       // guard: never invent a projects root on a misconfigured machine —
       // materializing folders into a nonexistent default root is how paths go wrong
       if (!existsSync(PROJECTS_ROOT)) {

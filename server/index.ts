@@ -183,6 +183,14 @@ function liveElsewhere(folderName: string): string[] {
   return [...machines];
 }
 
+/** 400 when the requested engine is not installed here (a viewer-only machine, say). */
+function engineMissing(res: express.Response, agentType: unknown): boolean {
+  const agent = getAgent(typeof agentType === 'string' ? agentType : undefined);
+  if (agent.available()) return false;
+  res.status(400).json({ error: `${agent.label} is not installed on ${discovery.selfName}` });
+  return true;
+}
+
 /** 409 payload the UI turns into a confirmation prompt. */
 function activeElsewhereError(res: express.Response, machines: string[]) {
   res.status(409).json({
@@ -470,6 +478,7 @@ app.post('/api/sessions', async (req, res) => {
       return res.status(502).json({ error: `forward to ${machine} failed` });
     }
   }
+  if (engineMissing(res, agentType)) return;
   // a brand-new project: create its folder under the projects root first
   if (newFolder) {
     const safe = String(newFolder).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
@@ -581,6 +590,7 @@ app.post('/api/sessions/:id/kill', sessionAction((id, _req, res) => {
 app.post('/api/sessions/:id/resume', sessionAction(async (id, req, res) => {
   const existing = manager.sessions.get(id);
   if (!existing) return res.status(404).json({ error: 'unknown session' });
+  if (engineMissing(res, existing.agentType)) return;
   const folderName = existing.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
   if (!req.body?.force) {
     const busy = liveElsewhere(folderName);
@@ -713,6 +723,7 @@ app.post('/api/sessions/adopt', (req, res) => {
   if (manager.byClaudeSessionId(claudeSessionId)) {
     return res.status(409).json({ error: 'already in hub' });
   }
+  if (engineMissing(res, agentType)) return;
   const session = manager.create({ cwd, agentType, name, resumeSessionId: claudeSessionId });
   res.json({ ...session.info(), machine: discovery.selfName });
 });

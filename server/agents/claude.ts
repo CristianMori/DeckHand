@@ -157,7 +157,7 @@ export const claudeAdapter: AgentAdapter = {
   label: 'Claude Code',
   clientChosenId: true,
   resolveExe,
-  available: () => resolveExe() !== 'claude' || process.platform !== 'win32',
+  available: () => resolveExe() !== 'claude',
   beforeSpawn: (cwd) => {
     try {
       ensureTrusted(cwd);

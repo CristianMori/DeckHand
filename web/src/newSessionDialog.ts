@@ -66,8 +66,16 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
   async function loadAgents() {
     const list = await api.agents(selectedMachine()).catch(() => FALLBACK_AGENTS);
     agents = list.filter((a) => a.available !== false);
-    if (!agents.length) agents = FALLBACK_AGENTS;
     const sel = get<HTMLSelectElement>('ns-agent');
+    const launch = get<HTMLButtonElement>('ns-launch');
+    // a viewer-only machine: nothing to run sessions with
+    if (!agents.length) {
+      agents = FALLBACK_AGENTS;
+      sel.innerHTML = '<option value="">no engine installed on this machine</option>';
+      launch.disabled = true;
+      return;
+    }
+    launch.disabled = false;
     const prev = sel.value;
     sel.innerHTML = agents.map((a) => `<option value="${a.id}">${a.label}</option>`).join('');
     if (agents.some((a) => a.id === prev)) sel.value = prev;
