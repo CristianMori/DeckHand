@@ -36,6 +36,12 @@ when any session on any machine needs a human.
   conversation: after a hub restart its card waits as EXITED with
   RESTART, a fresh shell in the same folder; it is never handed off or
   moved, and it claims no folder (agents never need its permission).
+- **"Give me that file" (`dh_send_file`).** Ask any session for a file and
+  it calls `dh_send_file`: the file stays on its machine, a download button
+  appears on the session's card in every dashboard, and a phone push (ntfy)
+  opens the download when tapped; the glasses show "file ready". Links are
+  unguessable ids served by the owning hub (`/api/shared/<id>`, behind the
+  usual access check), the newest 10 per session, until that hub restarts.
 - **Run a command anywhere (`dh_run`).** `POST /api/run`, and the `dh_run`
   MCP tool, run one command on any fleet machine and hand back its output
   and exit code. It runs in a visible terminal card on that machine, named

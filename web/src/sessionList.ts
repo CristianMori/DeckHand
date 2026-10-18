@@ -30,6 +30,11 @@ function shortPath(cwd: string): string {
   return cwd.slice(0, 6) + '…' + cwd.slice(-25);
 }
 
+function fmtSize(n: number): string {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
 function elapsed(since: number): string {
   const s = Math.max(0, Math.floor((Date.now() - since) / 1000));
   if (s < 60) return `${s}s`;
@@ -95,6 +100,7 @@ export function renderSessionList(
       </div>
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
+      ${s.files?.length ? '<div class="card-shared"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
       <div class="card-foot">
         ${s.model?.startsWith('local/') ? '<span class="tag model"></span>' : ''}
@@ -123,6 +129,19 @@ export function renderSessionList(
     if (s.machine) (card.querySelector('.machine-tag') as HTMLElement).textContent = s.machine;
     (card.querySelector('.cwd') as HTMLElement).textContent = shortPath(s.cwd);
     if (s.summary) (card.querySelector('.card-summary') as HTMLElement).textContent = s.summary;
+    if (s.files?.length) {
+      // files the agent handed over: one click downloads from the hub that has them
+      const shared = card.querySelector('.card-shared') as HTMLElement;
+      for (const f of s.files.slice(0, 3)) {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.name;
+        a.textContent = `⇩ ${f.name}`;
+        a.title = `${f.name} · ${fmtSize(f.size)} · ${new Date(f.at).toLocaleString()}`;
+        a.onclick = (e) => e.stopPropagation();
+        shared.appendChild(a);
+      }
+    }
     if (s.detail && waiting) (card.querySelector('.card-detail') as HTMLElement).textContent = `⚠ ${s.detail}`;
 
     const actions = card.querySelector('.card-actions') as HTMLElement;

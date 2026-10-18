@@ -302,6 +302,22 @@ const TOOLS = [
     },
   },
   {
+    name: 'dh_send_file',
+    description: 'Give the user a file. Use it whenever the user asks you to give, send, share or hand over a file (or a result you produced, like a report, an export, an image or a build), instead of only telling them where it is: they may be on another machine, a phone or the glasses. The file stays on this machine; it becomes a download link on your card in the Deckhand dashboard and a phone notification they tap to download. path: absolute, ~/…, or relative to your folder. Returns the download URL.',
+    schema: {
+      path: S('the file to hand over (absolute, ~/..., or relative to your working folder)'),
+      name: S('file name the download should get; default the file\'s own name'),
+    },
+    required: ['path'],
+    run: async (a) => {
+      if (!ME.hubId) throw new HubError('this session has no Deckhand identity (DECKHAND_SESSION is not set)');
+      const body = { path: a.path };
+      if (nz(a.name)) body.name = a.name;
+      const r = await post(`/api/sessions/${q(ME.hubId)}/files`, body);
+      return `Shared ${r.name} (${r.size} bytes). It is on your card in the dashboard and pushed to the user's phone.\nDownload: ${r.url}`;
+    },
+  },
+  {
     name: 'dh_kill_session',
     description: 'End a session\'s process (the card stays as EXITED and is resumable).',
     schema: { hubId: S('session hub id') },

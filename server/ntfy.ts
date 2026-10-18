@@ -26,7 +26,7 @@ export interface NtfyConfig {
   done?: boolean;
 }
 
-export type AlertKind = 'permission' | 'question' | 'done';
+export type AlertKind = 'permission' | 'question' | 'done' | 'file';
 
 export function loadNtfy(): NtfyConfig | null {
   try {
@@ -54,11 +54,18 @@ export function saveNtfy(cfg: NtfyConfig | null): NtfyConfig | null {
   return out;
 }
 
-const PRIORITY: Record<AlertKind, number> = { permission: 4, question: 4, done: 3 };
-const TAGS: Record<AlertKind, string[]> = { permission: ['warning'], question: ['question'], done: ['white_check_mark'] };
+const PRIORITY: Record<AlertKind, number> = { permission: 4, question: 4, done: 3, file: 4 };
+const TAGS: Record<AlertKind, string[]> = {
+  permission: ['warning'],
+  question: ['question'],
+  done: ['white_check_mark'],
+  file: ['paperclip'],
+};
 
-/** Publish one alert. Uses ntfy's JSON API, so titles may hold any characters. */
-export async function sendNtfy(title: string, message: string, kind: AlertKind, cfg = loadNtfy()): Promise<boolean> {
+/** Publish one alert. Uses ntfy's JSON API, so titles may hold any characters.
+ *  `click` overrides the configured tap target (a file push opens its download). */
+export async function sendNtfy(title: string, message: string, kind: AlertKind, click?: string): Promise<boolean> {
+  const cfg = loadNtfy();
   if (!cfg) return false;
   if (kind === 'done' && cfg.done === false) return false;
   const u = new URL(cfg.url);
@@ -76,7 +83,7 @@ export async function sendNtfy(title: string, message: string, kind: AlertKind, 
         message,
         priority: PRIORITY[kind],
         tags: TAGS[kind],
-        ...(cfg.click ? { click: cfg.click } : {}),
+        ...(click || cfg.click ? { click: click || cfg.click } : {}),
       }),
       signal: AbortSignal.timeout(10_000),
     });

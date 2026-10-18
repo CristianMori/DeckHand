@@ -161,6 +161,13 @@ button {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.card-shared { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.card-shared a {
+  font-size: 10.5px; color: var(--amber); text-decoration: none;
+  border: 1px solid var(--line-bright); padding: 3px 8px; border-radius: 2px;
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-shared a:hover { border-color: var(--amber); }
 .card-detail { margin-top: 6px; font-size: 10.5px; color: var(--amber-deep); }
 .card.s-waiting .card-detail { color: var(--amber); }
 

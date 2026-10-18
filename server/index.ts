@@ -1,11 +1,11 @@
 import { createServer } from 'node:http';
 import { authorize, cookieHeader, loadApiToken, LAN_ENABLED } from './access.js';
 import { startBeacon } from './beacon.js';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { homedir } from 'node:os';
+import { basename, isAbsolute, join, resolve } from 'node:path';
+import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
 import { FLEET_RULES, folderOwner, projectFolderOf } from './etiquette.js';
@@ -790,6 +790,48 @@ app.get('/api/sessions/:id/screen', sessionAction((id, req, res) => {
 
 // The last N question→reply exchanges as JSON (oldest first) — the same
 // text the PRINT export renders.
+// Hand a file to the user (dh_send_file): the file stays where it is, the
+// session's card gets a download link served by this hub, and the glasses
+// bridge turns it into a tap-to-download phone push. Links are unguessable
+// ids, live until the hub restarts, and pass the hub's normal access check.
+const sharedFiles = new Map<string, { abs: string; name: string }>();
+const SHARED_KEPT_PER_SESSION = 10;
+
+/** This hub as the phone sees it: its tailnet address when it has one. */
+function publicBase(): string {
+  const tailnet = Object.values(networkInterfaces())
+    .flat()
+    .find((i) => i && i.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(i.address));
+  return `http://${tailnet?.address ?? discovery.selfName}:${actualPort}`;
+}
+
+app.post('/api/sessions/:id/files', sessionAction((id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const raw = typeof req.body?.path === 'string' ? req.body.path.trim() : '';
+  if (!raw) return res.status(400).json({ error: 'path required' });
+  const expanded = expandHome(raw);
+  const abs = isAbsolute(expanded) ? expanded : resolve(session.cwd, expanded);
+  if (!existsSync(abs) || !statSync(abs).isFile()) {
+    return res.status(404).json({ error: `not a file on ${discovery.selfName}: ${abs}` });
+  }
+  const fileId = randomBytes(12).toString('hex');
+  const name = typeof req.body?.name === 'string' && req.body.name.trim() ? basename(req.body.name.trim()) : basename(abs);
+  sharedFiles.set(fileId, { abs, name });
+  const entry = { id: fileId, name, size: statSync(abs).size, at: Date.now(), url: `${publicBase()}/api/shared/${fileId}` };
+  for (const old of session.files.slice(SHARED_KEPT_PER_SESSION - 1)) sharedFiles.delete(old.id);
+  session.files = [entry, ...session.files].slice(0, SHARED_KEPT_PER_SESSION);
+  manager.emit('change', session);
+  console.log(`[share] ${session.name}: ${name} (${entry.size} bytes)`);
+  res.json(entry);
+}));
+
+app.get('/api/shared/:fileId', (req, res) => {
+  const f = sharedFiles.get(String(req.params.fileId));
+  if (!f) return res.status(404).json({ error: 'unknown or expired file link' });
+  if (!existsSync(f.abs)) return res.status(410).json({ error: 'the file is no longer there' });
+  res.download(f.abs, f.name, { dotfiles: 'allow' });
+});
+
 app.get('/api/sessions/:id/exchanges', sessionAction(async (id, req, res) => {
   const session = manager.sessions.get(id)!;
   const n = Math.max(1, Math.min(200, Number(req.query.n) || 5));
@@ -1529,9 +1571,9 @@ function listen(port: number, attemptsLeft: number) {
         selfName: () => discovery.selfName,
         defaultCwd: evenDefaultCwd,
         version: `${VERSION.version}+${VERSION.build}`,
-        onAlert: (title, what, kind) => {
+        onAlert: (title, what, kind, click) => {
           const text = what.charAt(0).toUpperCase() + what.slice(1);
-          void sendNtfy(title, text.length > 300 ? text.slice(0, 299) + '…' : text, kind);
+          void sendNtfy(title, text.length > 300 ? text.slice(0, 299) + '…' : text, kind, click);
         },
       });
     }

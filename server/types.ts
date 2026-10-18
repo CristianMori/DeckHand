@@ -45,6 +45,18 @@ export interface SessionInfo {
   command?: string;
   /** exit code of an EXITED process, when known */
   exitCode?: number;
+  /** files this session handed to the user (dh_send_file), newest first */
+  files?: SharedFile[];
+}
+
+/** A file a session gave the user: a download link served by the owning hub. */
+export interface SharedFile {
+  id: string;
+  name: string;
+  size: number;
+  at: number;
+  /** absolute download URL on the owning hub (tailnet address when there is one) */
+  url: string;
 }
 
 export interface HandoffLineage {

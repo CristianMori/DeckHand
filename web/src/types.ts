@@ -25,6 +25,8 @@ export interface SessionInfo {
   unreachable?: boolean;
   handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };
   frozen?: boolean;
+  /** files the session handed to the user (dh_send_file), newest first */
+  files?: { id: string; name: string; size: number; at: number; url: string }[];
 }
 
 export interface HandoffJob {

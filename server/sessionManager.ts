@@ -14,7 +14,7 @@ import { fleetBriefing, identityEnv, type Identity } from './etiquette.js';
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { HandoffLineage, SessionInfo, SessionState, SpawnOptions } from './types.js';
+import type { HandoffLineage, SessionInfo, SessionState, SharedFile, SpawnOptions } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -75,6 +75,8 @@ export class HubSession {
   /** the one command a dh_run card runs; cleared when it is restarted as a shell */
   command?: string;
   exitCode?: number;
+  /** files handed to the user with dh_send_file, newest first (kept in memory) */
+  files: SharedFile[] = [];
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -110,6 +112,7 @@ export class HubSession {
       handoff: this.handoff,
       command: this.command,
       exitCode: this.exitCode,
+      files: this.files.length ? this.files : undefined,
     };
   }
 
