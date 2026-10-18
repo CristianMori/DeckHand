@@ -449,6 +449,27 @@ Rules of the road:
   "do you trust this folder?" prompt. If some other prompt does appear, the
   session sits in STARTING — `screen` shows it, `keys` answers it.
 
+### Even Realities glasses (G2 + R1)
+
+The Even app's built-in **Terminal** client is made for Even's own
+`even-terminal` server. Every hub speaks that server's protocol on port
+**3456**, so the glasses drive the whole fleet instead of one laptop:
+
+- the session list shows every agent session on every machine, ones waiting on you first;
+- a prompt (typed or spoken in the Even app) goes to the chosen session; an exited
+  session is resumed first, and a prompt with no session starts one in
+  `<projects root>/glasses` (or `HUB_EVEN_CWD`);
+- tool calls show as one-line summaries, the reply arrives when the turn ends;
+- permission prompts and questions show their real options, answered with the ring;
+  the bridge presses the matching key in the session;
+- interrupt sends Esc.
+
+Pair once in the Even app's Terminal client (scan or type the server): URL
+`http://<hub's Tailscale IP>:3456` and the hub's API token (`data/api-token`).
+Over Tailscale the token isn't checked; on the Wi-Fi it is. Terminal cards are
+not listed. Remote sessions show tool lines from the owning hub's status
+("using Bash") rather than full summaries.
+
 ### Publishing updates (the machine you develop on)
 
 ```
@@ -480,6 +501,8 @@ or the LaunchAgent on macOS, the systemd unit on Linux).
 | `DECKHAND_SERVICE` | unset | set by service installers; tells the hub a supervisor handles relaunches |
 | `HUB_SOLO` | unset | skip fleet discovery entirely — for a throwaway test hub on an odd port that must not join the fleet |
 | `HUB_LAN` | `1` | `0` = refuse LAN callers even with the token, and don't run the beacon |
+| `HUB_EVEN_PORT` | `3456` | glasses bridge port (Even app Terminal client); `0` = off |
+| `HUB_EVEN_CWD` | `<projects root>/glasses` | where a session started from the glasses without a folder runs |
 | `HUB_BEACON` | `1` | `0` = don't answer `DECKHAND?` / announce on UDP |
 | `HUB_BEACON_PORT` | `5959` | UDP port the beacon listens on (walks up to +10 if taken) |
 | `HUB_TOKEN` | unset | `deckhand` CLI: bearer token for a LAN hub (`data/api-token` on that machine) |

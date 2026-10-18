@@ -1,14 +1,19 @@
+import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { agentFor, listAgents } from './agents/index.js';
 import type { HookPayload } from './agents/types.js';
 import { editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
-import type { SessionManager } from './sessionManager.js';
+import type { HubSession, SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
 import { normCwd } from './transcriptIo.js';
 import type { SessionInfo } from './types.js';
 import { SIG_HOOK } from './types.js';
 
 const BIND_WINDOW_MS = 120_000;
+
+/** Every hook from a hub-owned session, for listeners that want the raw
+ *  payload (the glasses bridge reads tool names, inputs and questions). */
+export const hookBus = new EventEmitter<{ hook: [HubSession, string, HookPayload & { tool_input?: unknown }] }>();
 
 /**
  * Receives hook POSTs from agent sessions (Claude: injected via --settings;
@@ -63,6 +68,7 @@ export function makeHookHandler(
     if (!session) return res.status(204).end();
     session.hooksSeen = true;
 
+    hookBus.emit('hook', session, event, body);
     const sig = agentFor(session).mapHookEvent(event, body);
     if (sig) engine.signal(session, SIG_HOOK, sig.state, sig.detail);
 

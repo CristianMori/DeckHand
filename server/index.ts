@@ -16,6 +16,7 @@ import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { makeHookHandler } from './hooksReceiver.js';
+import { startEvenBridge } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
@@ -1458,6 +1459,17 @@ function writeHooksJson(port: number) {
   }
 }
 
+// Even Realities glasses: the Even app's Terminal client pairs with this
+// port (even-terminal's default). HUB_EVEN_PORT=0 turns the bridge off.
+const EVEN_PORT = process.env.HUB_EVEN_PORT === undefined ? 3456 : Number(process.env.HUB_EVEN_PORT) || 0;
+
+/** A prompt from the glasses with no session and no folder starts here. */
+function evenDefaultCwd(): string {
+  const dir = process.env.HUB_EVEN_CWD || join(PROJECTS_ROOT, 'glasses');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function listen(port: number, attemptsLeft: number) {
   httpServer.once('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE' && attemptsLeft > 0) {
@@ -1485,6 +1497,15 @@ function listen(port: number, attemptsLeft: number) {
         version: VERSION.version,
         build: VERSION.build,
         port,
+      });
+    }
+    if (EVEN_PORT) {
+      startEvenBridge(EVEN_PORT, {
+        sessions: mergedList,
+        hubUrl: () => `http://127.0.0.1:${actualPort}`,
+        selfName: () => discovery.selfName,
+        defaultCwd: evenDefaultCwd,
+        version: `${VERSION.version}+${VERSION.build}`,
       });
     }
     if (!existsSync(PROJECTS_ROOT)) {
