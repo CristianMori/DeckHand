@@ -294,6 +294,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
       options.push({ text: 'No', key: 'deny' });
     }
     t.menu = pending;
+    alertOthers(s, `needs permission: ${summary}`);
     emit(sid, {
       type: 'permission_request',
       toolName,
@@ -334,7 +335,22 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
             options: menu.map((o) => ({ label: clip(o.text, 80), description: '', preview: '' })),
           },
         ];
+    alertOthers(s, `asks: ${questions[0]?.question || 'a question'}`);
     emit(sid, { type: 'user_question', questions, toolUseId: `${s.hubId}-${s.stateSince}` });
+  }
+
+  /**
+   * Tell the wearer about a session they are not looking at: a notification
+   * goes into every other session stream that has the Even client attached,
+   * so switching between agents never hides one that needs attention.
+   */
+  function alertOthers(s: SessionInfo, what: string) {
+    const sid = evenId(s);
+    const title = clip(`${s.name}${s.machine ? ` @ ${s.machine}` : ''}`, 48);
+    for (const [other, st] of streams) {
+      if (other === sid || !st.clients.size) continue;
+      emit(other, { type: 'notification', title, message: clip(what, 120) });
+    }
   }
 
   /** The turn ended: hand the reply over as one text block plus a result. */
@@ -356,6 +372,7 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
     // Claude's stand-in reply for an interrupted turn is not worth a screen
     if (reply && key !== t.lastReplyKey && reply.r.trim() !== 'No response requested.') {
       t.lastReplyKey = key;
+      alertOthers(s, `done: ${reply.r}`);
       emit(sid, { type: 'status', state: 'text_start', sessionId: sid, provider: providerOf(s) });
       emit(sid, { type: 'text_delta', text: reply.r });
       emit(sid, { type: 'status', state: 'text_end', sessionId: sid, provider: providerOf(s) });
