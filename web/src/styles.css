@@ -450,10 +450,13 @@ dialog label.mg-row {
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0; color: var(--ink);
 }
 dialog label.mg-row:hover { border-color: var(--amber-deep); }
+dialog label.mg-row:focus-within { border-color: var(--amber); outline: none; }
+dialog .mg-row input:focus { outline: none; }
 dialog label.mg-row.unreachable { opacity: 0.5; cursor: default; }
 dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-color: var(--amber); }
 .mg-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mg-meta { flex: none; font-size: 10.5px; color: var(--ink-faint); }
+.mg-keys { margin-top: 6px; font-size: 10px; color: var(--ink-faint); }
 .mg-status { min-height: 16px; margin-top: 10px; font-size: 11px; color: var(--ink-dim); }
 
 /* toast-ish inline flash when an alert arrives */

@@ -31,6 +31,7 @@ export function openManageDialog(sessions: () => SessionInfo[], removed: (hubId:
       <span class="mg-count" id="mg-count"></span>
     </div>
     <div class="mg-list" id="mg-rows"></div>
+    <div class="mg-keys">↑ ↓ move · X tick</div>
     <div class="mg-status" id="mg-status"></div>
     <div class="dialog-actions">
       <button class="ghost-btn danger" id="mg-kill">KILL</button>
@@ -56,8 +57,30 @@ export function openManageDialog(sessions: () => SessionInfo[], removed: (hubId:
   get<HTMLButtonElement>('mg-kill').onclick = () => void bulk('kill');
   get<HTMLButtonElement>('mg-resume').onclick = () => void bulk('resume');
   get<HTMLButtonElement>('mg-remove').onclick = () => void bulk('remove');
+  d.onkeydown = onKey;
+  d.showModal(); // before the rows render: updateManageDialog skips a closed dialog
   updateManageDialog();
-  d.showModal();
+  rowBoxes()[0]?.focus();
+}
+
+const rowBoxes = () =>
+  [...dialog().querySelectorAll<HTMLInputElement>('.mg-row input:not(:disabled)')];
+
+// keyboard: arrows walk the rows, x ticks the focused one (space works too,
+// it is a native checkbox)
+function onKey(e: KeyboardEvent) {
+  const boxes = rowBoxes();
+  if (!boxes.length) return;
+  const at = boxes.indexOf(document.activeElement as HTMLInputElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    const next = at < 0 ? (step > 0 ? 0 : boxes.length - 1) : Math.min(boxes.length - 1, Math.max(0, at + step));
+    boxes[next].focus();
+  } else if ((e.key === 'x' || e.key === 'X') && at >= 0 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    boxes[at].click(); // fires change, keeps the ticks and buttons in step
+  }
 }
 
 /** Called on every session broadcast; a no-op while the dialog is closed. */
@@ -71,6 +94,8 @@ export function updateManageDialog() {
   }
 
   const rows = d.querySelector('#mg-rows') as HTMLElement;
+  // the rebuild below replaces the checkboxes; keep keyboard focus on the same session
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.mg-row')?.dataset.hubId;
   rows.innerHTML = sessions.length ? '' : '<div class="empty-note">NO SESSIONS</div>';
   for (const s of sessions) {
     const row = document.createElement('label');
@@ -97,7 +122,9 @@ export function updateManageDialog() {
     (row.querySelector('.mg-meta') as HTMLElement).textContent =
       [engineOf(s), s.machine].filter(Boolean).join(' · ');
     row.title = s.cwd;
+    row.dataset.hubId = s.hubId;
     rows.appendChild(row);
+    if (s.hubId === focused) box.focus();
   }
   syncButtons();
 }
