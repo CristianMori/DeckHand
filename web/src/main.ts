@@ -9,6 +9,7 @@ import { openResumeDialog } from './resumeDialog';
 import { openHandoffDialog } from './handoffDialog';
 import { openAdminDialog } from './adminDialog';
 import { openFilesDialog } from './filesDialog';
+import { openManageDialog, updateManageDialog } from './manageDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
 
 let sessions: SessionInfo[] = [];
@@ -168,6 +169,7 @@ function render() {
     }
   }
   renderTabs();
+  updateManageDialog();
 }
 
 el.frozenBtn.onclick = async () => {
@@ -261,6 +263,12 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
   openResumeDialog((s) => select(s));
 (document.getElementById('admin-btn') as HTMLButtonElement).onclick = () => void openAdminDialog();
 (document.getElementById('files-btn') as HTMLButtonElement).onclick = () => void openFilesDialog();
+(document.getElementById('manage-btn') as HTMLButtonElement).onclick = () =>
+  openManageDialog(() => sessions, (hubId) => {
+    dropTerminal(hubId);
+    tabs = tabs.filter((id) => id !== hubId);
+    if (selected === hubId) deselect();
+  });
 
 el.killBtn.onclick = () => {
   if (selected) api.kill(selected);
