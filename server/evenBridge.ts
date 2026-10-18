@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import express from 'express';
 import { authorize, cookieHeader } from './access.js';
+import { getAgent } from './agents/index.js';
 import { hookBus } from './hooksReceiver.js';
 import type { AlertKind } from './ntfy.js';
 import type { SessionInfo, SessionState } from './types.js';
@@ -34,8 +35,8 @@ import type { SessionInfo, SessionState } from './types.js';
 /** what the Even app is told it is talking to — the release this mirrors */
 const EVEN_TERMINAL_VERSION = '0.10.5';
 const TRACK_MS = 400;
-/** how long an auto-yes session gets to answer its own prompt before the wearer hears of it */
-const AUTO_YES_GRACE_MS = 3000;
+/** how long a prompt gets to draw before an auto-yes session's screen is read */
+const AUTO_YES_LOOK_MS = 800;
 const MAX_MESSAGES = 500;
 
 type Msg = Record<string, unknown> & { type: string };
@@ -272,12 +273,19 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
   // Claude reports its question menu (AskUserQuestion) as a permission
   // prompt, so every wait goes through here and is sorted by what it shows.
   async function onWaiting(s: SessionInfo, t: Tracked) {
-    // Auto-yes answers ordinary prompts within a second; only the ones it
-    // leaves alone (leaving plan mode) are worth the wearer's attention.
+    // Auto-yes answers every prompt except the ones its agent marks as
+    // protected (leaving plan mode). Decide from what is on screen, not from
+    // timing: an approved long-running tool can keep the waiting state for a
+    // while after the answer went in.
     if (s.autoYes) {
-      await sleep(AUTO_YES_GRACE_MS);
-      const now = deps.sessions().find((x) => x.hubId === s.hubId);
-      if (!now || now.state !== s.state || now.stateSince !== s.stateSince) return;
+      await sleep(AUTO_YES_LOOK_MS); // let the prompt finish drawing
+      let screen = '';
+      try {
+        screen = String(await hub(`/api/sessions/${s.hubId}/screen`));
+      } catch {
+        return;
+      }
+      if (!getAgent(s.agentType).isProtectedPrompt?.(screen)) return;
     }
     const menu = await readMenu(s);
     const local = s.machine === deps.selfName();
