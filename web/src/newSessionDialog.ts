@@ -85,6 +85,17 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
       home.remove();
       if (wasHome) folder.selectedIndex = 0;
     }
+    syncNewFolder();
+  }
+
+  // The name box follows whatever the folder list shows, not just a change
+  // event: on a machine with no projects "+ new project folder…" is the only
+  // entry, selected from the start, and no change ever fires.
+  function syncNewFolder(focus = false) {
+    const isNew = get<HTMLSelectElement>('ns-folder').value === '__new__';
+    const input = get<HTMLInputElement>('ns-newfolder');
+    input.hidden = !isNew;
+    if (isNew && focus) input.focus();
   }
 
   // the agents on offer are the ones installed on the machine that will run the session
@@ -148,13 +159,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     folder.innerHTML =
       projects.map((p) => `<option value="${p.path}">${p.name}</option>`).join('') +
       '<option value="__new__">+ new project folder…</option>';
-    syncHomeOption();
-    folder.onchange = () => {
-      const isNew = folder.value === '__new__';
-      get<HTMLInputElement>('ns-newfolder').hidden = !isNew;
-      if (isNew) get<HTMLInputElement>('ns-newfolder').focus();
-    };
-    get<HTMLInputElement>('ns-newfolder').hidden = true;
+    folder.onchange = () => syncNewFolder(true);
+    syncHomeOption(); // also syncs the name box
   }
   if (multiMachine) {
     get<HTMLSelectElement>('ns-machine').onchange = () => {
