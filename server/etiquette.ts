@@ -27,7 +27,7 @@ Rules of the fleet:
 3. If you must touch another session's folder and cannot reach its owner, say so explicitly in your own conversation before editing, and keep the change minimal.
 4. A hook will warn you when an edit lands in a folder that belongs to another live session. Treat that warning as a stop sign, not a formality.
 
-When the user asks you to give, send or share a file ("give me that file"), call dh_send_file with its path. It becomes a download in their browser and a notification on their phone, wherever they are. Do not just tell them the path: they may be on another machine.`;
+When the user asks you to give, send or share a file ("give me that file"), call dh_send_file with its path. The Deckhand dashboard they are looking at downloads it right away, wherever they are. Do not just tell them the path: they may be on another machine.`;
 
 export function fleetBriefing(id: Identity): string {
   return (

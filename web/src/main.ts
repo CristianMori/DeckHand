@@ -216,6 +216,48 @@ function deselect() {
   renderTabs();
 }
 
+// ---------------------------------------------------------------- shared files
+
+// A session handed the user a file (dh_send_file): the dashboard the user is
+// looking at starts the download by itself. One in the background holds it
+// and downloads when brought forward, if that happens within two minutes.
+// Files already on the cards when the page loads are not downloaded again.
+const PENDING_FILE_MS = 120_000;
+let seenFiles: Set<string> | null = null;
+let pendingFiles: { url: string; name: string; at: number }[] = [];
+
+function startDownload(url: string, name: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function flushPendingFiles() {
+  if (document.visibilityState !== 'visible' || !document.hasFocus()) return;
+  const fresh = pendingFiles.filter((f) => Date.now() - f.at < PENDING_FILE_MS);
+  pendingFiles = [];
+  for (const f of fresh) startDownload(f.url, f.name);
+}
+
+function downloadNewFiles() {
+  const files = sessions.flatMap((s) => s.files ?? []);
+  if (!seenFiles) {
+    seenFiles = new Set(files.map((f) => f.id));
+    return;
+  }
+  for (const f of files) {
+    if (seenFiles.has(f.id)) continue;
+    seenFiles.add(f.id);
+    pendingFiles.push({ url: f.url, name: f.name, at: Date.now() });
+  }
+  flushPendingFiles();
+}
+window.addEventListener('focus', flushPendingFiles);
+document.addEventListener('visibilitychange', flushPendingFiles);
+
 // ---------------------------------------------------------------- control WS
 
 function connectControl() {
@@ -236,6 +278,7 @@ function connectControl() {
     if (msg.type === 'sessions' && msg.sessions) {
       sessions = msg.sessions;
       render();
+      downloadNewFiles();
     } else if (msg.type === 'alert') {
       if (msg.state !== 'IDLE') chime();
       render();
@@ -244,7 +287,7 @@ function connectControl() {
 }
 
 connectControl();
-api.sessions().then((s) => { sessions = s; render(); }).catch(() => {});
+api.sessions().then((s) => { sessions = s; render(); downloadNewFiles(); }).catch(() => {});
 setInterval(render, 5000); // keep elapsed timers fresh
 
 // ---------------------------------------------------------------- top bar

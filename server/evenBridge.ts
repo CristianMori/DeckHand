@@ -3,7 +3,7 @@ import express from 'express';
 import { authorize, cookieHeader } from './access.js';
 import { hookBus } from './hooksReceiver.js';
 import type { AlertKind } from './ntfy.js';
-import type { SessionInfo, SessionState, SharedFile } from './types.js';
+import type { SessionInfo, SessionState } from './types.js';
 
 /**
  * Even Realities glasses bridge.
@@ -61,8 +61,6 @@ interface Tracked {
   detail?: string;
   lastReplyKey?: string;
   menu?: PendingMenu;
-  /** shared-file ids already announced */
-  files?: Set<string>;
 }
 
 export interface EvenBridgeDeps {
@@ -407,15 +405,6 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
     emit(sid, { type: 'status', state: 'idle', sessionId: sid, provider: providerOf(s) });
   }
 
-  /** A session handed the user a file: say so on the glasses and push the download link to the phone. */
-  function announceFile(s: SessionInfo, f: SharedFile) {
-    const title = clip(`${s.name}${s.machine ? ` @ ${s.machine}` : ''}`, 48);
-    const size = f.size >= 1048576 ? `${(f.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(f.size / 1024))} KB`;
-    const what = `file ready: ${f.name} (${size}), tap the phone notification to download`;
-    for (const [sid, st] of streams) if (st.clients.size) emit(sid, { type: 'notification', title, message: clip(what, 120) });
-    deps.onAlert?.(title, `file ready: ${f.name} (${size}). Tap to download.`, 'file', f.url);
-  }
-
   function closeMenu(s: SessionInfo, t: Tracked, decision?: string) {
     const menu = t.menu;
     if (!menu) return;
@@ -450,17 +439,11 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
           state: s.state,
           detail: s.detail,
           lastReplyKey: first ? 'unknown' : undefined,
-          files: new Set((s.files ?? []).map((f) => f.id)),
         });
         if (!first && (s.state === 'WAITING_PERMISSION' || s.state === 'WAITING_QUESTION')) void onWaiting(s, tracked.get(s.hubId)!);
         continue;
       }
       const sid = evenId(s);
-      for (const f of s.files ?? []) {
-        if (prev.files?.has(f.id)) continue;
-        (prev.files ??= new Set()).add(f.id);
-        announceFile(s, f);
-      }
       const was = prev.state;
       if (s.state !== was) {
         prev.state = s.state;

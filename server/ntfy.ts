@@ -26,7 +26,7 @@ export interface NtfyConfig {
   done?: boolean;
 }
 
-export type AlertKind = 'permission' | 'question' | 'done' | 'file';
+export type AlertKind = 'permission' | 'question' | 'done';
 
 export function loadNtfy(): NtfyConfig | null {
   try {
@@ -54,12 +54,11 @@ export function saveNtfy(cfg: NtfyConfig | null): NtfyConfig | null {
   return out;
 }
 
-const PRIORITY: Record<AlertKind, number> = { permission: 4, question: 4, done: 3, file: 4 };
+const PRIORITY: Record<AlertKind, number> = { permission: 4, question: 4, done: 3 };
 const TAGS: Record<AlertKind, string[]> = {
   permission: ['warning'],
   question: ['question'],
   done: ['white_check_mark'],
-  file: ['paperclip'],
 };
 
 /** Publish one alert. Uses ntfy's JSON API, so titles may hold any characters.

@@ -37,9 +37,10 @@ when any session on any machine needs a human.
   RESTART, a fresh shell in the same folder; it is never handed off or
   moved, and it claims no folder (agents never need its permission).
 - **"Give me that file" (`dh_send_file`).** Ask any session for a file and
-  it calls `dh_send_file`: the file stays on its machine, a download button
-  appears on the session's card in every dashboard, and a phone push (ntfy)
-  opens the download when tapped; the glasses show "file ready". Links are
+  it calls `dh_send_file`: the file stays on its machine and the dashboard
+  you are looking at (in front, focused) starts downloading it by itself —
+  no button, no popup. A dashboard in the background downloads it when you
+  bring it forward within two minutes. Links are
   unguessable ids served by the owning hub (`/api/shared/<id>`, behind the
   usual access check), the newest 10 per session, until that hub restarts.
 - **Run a command anywhere (`dh_run`).** `POST /api/run`, and the `dh_run`

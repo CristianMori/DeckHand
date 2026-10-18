@@ -303,7 +303,7 @@ const TOOLS = [
   },
   {
     name: 'dh_send_file',
-    description: 'Give the user a file. Use it whenever the user asks you to give, send, share or hand over a file (or a result you produced, like a report, an export, an image or a build), instead of only telling them where it is: they may be on another machine, a phone or the glasses. The file stays on this machine; it becomes a download link on your card in the Deckhand dashboard and a phone notification they tap to download. path: absolute, ~/…, or relative to your folder. Returns the download URL.',
+    description: 'Give the user a file. Use it whenever the user asks you to give, send, share or hand over a file (or a result you produced, like a report, an export, an image or a build), instead of only telling them where it is: they may be on another machine, a phone or the glasses. The file stays on this machine; the Deckhand dashboard the user is looking at (browser or phone) starts downloading it by itself. path: absolute, ~/…, or relative to your folder. Returns the download URL.',
     schema: {
       path: S('the file to hand over (absolute, ~/..., or relative to your working folder)'),
       name: S('file name the download should get; default the file\'s own name'),
@@ -314,7 +314,7 @@ const TOOLS = [
       const body = { path: a.path };
       if (nz(a.name)) body.name = a.name;
       const r = await post(`/api/sessions/${q(ME.hubId)}/files`, body);
-      return `Shared ${r.name} (${r.size} bytes). It is on your card in the dashboard and pushed to the user's phone.\nDownload: ${r.url}`;
+      return `Shared ${r.name} (${r.size} bytes). The dashboard the user is looking at is downloading it now.\nDownload: ${r.url}`;
     },
   },
   {
