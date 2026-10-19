@@ -147,6 +147,26 @@ function render() {
       if (selected === s.hubId) deselect();
       await api.remove(s.hubId);
     },
+    onRename: async (s) => {
+      const terminal = s.agentType === 'shell';
+      const name = prompt(
+        terminal
+          ? `Rename ${s.name} to:`
+          : `Rename ${s.name} to:\n\nThe folder is renamed too, on every machine that has it, with its conversations and memory.`,
+        s.name,
+      )?.trim();
+      if (!name || name === s.name) return;
+      try {
+        const r = await api.rename(s.hubId, name);
+        const problems = [
+          ...r.machines.filter((m) => m.error).map((m) => `${m.machine}: ${m.error}`),
+          ...(r.offline?.length ? [`offline, still named ${s.name}: ${r.offline.join(', ')}`] : []),
+        ];
+        if (problems.length) alert(`Renamed to ${name}, but:\n\n${problems.join('\n')}`);
+      } catch (err) {
+        alert(`Rename failed: ${String(err).replace(/^Error: \d+: /, '')}`);
+      }
+    },
     onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
     onFiles: (s) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
   });

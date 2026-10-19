@@ -101,21 +101,34 @@ interface ThreadRow {
 
 let sqliteUnavailable = false;
 
-/** Rows from the newest state_*.sqlite; empty when node:sqlite or the file is missing. */
-async function threads(): Promise<ThreadRow[]> {
-  if (sqliteUnavailable) return [];
+/** The newest state_*.sqlite, opened; undefined when node:sqlite or the file is missing. */
+async function stateDb(readOnly = false): Promise<import('node:sqlite').DatabaseSync | undefined> {
+  if (sqliteUnavailable) return undefined;
   let dbFile: string | undefined;
   try {
     dbFile = (await readdir(CODEX_HOME))
       .filter((f) => /^state_\d+\.sqlite$/.test(f))
       .sort((a, b) => Number(b.match(/\d+/)![0]) - Number(a.match(/\d+/)![0]))[0];
   } catch {
-    return [];
+    return undefined;
   }
-  if (!dbFile) return [];
+  if (!dbFile) return undefined;
   try {
     const { DatabaseSync } = (await import('node:sqlite')) as typeof import('node:sqlite');
-    const db = new DatabaseSync(join(CODEX_HOME, dbFile), { readOnly: true });
+    return new DatabaseSync(join(CODEX_HOME, dbFile), { readOnly });
+  } catch (err) {
+    if (String(err).includes('ERR_UNKNOWN_BUILTIN_MODULE') || String(err).includes("Cannot find module 'node:sqlite'")) {
+      sqliteUnavailable = true;
+    }
+    return undefined;
+  }
+}
+
+/** Rows of Codex's thread index; empty when it cannot be read. */
+async function threads(): Promise<ThreadRow[]> {
+  const db = await stateDb(true);
+  if (!db) return [];
+  try {
     try {
       return db
         .prepare(
@@ -125,10 +138,7 @@ async function threads(): Promise<ThreadRow[]> {
     } finally {
       db.close();
     }
-  } catch (err) {
-    if (String(err).includes('ERR_UNKNOWN_BUILTIN_MODULE') || String(err).includes("Cannot find module 'node:sqlite'")) {
-      sqliteUnavailable = true;
-    }
+  } catch {
     return [];
   }
 }
@@ -468,6 +478,44 @@ export const codexAdapter: AgentAdapter = {
       await writeFile(path, body);
       void cwd;
       return path;
+    },
+    // Codex files a conversation under the cwd recorded in its index and in
+    // the rollout itself (session_meta and every turn_context): rewrite both
+    async moveFolder(fromCwd, toCwd) {
+      const want = normCwd(fromCwd);
+      const swap = (cwd: string) => (cwd.startsWith('\\\\?\\') ? '\\\\?\\' : '') + toCwd;
+      const rows = await threads();
+      const paths = new Set<string>();
+      for (const r of rows) if (r.cwd && normCwd(r.cwd) === want && r.rollout_path) paths.add(r.rollout_path);
+      if (!rows.length) {
+        for (const ref of await scanRollouts()) {
+          const c = await rolloutCwd(ref.path);
+          if (c && normCwd(c) === want) paths.add(ref.path);
+        }
+      }
+      for (const path of paths) {
+        let text: string;
+        try {
+          text = readFileSync(path, 'utf8');
+        } catch {
+          continue;
+        }
+        const out = text.replace(/"cwd":"((?:[^"\\]|\\.)*)"/g, (m, raw: string) => {
+          const cwd = JSON.parse(`"${raw}"`) as string;
+          return normCwd(cwd) === want ? `"cwd":${JSON.stringify(swap(cwd))}` : m;
+        });
+        if (out !== text) writeFileSync(path, out);
+        cwdOfRollout.delete(path);
+      }
+      const db = await stateDb();
+      if (!db) return paths.size > 0;
+      try {
+        const update = db.prepare('update threads set cwd = ? where id = ?');
+        for (const r of rows) if (r.cwd && normCwd(r.cwd) === want) update.run(swap(r.cwd), r.id);
+      } finally {
+        db.close();
+      }
+      return paths.size > 0;
     },
   },
 

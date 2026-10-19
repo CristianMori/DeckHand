@@ -59,6 +59,7 @@ export function renderSessionList(
     onSelect: (s: SessionInfo) => void;
     onResume: (s: SessionInfo) => void;
     onRemove: (s: SessionInfo) => void;
+    onRename: (s: SessionInfo) => void;
     onHandoff: (s: SessionInfo) => void;
     onFiles: (s: SessionInfo) => void;
   },
@@ -143,8 +144,13 @@ export function renderSessionList(
       remove.className = 'ghost-btn danger';
       remove.textContent = 'REMOVE';
       remove.onclick = (e) => { e.stopPropagation(); handlers.onRemove(s); };
-      if (terminal) actions.append(resume, remove);
-      else actions.append(resume, handoff, remove);
+      const rename = document.createElement('button');
+      rename.className = 'ghost-btn';
+      rename.textContent = 'RENAME';
+      rename.title = terminal ? 'Rename this card' : 'Rename the session and its folder on every machine';
+      rename.onclick = (e) => { e.stopPropagation(); handlers.onRename(s); };
+      if (terminal) actions.append(resume, rename, remove);
+      else actions.append(resume, handoff, rename, remove);
     } else if (terminal) {
       actions.remove(); // nothing to hand off
     } else if (s.hubId === selected) {

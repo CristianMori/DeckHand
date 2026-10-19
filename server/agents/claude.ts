@@ -11,6 +11,7 @@ import {
   HOOKS_TEMPLATE,
   encodeProjectDir,
 } from '../config.js';
+import { moveDir } from '../transcriptIo.js';
 import type { AgentAdapter, StatusRecord, TranscriptRef, TranscriptTail } from './types.js';
 
 /** the hub's MCP server entry handed to every Claude session via --mcp-config */
@@ -304,6 +305,11 @@ export const claudeAdapter: AgentAdapter = {
       const path = join(dir, `${sessionId}.jsonl`);
       await writeFile(path, body);
       return path;
+    },
+    // transcripts, subagent logs and the auto-memory all live in the one
+    // folder Claude derives from the cwd
+    async moveFolder(fromCwd, toCwd) {
+      return moveDir(join(CLAUDE_PROJECTS_DIR, encodeProjectDir(fromCwd)), join(CLAUDE_PROJECTS_DIR, encodeProjectDir(toCwd)));
     },
   },
 

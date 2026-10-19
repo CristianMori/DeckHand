@@ -348,6 +348,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'dh_rename_session',
+    description: 'Rename a stopped session and its project folder: the folder is renamed on every machine that holds it, with its Claude/Codex conversations and memory, sync and cards. Every session in that folder must be stopped. A terminal card just gets the new name.',
+    schema: { hubId: S('session hub id or conversation id'), name: S('new name (letters, digits, space, . - _)') },
+    required: ['hubId', 'name'],
+    run: async ({ hubId, name }) => {
+      const r = await post(`/api/sessions/${q(hubId)}/rename`, { name });
+      const lines = (r.machines ?? []).map((x) => `  ${x.machine}: ${x.error ? 'FAILED ' + x.error : x.done.length ? x.done.join(', ') : 'nothing there'}`);
+      if (r.offline?.length) lines.push(`  offline, still named the old way: ${r.offline.join(', ')}`);
+      return [`Renamed to ${r.name} (${r.cwd}).`, ...lines].join('\n');
+    },
+  },
+  {
     name: 'dh_fleet_resume',
     description: 'Resume a conversation on any machine, syncing the folder there first. Provide folder + claudeSessionId (from dh_list_fleet_folders); optional agentType, sourceMachine, machine (target). Returns a jobId to poll.',
     schema: { folder: S('project folder name'), claudeSessionId: S('conversation id'), agentType: S('claude | codex (default claude)'), sourceMachine: S('machine that has the conversation'), machine: S('machine to run it on') },

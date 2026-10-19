@@ -55,6 +55,8 @@ export interface TranscriptOps {
   activeSessionIds(): Promise<Set<string>>;
   /** place a transcript fetched from another machine where this agent will find it */
   install(cwd: string, sessionId: string, body: Buffer): Promise<string>;
+  /** the project folder was renamed: carry this agent's conversations (and memory) along */
+  moveFolder?(fromCwd: string, toCwd: string): Promise<boolean>;
 }
 
 export interface StatusRecord {

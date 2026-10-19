@@ -159,4 +159,12 @@ export const api = {
     }).then((r) => json<SessionInfo>(r)),
   resume: (hubId: string) => fetch(`/api/sessions/${hubId}/resume`, { method: 'POST' }),
   remove: (hubId: string) => fetch(`/api/sessions/${hubId}/remove`, { method: 'POST' }),
+  rename: (hubId: string, name: string) =>
+    fetch(`/api/sessions/${hubId}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }).then((r) =>
+      json<SessionInfo & { machines: { machine: string; done?: string[]; error?: string }[]; offline?: string[] }>(r),
+    ),
 };

@@ -4,7 +4,8 @@ import { startBeacon } from './beacon.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { rename } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
@@ -21,6 +22,7 @@ import { loadNtfy, saveNtfy, sendNtfy } from './ntfy.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
+import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
@@ -31,6 +33,7 @@ import { Updater } from './updater.js';
 import {
   storeMeta,
   applyUpload,
+  STORE_DIR,
   STORE_MACHINE,
   TranscriptPusher,
   saveToStore,
@@ -726,6 +729,154 @@ app.post('/api/sessions/:id/remove', sessionAction((id, _req, res) => {
   manager.remove(id);
   res.json({ ok: true });
 }));
+
+// ----------------------------------------------------------- Rename
+// A session is named after its folder, so renaming a session renames the
+// folder — on every machine that holds a copy — and everything keyed by its
+// path or name: the agents' conversations and memory, the fleet store, the
+// frozen flag, the Syncthing folder, and the cards. Three phases so no machine
+// moves anything until every machine has said yes, and Syncthing only
+// re-registers once every copy carries the new name.
+
+const FOLDER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,79}$/;
+type RenamePhase = 'check' | 'move' | 'resync';
+/** folders this hub took out of Syncthing during a move, to put back in the resync phase */
+const unsyncedForRename = new Set<string>();
+
+async function renameFolderHere(fromCwd: string, toName: string, phase: RenamePhase): Promise<string[]> {
+  const from = folderNameOf(fromCwd);
+  const toCwd = join(dirname(fromCwd), toName);
+  const caseOnly = normCwd(fromCwd) === normCwd(toCwd);
+  const self = discovery.selfName;
+  if (phase === 'check') {
+    const live = [...manager.sessions.values()].filter((s) => s.proc && normCwd(s.cwd) === normCwd(fromCwd));
+    if (live.length) throw new Error(`${from} has a live session on ${self} (${live.map((s) => s.name).join(', ')}) — stop it first`);
+    if (!caseOnly && existsSync(toCwd)) throw new Error(`${toName} already exists on ${self}`);
+    return [];
+  }
+  if (phase === 'resync') {
+    if (!unsyncedForRename.delete(from.toLowerCase()) || !sync) return [];
+    await sync.registerFolder(toName);
+    return ['sync'];
+  }
+  const done: string[] = [];
+  const underRoot = normCwd(dirname(fromCwd)) === normCwd(PROJECTS_ROOT);
+  let synced = false;
+  if (underRoot && sync) {
+    synced = await sync.localFolders().then((fs) => fs.some((f) => f.id === from), () => false);
+    if (synced) await sync.unregisterFolder(from);
+  }
+  if (existsSync(fromCwd)) {
+    try {
+      await rename(fromCwd, toCwd);
+    } catch (err) {
+      if (synced && sync) await sync.registerFolder(from).catch(() => {});
+      throw new Error(`cannot rename ${from} on ${self}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    done.push('folder');
+  }
+  if (synced) unsyncedForRename.add(toName.toLowerCase());
+  for (const agent of listAgents()) {
+    if (!agent.transcript?.moveFolder) continue;
+    try {
+      if (await agent.transcript.moveFolder(fromCwd, toCwd)) done.push(agent.id);
+    } catch (err) {
+      console.warn(`[rename] ${agent.id} conversations of ${from}: ${err}`);
+    }
+  }
+  if (await moveDir(join(STORE_DIR, from), join(STORE_DIR, toName)).catch(() => false)) done.push('fleet store');
+  if (isFrozen(from)) {
+    setFrozen(from, false);
+    setFrozen(toName, true);
+  }
+  for (const s of manager.sessions.values()) {
+    if (normCwd(s.cwd) !== normCwd(fromCwd)) continue;
+    s.cwd = toCwd;
+    if (s.name === from) s.name = toName;
+    manager.emit('change', s);
+  }
+  console.log(`[rename] ${from} → ${toName}: ${done.join(', ') || 'nothing here'}`);
+  return done;
+}
+
+/** Run one phase on this machine and every connected peer; the owner's own folder goes first. */
+async function renamePhase(fromCwd: string, toName: string, phase: RenamePhase, fleetWide: boolean) {
+  const results: { machine: string; done?: string[]; error?: string }[] = [];
+  try {
+    results.push({ machine: discovery.selfName, done: await renameFolderHere(fromCwd, toName, phase) });
+  } catch (err) {
+    results.push({ machine: discovery.selfName, error: err instanceof Error ? err.message : String(err) });
+  }
+  if (!fleetWide || (phase === 'move' && results[0].error)) return results;
+  const seen = new Set([discovery.selfName]);
+  for (const peer of federation.connectedPeers()) {
+    if (seen.has(peer.info.machine)) continue;
+    seen.add(peer.info.machine);
+    try {
+      const out = await federation.forward(peer, `/api/folders/${encodeURIComponent(folderNameOf(fromCwd))}/rename`, {
+        method: 'POST',
+        body: { to: toName, phase },
+      });
+      const body = out.body as { done?: string[]; error?: string };
+      results.push({ machine: peer.info.machine, ...(out.status < 300 ? { done: body.done ?? [] } : { error: body.error ?? `HTTP ${out.status}` }) });
+    } catch {
+      results.push({ machine: peer.info.machine, error: `${peer.info.machine} did not answer` });
+    }
+  }
+  return results;
+}
+
+app.post('/api/sessions/:id/rename', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const name = String(req.body?.name ?? '').trim();
+  if (!FOLDER_NAME_RE.test(name)) {
+    return res.status(400).json({ error: 'name: letters, digits, space, dot, dash or underscore (up to 80), starting with a letter or digit' });
+  }
+  // a terminal claims no folder: only its card is renamed
+  if (agentFor(session).ownsFolder === false) {
+    session.name = name;
+    manager.emit('change', session);
+    return res.json({ ...session.info(), machine: discovery.selfName, machines: [] });
+  }
+  const from = folderNameOf(session.cwd);
+  if (name === from) return res.status(400).json({ error: `already named ${name}` });
+  const busy = liveElsewhere(from);
+  if (busy.length) return res.status(409).json({ error: `${from} has a live session on ${busy.join(', ')} — stop it first` });
+  // a folder under the projects root is the fleet's folder of that name; any
+  // other folder, or a frozen one, exists only here
+  const fleetWide = normCwd(dirname(session.cwd)) === normCwd(PROJECTS_ROOT) && !isFrozen(from);
+  const checks = await renamePhase(session.cwd, name, 'check', fleetWide);
+  const refused = checks.filter((r) => r.error);
+  if (refused.length) return res.status(409).json({ error: refused.map((r) => r.error).join('; ') });
+  const fromCwd = session.cwd;
+  const moved = await renamePhase(fromCwd, name, 'move', fleetWide);
+  if (moved[0].error) return res.status(409).json({ error: moved[0].error, machines: moved });
+  const resynced = await renamePhase(fromCwd, name, 'resync', fleetWide);
+  for (const r of resynced) {
+    const m = moved.find((x) => x.machine === r.machine);
+    if (m && r.done?.length) m.done = [...(m.done ?? []), ...r.done];
+    else if (m && r.error) m.error = r.error;
+  }
+  session.name = name;
+  manager.emit('change', session);
+  const offline = federation.machines(discovery.selfName).filter((m) => !m.connected).map((m) => m.machine);
+  res.json({ ...session.info(), machine: discovery.selfName, machines: moved, offline: fleetWide ? offline : [] });
+}));
+
+/** One phase of a fleet-wide folder rename, asked for by the hub that owns the session. */
+app.post('/api/folders/:name/rename', async (req, res) => {
+  const from = String(req.params.name);
+  const to = String(req.body?.to ?? '');
+  const phase = String(req.body?.phase ?? '') as RenamePhase;
+  if (!FOLDER_NAME_RE.test(from) || !FOLDER_NAME_RE.test(to) || !['check', 'move', 'resync'].includes(phase)) {
+    return res.status(400).json({ error: 'bad rename request' });
+  }
+  try {
+    res.json({ done: await renameFolderHere(join(PROJECTS_ROOT, from), to, phase) });
+  } catch (err) {
+    res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 // ----------------------------------------------------------- Automation
 // Drive a session from a script: read it, type into it, wait on it. Every

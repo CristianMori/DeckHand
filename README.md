@@ -378,6 +378,14 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
   store, newest first). If the folder isn't on the target, you watch it
   materialize: *source pushing → pulling → transferring conversation →
   starting*.
+- **RENAME** (on a stopped card) — a session is named after its folder, so
+  renaming it renames the folder on every machine that holds a copy, and
+  everything keyed by it follows: Claude's conversations and auto-memory
+  (`~/.claude/projects/<folder>`), Codex's thread index and rollouts, the
+  fleet store, the frozen flag, the Syncthing folder and the cards. Refused
+  while any session in that folder is running anywhere, or when the new name
+  is taken on any machine; a machine that is offline keeps the old name.
+  A terminal card just gets the new name. Agents: `dh_rename_session`.
 - **ADMIN** — per-machine version, build, uptime; check for updates; UPDATE
   and RESTART buttons that work across the fleet from any dashboard.
 
