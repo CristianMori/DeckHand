@@ -355,7 +355,7 @@ const TOOLS = [
     run: async ({ hubId, name }) => {
       const r = await post(`/api/sessions/${q(hubId)}/rename`, { name });
       const lines = (r.machines ?? []).map((x) => `  ${x.machine}: ${x.error ? 'FAILED ' + x.error : x.done.length ? x.done.join(', ') : 'nothing there'}`);
-      if (r.offline?.length) lines.push(`  offline, still named the old way: ${r.offline.join(', ')}`);
+      if (r.offline?.length) lines.push(`  offline (renames itself when it reconnects): ${r.offline.join(', ')}`);
       return [`Renamed to ${r.name} (${r.cwd}).`, ...lines].join('\n');
     },
   },

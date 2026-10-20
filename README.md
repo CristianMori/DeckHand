@@ -384,7 +384,11 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
   (`~/.claude/projects/<folder>`), Codex's thread index and rollouts, the
   fleet store, the frozen flag, the Syncthing folder and the cards. Refused
   while any session in that folder is running anywhere, or when the new name
-  is taken on any machine; a machine that is offline keeps the old name.
+  is taken on any machine. A machine that is offline catches up by itself:
+  every hub keeps a log of fleet renames (`data/renames.json`, shared between
+  hubs), and a hub that reconnects applies the ones it missed, unless a
+  session is running in that folder there (it retries every minute), the
+  new name is taken there, or the folder is frozen.
   A terminal card just gets the new name. Agents: `dh_rename_session`.
 - **ADMIN** — per-machine version, build, uptime; check for updates; UPDATE
   and RESTART buttons that work across the fleet from any dashboard.

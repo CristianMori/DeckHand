@@ -45,6 +45,7 @@ import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
+import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
   isSettled,
@@ -800,7 +801,8 @@ async function renameFolderHere(fromCwd: string, toName: string, phase: RenamePh
 }
 
 /** Run one phase on this machine and every connected peer; the owner's own folder goes first. */
-async function renamePhase(fromCwd: string, toName: string, phase: RenamePhase, fleetWide: boolean) {
+async function renamePhase(fromCwd: string, toName: string, phase: RenamePhase, entry?: RenameEntry) {
+  const fleetWide = !!entry;
   const results: { machine: string; done?: string[]; error?: string }[] = [];
   try {
     results.push({ machine: discovery.selfName, done: await renameFolderHere(fromCwd, toName, phase) });
@@ -815,7 +817,7 @@ async function renamePhase(fromCwd: string, toName: string, phase: RenamePhase, 
     try {
       const out = await federation.forward(peer, `/api/folders/${encodeURIComponent(folderNameOf(fromCwd))}/rename`, {
         method: 'POST',
-        body: { to: toName, phase },
+        body: { to: toName, phase, entry },
       });
       const body = out.body as { done?: string[]; error?: string };
       results.push({ machine: peer.info.machine, ...(out.status < 300 ? { done: body.done ?? [] } : { error: body.error ?? `HTTP ${out.status}` }) });
@@ -845,13 +847,16 @@ app.post('/api/sessions/:id/rename', sessionAction(async (id, req, res) => {
   // a folder under the projects root is the fleet's folder of that name; any
   // other folder, or a frozen one, exists only here
   const fleetWide = normCwd(dirname(session.cwd)) === normCwd(PROJECTS_ROOT) && !isFrozen(from);
-  const checks = await renamePhase(session.cwd, name, 'check', fleetWide);
+  const entry = fleetWide ? { id: randomUUID(), from, to: name, at: Date.now(), by: discovery.selfName } : undefined;
+  const checks = await renamePhase(session.cwd, name, 'check', entry);
   const refused = checks.filter((r) => r.error);
   if (refused.length) return res.status(409).json({ error: refused.map((r) => r.error).join('; ') });
   const fromCwd = session.cwd;
-  const moved = await renamePhase(fromCwd, name, 'move', fleetWide);
+  const moved = await renamePhase(fromCwd, name, 'move', entry);
   if (moved[0].error) return res.status(409).json({ error: moved[0].error, machines: moved });
-  const resynced = await renamePhase(fromCwd, name, 'resync', fleetWide);
+  // logged once this machine has moved: whoever is offline catches up from the log
+  if (entry) recordRename(entry.from, entry.to, entry.by, entry.id, entry.at);
+  const resynced = await renamePhase(fromCwd, name, 'resync', entry);
   for (const r of resynced) {
     const m = moved.find((x) => x.machine === r.machine);
     if (m && r.done?.length) m.done = [...(m.done ?? []), ...r.done];
@@ -871,12 +876,73 @@ app.post('/api/folders/:name/rename', async (req, res) => {
   if (!FOLDER_NAME_RE.test(from) || !FOLDER_NAME_RE.test(to) || !['check', 'move', 'resync'].includes(phase)) {
     return res.status(400).json({ error: 'bad rename request' });
   }
+  const entry = req.body?.entry as RenameEntry | undefined;
   try {
-    res.json({ done: await renameFolderHere(join(PROJECTS_ROOT, from), to, phase) });
+    const done = await renameFolderHere(join(PROJECTS_ROOT, from), to, phase);
+    if (phase === 'move' && entry?.id) recordRename(entry.from, entry.to, entry.by, entry.id, entry.at);
+    res.json({ done });
   } catch (err) {
+    if (phase === 'move' && entry?.id) mergeRenames([entry]); // not done here: catch-up retries it
     res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
+
+// The rename log, for peers catching up. POST logs a rename done by hand.
+app.get('/api/renames', (_req, res) => res.json(renameLog()));
+app.post('/api/renames', (req, res) => {
+  const from = String(req.body?.from ?? '');
+  const to = String(req.body?.to ?? '');
+  if (!FOLDER_NAME_RE.test(from) || !FOLDER_NAME_RE.test(to) || from === to) return res.status(400).json({ error: 'from and to: folder names' });
+  res.json(recordRename(from, to, discovery.selfName));
+});
+
+/**
+ * Catch up on renames this machine missed while it was offline: copy the log
+ * from every peer, then apply each entry not dealt with yet. A folder with a
+ * live session waits for the next round; a name already taken here, or a
+ * frozen folder (this machine's own, not the fleet's), is left alone.
+ */
+let catchingUp = false;
+async function catchUpRenames() {
+  if (catchingUp) return;
+  catchingUp = true;
+  try {
+    const seenMachines = new Set<string>();
+    for (const peer of federation.connectedPeers()) {
+      if (seenMachines.has(peer.info.machine)) continue;
+      seenMachines.add(peer.info.machine);
+      try {
+        const out = await federation.forward(peer, '/api/renames');
+        if (out.status === 200 && Array.isArray(out.body)) mergeRenames(out.body as RenameEntry[]);
+      } catch {
+        /* peer on an older build, or gone */
+      }
+    }
+    for (const e of unseenRenames()) {
+      const fromCwd = join(PROJECTS_ROOT, e.from);
+      const toCwd = join(PROJECTS_ROOT, e.to);
+      const caseOnly = normCwd(fromCwd) === normCwd(toCwd);
+      if (!existsSync(fromCwd) || isFrozen(e.from) || (!caseOnly && existsSync(toCwd))) {
+        if (existsSync(fromCwd)) console.warn(`[rename] catch-up: left ${e.from} alone (${isFrozen(e.from) ? 'frozen' : `${e.to} already exists`})`);
+        markRenameSeen(e.id);
+        continue;
+      }
+      try {
+        await renameFolderHere(fromCwd, e.to, 'check');
+        await renameFolderHere(fromCwd, e.to, 'move');
+        await renameFolderHere(fromCwd, e.to, 'resync').catch((err) => console.warn(`[rename] catch-up resync ${e.to}: ${err}`));
+        markRenameSeen(e.id);
+        console.log(`[rename] caught up: ${e.from} → ${e.to} (renamed on ${e.by})`);
+      } catch (err) {
+        console.warn(`[rename] catch-up ${e.from} → ${e.to} waits: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  } finally {
+    catchingUp = false;
+  }
+}
+setTimeout(() => void catchUpRenames(), 20_000);
+setInterval(() => void catchUpRenames(), 60_000);
 
 // ----------------------------------------------------------- Automation
 // Drive a session from a script: read it, type into it, wait on it. Every

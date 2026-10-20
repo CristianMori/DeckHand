@@ -158,10 +158,8 @@ function render() {
       if (!name || name === s.name) return;
       try {
         const r = await api.rename(s.hubId, name);
-        const problems = [
-          ...r.machines.filter((m) => m.error).map((m) => `${m.machine}: ${m.error}`),
-          ...(r.offline?.length ? [`offline, still named ${s.name}: ${r.offline.join(', ')}`] : []),
-        ];
+        // offline machines are not a problem: they catch up when they reconnect
+        const problems = r.machines.filter((m) => m.error).map((m) => `${m.machine}: ${m.error}`);
         if (problems.length) alert(`Renamed to ${name}, but:\n\n${problems.join('\n')}`);
       } catch (err) {
         alert(`Rename failed: ${String(err).replace(/^Error: \d+: /, '')}`);

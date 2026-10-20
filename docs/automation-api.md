@@ -231,6 +231,8 @@ each tagged with `machine`).
 | `POST /api/sessions/:id/resume` | `{"force":false}` | relaunch the same conversation in place |
 | `POST /api/sessions/:id/remove` | – | forget an EXITED card |
 | `POST /api/sessions/:id/rename` | `name` | rename a stopped session **and its folder** on every machine that has it (conversations, memory, sync, cards follow); 409 while any session in that folder runs. Response adds `machines:[{machine,done|error}]` and `offline` |
+| `GET /api/renames` | – | the fleet rename log hubs catch up from |
+| `POST /api/renames` | `from`, `to` | log a folder rename done by hand, so offline machines follow it |
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |
 
 ### Fleet-level (useful before spawning)
