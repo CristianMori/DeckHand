@@ -360,7 +360,10 @@ app.post(
   '/api/sessions/:id/drop',
   express.raw({ type: () => true, limit: '100mb' }),
   (req, res) => {
-    const session = manager.sessions.get(req.params.id);
+    // same handles sessionAction accepts: the hub id, or the conversation id
+    // (or a unique prefix), which survives hub restarts — the iOS app sends that
+    const id = String(req.params.id);
+    const session = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
     if (!session) return res.status(404).json({ error: 'unknown session' });
     const rawName = String(req.query.name ?? 'dropped-file');
     const safe = rawName.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(-150) || 'dropped-file';
