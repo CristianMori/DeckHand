@@ -7,6 +7,7 @@ import { typePrompt, waitForTurn } from './automation.js';
 import { PROJECTS_ROOT } from './config.js';
 import type { Federation } from './federation.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
+import { normCwd } from './transcriptIo.js';
 import type { SessionInfo } from './types.js';
 
 /**
@@ -188,7 +189,7 @@ export async function receiveHandoff(
   await writeFile(join(docDir, 'handoff.md'), payload.document);
 
   const from = payload.from;
-  const moved = from.path.replace(/[\\/]+$/, '').toLowerCase() !== path.replace(/[\\/]+$/, '').toLowerCase();
+  const moved = normCwd(from.path) !== normCwd(path);
   const initialPrompt =
     `This session continues work handed off from ${from.agent} (session "${from.name}" on ${from.machine}, ` +
     `folder ${from.path}). Read .deckhand/handoff.md in this folder first: it contains the previous agent's ` +

@@ -62,6 +62,9 @@ export async function readTail(path: string): Promise<string> {
 export function normCwd(p: string): string {
   return p
     .replace(/^\\\\\?\\/, '') // Windows extended-length prefix (Codex stores it)
+    // Git Bash / Cygwin / WSL spelling of a drive: Claude records the shell's
+    // cwd after a `cd` in its Bash tool, so /d/DataDrive/x is D:\DataDrive\x
+    .replace(/^\/(?:cygdrive\/|mnt\/)?([a-zA-Z])(?=\/|$)/, '$1:')
     .replace(/[\\/]+$/, '')
     .replace(/\//g, '\\')
     .toLowerCase();

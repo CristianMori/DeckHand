@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { STORE_MACHINE, storeFilePath } from './transcriptStore.js';
-import { readTail } from './transcriptIo.js';
+import { normCwd, readTail } from './transcriptIo.js';
 import { join } from 'node:path';
 import { getAgent } from './agents/index.js';
 import { PROJECTS_ROOT } from './config.js';
@@ -220,7 +220,7 @@ export function startFleetResume(opts: {
       let nudge: string | undefined;
       try {
         const oldCwd = ops.parseTail(await readTail(transcriptPath)).cwd;
-        if (oldCwd && oldCwd.toLowerCase() !== localPath.toLowerCase()) {
+        if (oldCwd && normCwd(oldCwd) !== normCwd(localPath)) {
           nudge =
             `Heads up: this session was migrated — the project folder now lives at ${localPath} ` +
             `on machine "${opts.selfName}". Any references to ${oldCwd} earlier in this conversation ` +
