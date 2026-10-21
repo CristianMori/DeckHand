@@ -18,7 +18,6 @@ import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
-import { loadNtfy, saveNtfy, sendNtfy } from './ntfy.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
@@ -1727,28 +1726,6 @@ function writeHooksJson(port: number) {
   }
 }
 
-// Phone push (ntfy): where this hub sends "needs you" / "done" alerts.
-// The token stays on the hub; reads show only whether one is set.
-app.get('/api/ntfy', (_req, res) => {
-  const cfg = loadNtfy();
-  res.json(cfg ? { ...cfg, token: cfg.token ? 'set' : undefined } : { url: null });
-});
-
-app.post('/api/ntfy', (req, res) => {
-  try {
-    const cfg = req.body?.clear ? saveNtfy(null) : saveNtfy(req.body ?? {});
-    res.json(cfg ? { ...cfg, token: cfg.token ? 'set' : undefined } : { url: null });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-app.post('/api/ntfy/test', async (_req, res) => {
-  if (!loadNtfy()) return res.status(400).json({ error: 'ntfy is not configured on this hub' });
-  const ok = await sendNtfy(`Deckhand @ ${discovery.selfName}`, 'Test notification: phone push is working', 'done');
-  res.status(ok ? 200 : 502).json({ ok });
-});
-
 // Even Realities glasses: the Even app's Terminal client pairs with this
 // port (even-terminal's default). HUB_EVEN_PORT=0 turns the bridge off.
 const EVEN_PORT = process.env.HUB_EVEN_PORT === undefined ? 3456 : Number(process.env.HUB_EVEN_PORT) || 0;
@@ -1796,10 +1773,6 @@ function listen(port: number, attemptsLeft: number) {
         selfName: () => discovery.selfName,
         defaultCwd: evenDefaultCwd,
         version: `${VERSION.version}+${VERSION.build}`,
-        onAlert: (title, what, kind, click) => {
-          const text = what.charAt(0).toUpperCase() + what.slice(1);
-          void sendNtfy(title, text.length > 300 ? text.slice(0, 299) + '…' : text, kind, click);
-        },
       });
     }
     if (!existsSync(PROJECTS_ROOT)) {
