@@ -44,6 +44,7 @@ import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
+import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
@@ -858,6 +859,7 @@ app.post('/api/sessions/:id/rename', sessionAction(async (id, req, res) => {
   if (moved[0].error) return res.status(409).json({ error: moved[0].error, machines: moved });
   // logged once this machine has moved: whoever is offline catches up from the log
   if (entry) recordRename(entry.from, entry.to, entry.by, entry.id, entry.at);
+  void renameProjectMemories(from, name);
   const resynced = await renamePhase(fromCwd, name, 'resync', entry);
   for (const r of resynced) {
     const m = moved.find((x) => x.machine === r.machine);
@@ -945,6 +947,70 @@ async function catchUpRenames() {
 }
 setTimeout(() => void catchUpRenames(), 20_000);
 setInterval(() => void catchUpRenames(), 60_000);
+
+// ----------------------------------------------------------- Fleet memory
+// Small facts shared by every session (see fleetMemory.ts). The store
+// machine holds the truth; every hub keeps a replica for recall and briefings.
+void initFleetMemory({
+  selfName: () => discovery.selfName,
+  authorityName: STORE_MACHINE,
+  callAuthority: async (path, init) => {
+    const peer = federation.peerByMachine(STORE_MACHINE);
+    return peer ? federation.forward(peer, path, init) : undefined;
+  },
+});
+
+const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+app.get('/api/memories', async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 200);
+  try {
+    const found = await recall(String(req.query.q ?? ''), limit);
+    if (req.query.format === 'text') return res.type('text/plain').send(found.map(formatMemory).join('\n'));
+    res.json(found);
+  } catch (err) {
+    res.status(503).json({ error: errText(err) });
+  }
+});
+app.post('/api/memories', async (req, res) => {
+  const b = req.body ?? {};
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  try {
+    res.json(await remember({
+      fact: String(b.fact ?? ''),
+      scope: str(b.scope),
+      machine: str(b.machine),
+      project: str(b.project),
+      tags: str(b.tags),
+      instructed: b.instructed === true,
+      originSession: str(b.originSession),
+      originMachine: str(b.originMachine) ?? discovery.selfName,
+      originFolder: str(b.originFolder),
+    }));
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
+});
+app.delete('/api/memories/:id', async (req, res) => {
+  try {
+    res.json(await forget(String(req.params.id)));
+  } catch (err) {
+    res.status(404).json({ error: errText(err) });
+  }
+});
+// authority side: replicas send their changes here and pull from /changes
+app.post('/api/memories/apply', (req, res) => {
+  if (discovery.selfName !== STORE_MACHINE) return res.status(409).json({ error: `memories are kept on ${STORE_MACHINE}` });
+  try {
+    res.json({ rows: applyOnAuthority(req.body as MemoryOp) });
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
+});
+app.get('/api/memories/changes', (req, res) => {
+  if (discovery.selfName !== STORE_MACHINE) return res.status(409).json({ error: `memories are kept on ${STORE_MACHINE}` });
+  res.json(changesSince(Number(req.query.since) || 0));
+});
 
 // ----------------------------------------------------------- Automation
 // Drive a session from a script: read it, type into it, wait on it. Every

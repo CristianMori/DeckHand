@@ -1,6 +1,7 @@
 import { basename, resolve, sep } from 'node:path';
 import { PROJECTS_ROOT } from './config.js';
 import { getAgent } from './agents/index.js';
+import { memoryBriefing } from './fleetMemory.js';
 import type { SessionInfo } from './types.js';
 
 /**
@@ -27,15 +28,19 @@ Rules of the fleet:
 3. If you must touch another session's folder and cannot reach its owner, say so explicitly in your own conversation before editing, and keep the change minimal.
 4. A hook will warn you when an edit lands in a folder that belongs to another live session. Treat that warning as a stop sign, not a formality.
 
-When the user asks you to give, send or share a file ("give me that file"), call dh_send_file with its path. The Deckhand dashboard they are looking at downloads it right away, wherever they are. Do not just tell them the path: they may be on another machine.`;
+When the user asks you to give, send or share a file ("give me that file"), call dh_send_file with its path. The Deckhand dashboard they are looking at downloads it right away, wherever they are. Do not just tell them the path: they may be on another machine.
+
+Fleet memory is shared by every session on every machine (dh_remember, dh_recall, dh_forget). Remember facts about the world around the code that another session would otherwise have to ask for: machine and environment state ("installed WSL2 + Ubuntu 22.04 on this machine for ROS2"), accounts and licences ("the user has the Apple Developer subscription"), infrastructure observations with a date ("Wi-Fi on the laptop flaky since about Oct 19"), hardware quirks. Pick the narrowest scope that fits: machine for one machine's state, project for one folder, global otherwise. Do not store task progress, code decisions, or anything the repo, git history or a handoff already records. Rule zero: when the user says "remember this" (or the like), always store it, with instructed=true, whatever it is. When a remembered fact turns out wrong or outdated, dh_forget it and remember the correction.`;
 
 export function fleetBriefing(id: Identity): string {
+  const memories = memoryBriefing(id.machine, projectFolderOf(id.cwd) ?? basename(id.cwd.replace(/[\\/]+$/, '')));
   return (
     `Deckhand fleet session: hub id ${id.hubId}` +
     (id.conversationId.startsWith('pending-') ? '' : `, conversation ${id.conversationId}`) +
     `, engine ${id.engine}, machine ${id.machine}, folder ${id.cwd}. Hub API at ${id.hubUrl}. ` +
     `The same identity is in the environment as DECKHAND_SESSION, DECKHAND_MACHINE, DECKHAND_ENGINE, DECKHAND_FOLDER, DECKHAND_HUB_URL.\n\n` +
-    FLEET_RULES
+    FLEET_RULES +
+    (memories ? `\n\n${memories}` : '')
   );
 }
 

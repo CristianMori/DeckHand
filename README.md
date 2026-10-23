@@ -225,8 +225,24 @@ and how to behave towards the others.
   `dh_kill_session`, `dh_resume_session`, `dh_remove_session`,
   `dh_fleet_resume`, `dh_handoff`, `dh_list_fleet`, `dh_list_agents`,
   `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`,
-  plus `dh_run` (a command on any machine, output and exit code back).
+  plus `dh_run` (a command on any machine, output and exit code back),
+  `dh_rename_session` and the fleet memory tools below.
   It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
+- **Fleet memory.** Small facts every session on every machine shares — "the
+  user has the Apple Developer subscription", "WSL2 is on the laptop for
+  ROS2" — so a new session does not have to ask. Sessions write with
+  `dh_remember` (scope global, machine or project folder), search with
+  `dh_recall`, delete with `dh_forget`; the briefing tells them to store facts
+  about the world around the code, never task progress, and always to store
+  what the user says to remember (marked *told by the user*, listed first,
+  never pruned). At spawn and resume the briefing carries the memories that
+  apply to that machine and folder (about 6 KB at most). The store machine
+  (`HUB_STORE_MACHINE`, the VPS) holds the truth; every hub keeps a SQLite
+  replica (`data/memories.sqlite`, FTS5 via `node:sqlite`) pulled every
+  minute, so recall and briefings work while the VPS is away, and a write
+  made then waits in an outbox. Facts are capped at 500 characters; beyond
+  400 live ones the oldest unprompted facts are pruned. A folder rename
+  carries its project memories along.
 - **Warning (level 2).** The PreToolUse hook the hub already injects answers
   an edit (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Codex
   `apply_patch`) that lands in a project folder owned by *another live

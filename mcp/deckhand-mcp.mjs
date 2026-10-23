@@ -70,6 +70,7 @@ const post = (path, body, timeoutMs) => call('POST', path, body ?? {}, timeoutMs
 const q = (s) => encodeURIComponent(String(s));
 const arr = (x) => (Array.isArray(x) ? x : Array.isArray(x?.data) ? x.data : []);
 const nz = (v) => v !== undefined && v !== null && v !== '';
+const folderOf = (p) => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
 const waitTimeout = (waitMs) => (waitMs > 0 ? waitMs + 30_000 : 30_000);
 
 function fmtSession(s) {
@@ -357,6 +358,52 @@ const TOOLS = [
       const lines = (r.machines ?? []).map((x) => `  ${x.machine}: ${x.error ? 'FAILED ' + x.error : x.done.length ? x.done.join(', ') : 'nothing there'}`);
       if (r.offline?.length) lines.push(`  offline (renames itself when it reconnects): ${r.offline.join(', ')}`);
       return [`Renamed to ${r.name} (${r.cwd}).`, ...lines].join('\n');
+    },
+  },
+  {
+    name: 'dh_remember',
+    description: 'Store a fact in fleet memory, shared by every session on every machine and shown to new sessions at start. For facts about the world around the code (machine/env state, accounts and licences, dated infra observations, hardware quirks), not task progress or code decisions. When the user says "remember this", always store it with instructed=true.',
+    schema: {
+      fact: S('the fact, one or two sentences (max 500 chars); date observations that can go stale'),
+      scope: S('global (default) | machine (this machine only) | project (this project folder only)'),
+      tags: S('optional space-separated tags'),
+      instructed: B('true when the user explicitly asked you to remember this'),
+    },
+    required: ['fact'],
+    run: async (a) => {
+      const body = {
+        fact: a.fact,
+        scope: nz(a.scope) ? a.scope : 'global',
+        tags: nz(a.tags) ? a.tags : '',
+        instructed: a.instructed === true,
+        originSession: ME.conversationId || ME.hubId,
+        originMachine: ME.machine,
+        originFolder: folderOf(ME.folder),
+      };
+      if (body.scope === 'machine') body.machine = ME.machine;
+      if (body.scope === 'project') body.project = folderOf(ME.folder);
+      const r = await post('/api/memories', body);
+      return `Remembered ${r.memory.id.slice(0, 8)} (${r.memory.scope}${r.memory.machine ? ' ' + r.memory.machine : ''}${r.memory.project ? ' ' + r.memory.project : ''})${r.queued ? ' — the memory store is unreachable, queued here and it syncs later' : ''}.`;
+    },
+  },
+  {
+    name: 'dh_recall',
+    description: 'Search fleet memory (full text, every word counts, prefixes match). Empty query lists the most recent. Check here before asking the user about their machines, accounts or setup.',
+    schema: { query: S('words to search for'), limit: I('max results (default 20)') },
+    required: [],
+    run: async (a) => {
+      const text = await get(`/api/memories?format=text&q=${q(a.query ?? '')}&limit=${a.limit > 0 ? a.limit : 20}`);
+      return text || 'Nothing in fleet memory matches.';
+    },
+  },
+  {
+    name: 'dh_forget',
+    description: 'Delete a fleet memory that is wrong or outdated (then dh_remember the correction). id: the 8-character id shown by dh_recall, or the full id.',
+    schema: { id: S('memory id or its first 8 characters') },
+    required: ['id'],
+    run: async ({ id }) => {
+      const r = await call('DELETE', `/api/memories/${q(id)}`);
+      return `Forgot ${r.id.slice(0, 8)}${r.queued ? ' (queued: the memory store is unreachable)' : ''}.`;
     },
   },
   {

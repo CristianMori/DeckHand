@@ -233,6 +233,9 @@ each tagged with `machine`).
 | `POST /api/sessions/:id/rename` | `name` | rename a stopped session **and its folder** on every machine that has it (conversations, memory, sync, cards follow); 409 while any session in that folder runs. Response adds `machines:[{machine,done|error}]` and `offline` |
 | `GET /api/renames` | – | the fleet rename log hubs catch up from |
 | `POST /api/renames` | `from`, `to` | log a folder rename done by hand, so offline machines follow it |
+| `GET /api/memories?q=&limit=&format=text` | – | search fleet memory (full text, prefixes match); no `q` lists the newest |
+| `POST /api/memories` | `fact`, `scope` (global\|machine\|project), `machine`, `project`, `tags`, `instructed`, `originSession`, `originFolder` | remember a fact fleet-wide; `queued:true` when the store machine is unreachable |
+| `DELETE /api/memories/:id` | – | forget a memory (id or unique prefix) |
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |
 
 ### Fleet-level (useful before spawning)
