@@ -526,7 +526,7 @@ certificate, no open port); the hub's 5959 never faces the internet.
   `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
   `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
 - **Reach:** only Claude/Codex sessions whose folder is in `allowFolders`
-  (`/etc/deckhand-gateway/config.json`) and that are not on auto-yes or
+  (`/etc/deckhand-gateway/config.json`; `["*"]` = every folder) and that are not on auto-yes or
   bypass-permissions; any other session answers 404 as if it did not exist.
   Prompts arrive stamped `[Deckhand gateway, client <id>]`.
 - **Limits:** 64 KB bodies, 60 requests/minute per client, 10 bad-auth

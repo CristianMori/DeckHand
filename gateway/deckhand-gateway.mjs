@@ -271,7 +271,8 @@ function allowed(s, cfg) {
   const folders = new Set(cfg.allowFolders.map((f) => String(f).toLowerCase()));
   return (
     !!s &&
-    folders.has(folderOf(s.cwd).toLowerCase()) &&
+    // "*" opens every folder (the user's choice: token holders see everything)
+    (folders.has('*') || folders.has(folderOf(s.cwd).toLowerCase())) &&
     (s.agentType === 'claude' || s.agentType === 'codex') &&
     !s.autoYes &&
     s.permissionMode !== 'bypassPermissions'
@@ -321,7 +322,12 @@ const ROUTES = [
     return (Array.isArray(ms) ? ms : []).map((m) => ({ machine: m.machine, connected: m.connected, self: m.self }));
   }],
   ['GET', /^\/v1\/agents$/, async (cfg) => hub(cfg, 'GET', '/api/agents')],
-  ['GET', /^\/v1\/projects$/, async (cfg) => cfg.allowFolders],
+  ['GET', /^\/v1\/projects$/, async (cfg) => {
+    if (!cfg.allowFolders.includes('*')) return cfg.allowFolders;
+    // every folder: the ones with a session the gateway can reach
+    const all = await hub(cfg, 'GET', '/api/sessions');
+    return [...new Set((Array.isArray(all) ? all : []).filter((s) => allowed(s, cfg)).map((s) => folderOf(s.cwd)))].sort();
+  }],
   ['GET', /^\/v1\/sessions\/([^/]+)$/, async (cfg, m) => pick(await allowedSession(cfg, m[1]))],
   ['GET', /^\/v1\/sessions\/([^/]+)\/exchanges$/, async (cfg, m, url) => {
     const s = await allowedSession(cfg, m[1]);
@@ -361,7 +367,7 @@ const ROUTES = [
     if (!fact) throw new HttpError(400, 'fact is required');
     const scope = body.scope === 'project' ? 'project' : 'global';
     const project = scope === 'project' ? String(body.project ?? '') : undefined;
-    if (scope === 'project' && !cfg.allowFolders.some((f) => f.toLowerCase() === project.toLowerCase())) {
+    if (scope === 'project' && !cfg.allowFolders.some((f) => f === '*' || f.toLowerCase() === project.toLowerCase())) {
       throw new HttpError(400, 'project must be one of the opted-in folders');
     }
     return hub(cfg, 'POST', '/api/memories', {
