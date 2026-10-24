@@ -466,3 +466,30 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tui-mouse .xterm-screen,
 .tui-mouse .xterm-rows,
 .tui-mouse .xterm { cursor: default !important; }
+
+/* ── admin dialog: machines | gateway agents, log underneath ── */
+#admin-dialog { width: 1180px; }
+.ad-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.ad-columns .resume-list { max-height: 32vh; }
+.ad-col-title {
+  font-family: var(--font-display); font-size: 10px; letter-spacing: 0.18em;
+  color: var(--ink-dim); margin-bottom: 8px; display: block;
+}
+.ad-log-head { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.ad-log-head .ad-col-title { margin: 0; flex: none; }
+.ad-log-head input { flex: 1; padding: 5px 8px; font-size: 12px; }
+.ad-log {
+  margin-top: 8px; max-height: 34vh; overflow: auto; border: 1px solid var(--line);
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.ad-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ad-table th {
+  position: sticky; top: 0; background: var(--bg-card); text-align: left;
+  font-family: var(--font-display); font-size: 9.5px; letter-spacing: 0.14em; color: var(--ink-dim);
+  padding: 6px 8px; border-bottom: 1px solid var(--line-bright);
+}
+.ad-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); color: var(--ink); vertical-align: top; }
+.ad-table td:nth-child(n+8) { max-width: 320px; overflow-wrap: anywhere; }
+.ad-table tr.bad td { color: #e88; }
+.ad-table a { color: var(--amber); }
+@media (max-width: 760px) { .ad-columns { grid-template-columns: 1fr; } }

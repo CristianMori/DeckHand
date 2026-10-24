@@ -1,4 +1,4 @@
-import type { AdminStatus, AgentInfo, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, AgentInfo, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -144,6 +144,15 @@ export const api = {
     fetch(`/api/admin/update${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
+  gatewayAgents: () => fetch('/api/gateway/agents').then((r) => json<GatewayAgentsInfo>(r)),
+  gatewayAgentLog: (id: string, limit = 300) =>
+    fetch(`/api/gateway/agents/${encodeURIComponent(id)}/log?limit=${limit}`).then((r) => json<GatewayLogLine[]>(r)),
+  provenance: (machine: string, opts: { q?: string; id?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams({ machine, limit: String(opts.limit ?? 300) });
+    if (opts.q) qs.set('q', opts.q);
+    if (opts.id) qs.set('id', opts.id);
+    return fetch(`/api/provenance?${qs}`).then((r) => json<ProvenanceEntry[]>(r));
+  },
   autoYes: (hubId: string, on: boolean) =>
     fetch(`/api/sessions/${hubId}/autoyes`, {
       method: 'POST',

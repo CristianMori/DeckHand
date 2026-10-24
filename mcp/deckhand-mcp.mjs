@@ -26,11 +26,17 @@ const ME = {
 
 // ------------------------------------------------------------------ hub API
 
+// who is asking, for the hub's provenance log: this session, or an outside
+// agent that runs the server with its own identity (or none)
+const CALLER = ME.hubId
+  ? `session:${ME.hubId}/${ME.conversationId || '?'}@${ME.machine || '?'}`
+  : `agent:${ME.conversationId || ME.engine || 'unknown'}@${ME.machine || '?'}`;
+
 class HubError extends Error {}
 
 async function call(method, path, body, timeoutMs = 30_000) {
   if (path.includes('/api/admin/')) throw new HubError('admin routes (update/restart) are not available through this server');
-  const headers = { Accept: 'application/json' };
+  const headers = { Accept: 'application/json', 'X-Deckhand-Caller': CALLER };
   if (TOKEN) headers.Authorization = `Bearer ${TOKEN}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;

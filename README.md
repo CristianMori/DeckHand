@@ -198,6 +198,20 @@ yes answer in `~/.codex/config.toml` beforehand, the same way pressing Yes does.
 Alerts fire only after a state persists 1.5 s. They reach every connected
 dashboard (chime + tab badge). There are deliberately no desktop toasts.
 
+### Provenance
+
+Every hub keeps `data/provenance.jsonl` (rotated at 20 MB, five files kept):
+one line per action — every change (prompts, keys, kill, create, run,
+rename, memories, handoffs, …) and every read made by an agent, a gateway
+client or another hub on someone's behalf. Each line names the caller
+(`session:<hubId>/<conversation>@<machine>` from the MCP server,
+`gateway:<client>`, `dashboard`, `hub:<machine>` for a hub's own work), the
+hubs it passed through, the session it acted on, what was asked (first 300
+characters) and the answer. A request keeps one id across every hop, so the
+ADMIN dialog's CROSS REQUESTS log, merged from all machines, follows an action
+from a gateway client or an agent to the hub that carried it out. Dashboard
+polling and hubs' background syncing are not logged.
+
 ### Fleet etiquette
 
 Several agents work side by side in a fleet, so each one is told where it is
@@ -521,6 +535,9 @@ certificate, no open port); the hub's 5959 never faces the internet.
 - **Revocation:** `revoke <id>` deletes the enrolled key (and any pending
   token); `bootstrap <id>` again also locks the current key out at once.
   Both take effect on the next request.
+- **Admin view:** the ADMIN dialog lists every client that was given a token
+  (pending, enrolled, revoked), whether it is live (a request in the last 5
+  minutes) and its last interaction; clicking one shows its full request log.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
   `deckhand-gateway`, Funnel on 443).
 

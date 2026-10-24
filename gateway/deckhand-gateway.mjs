@@ -28,7 +28,8 @@
 //
 // No dependencies.
 
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -240,10 +241,15 @@ function authenticate(req, raw, cfg) {
   return { client, nonce };
 }
 
+/** the request being served: its audit id and client, handed to the hub for its provenance log */
+const trace = new AsyncLocalStorage();
+
 async function hub(cfg, method, path, body, timeoutMs = 30_000) {
+  const t = trace.getStore();
+  const traceHeaders = t ? { 'X-Deckhand-Request': t.req, 'X-Deckhand-Caller': `gateway:${t.client}`, 'X-Deckhand-Via': 'gateway' } : {};
   const res = await fetch(`${cfg.hubUrl}${path}`, {
     method,
-    headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+    headers: { Accept: 'application/json', ...traceHeaders, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -408,7 +414,7 @@ async function handle(req, res, keys) {
   const started = Date.now();
   const cfg = config();
   const addr = clientAddress(req);
-  const log = { ip: addr, method: req.method, path: (req.url ?? '').split('?')[0] };
+  const log = { req: randomUUID(), ip: addr, method: req.method, path: (req.url ?? '').split('?')[0] };
   const done = (status, extra = {}) => audit({ ...log, status, ms: Date.now() - started, ...extra });
 
   if ((lockedUntil.get(addr) ?? 0) > Date.now()) {
@@ -475,7 +481,7 @@ async function handle(req, res, keys) {
     }
   }
   try {
-    const data = await route[2](cfg, url.pathname.match(route[1]), url, body ?? {}, client.id);
+    const data = await trace.run({ req: log.req, client: client.id }, () => route[2](cfg, url.pathname.match(route[1]), url, body ?? {}, client.id));
     reply(200, data, req.method === 'POST' ? { text: String(body.text ?? body.fact ?? '').slice(0, 200) } : {});
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 502;

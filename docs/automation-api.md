@@ -236,6 +236,11 @@ each tagged with `machine`).
 | `GET /api/renames` | – | the fleet rename log hubs catch up from |
 | `POST /api/renames` | `from`, `to` | log a folder rename done by hand, so offline machines follow it |
 | `GET /api/memories?q=&limit=&format=text` | – | search fleet memory (full text, prefixes match); no `q` lists the newest |
+| `GET /api/provenance?machine=&q=&id=&limit=` | – | one machine's provenance log, newest first: every change and every agent/gateway read, with caller, hops (`via`), target session and what was asked; `id` follows one request across hubs |
+| `GET /api/gateway/agents` | – | public-gateway clients: token pending / enrolled / revoked, live (a request in the last 5 min), last interaction, request counts (answered by the gateway machine) |
+| `GET /api/gateway/agents/:id/log?limit=` | – | every gateway audit line for that client, newest first |
+
+Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `session:<hubId>/<conversation>@<machine>`, the gateway `gateway:<client>`); `X-Deckhand-Request` and `X-Deckhand-Via` carry the request id and the hubs it passed through, and every answer echoes `X-Deckhand-Request`.
 | `POST /api/memories` | `fact`, `scope` (global\|machine\|project), `machine`, `project`, `tags`, `instructed`, `originSession`, `originFolder` | remember a fact fleet-wide; `queued:true` when the store machine is unreachable |
 | `DELETE /api/memories/:id` | – | forget a memory (id or unique prefix) |
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |

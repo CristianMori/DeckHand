@@ -45,6 +45,8 @@ import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
+import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
+import { gatewayAgentLog, gatewayAgents, gatewayPresent } from './gatewayAgents.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
@@ -73,6 +75,7 @@ const manager = new SessionManager();
 const engine = new StatusEngine(manager);
 const federation = new Federation();
 const discovery = new Discovery(INSTANCE_ID, (hubs) => federation.setDiscovered(hubs));
+initProvenance(() => discovery.selfName);
 let actualPort = DEFAULT_PORT; // updated when listen() settles (port walk)
 const selfRef = {
   name: () => discovery.selfName,
@@ -233,6 +236,57 @@ app.use((req, res, next) => {
   }
   if (verdict.setCookie) res.setHeader('Set-Cookie', cookieHeader());
   next();
+});
+
+// Provenance: one line per action, with its caller and the hubs it passed through.
+app.use(
+  provenanceMiddleware((id) => {
+    const local = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+    if (local) return { id, hubId: local.hubId, name: local.name, conversationId: local.claudeSessionId };
+    const peer = federation.peerBySession(id);
+    const s = peer?.sessions.find((x) => x.hubId === id || x.claudeSessionId.startsWith(id));
+    return s ? { id, hubId: s.hubId, name: s.name, conversationId: s.claudeSessionId } : undefined;
+  }),
+);
+
+/** GET forwarded to another machine with its query (minus `machine`), or false when it is ours. */
+function forwardGetWithQuery(req: express.Request, res: express.Response, machine: string | undefined): boolean {
+  if (!machine || machine === discovery.selfName) return false;
+  const peer = federation.peerByMachine(machine);
+  if (!peer) {
+    res.status(502).json({ error: `machine not connected: ${machine}` });
+    return true;
+  }
+  const qs = new URLSearchParams(req.query as Record<string, string>);
+  qs.delete('machine');
+  federation
+    .forward(peer, `${req.path}${qs.size ? `?${qs}` : ''}`)
+    .then((out) => res.status(out.status).json(out.body))
+    .catch(() => res.status(502).json({ error: `forward to ${machine} failed` }));
+  return true;
+}
+
+// The provenance log of one machine (?machine=, default this one), newest first.
+app.get('/api/provenance', (req, res) => {
+  if (forwardGetWithQuery(req, res, typeof req.query.machine === 'string' ? req.query.machine : undefined)) return;
+  res.json(
+    readProvenance({
+      limit: Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000),
+      q: typeof req.query.q === 'string' && req.query.q ? req.query.q : undefined,
+      id: typeof req.query.id === 'string' && req.query.id ? req.query.id : undefined,
+      since: Number(req.query.since) || undefined,
+    }),
+  );
+});
+
+// Public-gateway clients and their request logs, from the machine that runs the gateway.
+app.get('/api/gateway/agents', (req, res) => {
+  if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
+  res.json({ machine: discovery.selfName, present: gatewayPresent(), agents: gatewayPresent() ? gatewayAgents() : [] });
+});
+app.get('/api/gateway/agents/:id/log', (req, res) => {
+  if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
+  res.json(gatewayAgentLog(String(req.params.id), Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000)));
 });
 
 // Fleet identity — what sibling hubs probe for during discovery.

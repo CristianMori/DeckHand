@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
+import { traceHeaders } from './provenance.js';
 import type { DiscoveredHub } from './discovery.js';
 import type { FleetMachine, SessionInfo, SessionState } from './types.js';
 
@@ -238,7 +239,7 @@ export class Federation extends EventEmitter {
   ): Promise<{ status: number; body: unknown; contentType: string }> {
     const res = await fetch(`${peer.info.url}${path}`, {
       method: init?.method ?? 'GET',
-      headers: init?.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: { ...traceHeaders(), ...(init?.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
     });
     // most routes answer JSON, but the screen (and export) routes answer
@@ -261,7 +262,7 @@ export class Federation extends EventEmitter {
   ): Promise<{ status: number; contentType: string; bytes: Buffer }> {
     const res = await fetch(`${peer.info.url}${path}`, {
       method: init.method,
-      headers: init.body !== undefined ? { 'Content-Type': init.contentType || 'application/octet-stream' } : undefined,
+      headers: { ...traceHeaders(), ...(init.body !== undefined ? { 'Content-Type': init.contentType || 'application/octet-stream' } : {}) },
       body: init.body === undefined ? undefined : new Uint8Array(init.body),
     });
     return {

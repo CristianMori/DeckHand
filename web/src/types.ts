@@ -107,6 +107,53 @@ export interface AdminStatus {
   error?: string;
 }
 
+export interface GatewayAgent {
+  id: string;
+  status: 'enrolled' | 'pending' | 'revoked';
+  enrolledAt?: string;
+  tokenExpiresAt?: string;
+  lastSeen?: string;
+  live: boolean;
+  requests: number;
+  denied: number;
+  lastRequest?: string;
+}
+
+export interface GatewayAgentsInfo {
+  machine: string;
+  present: boolean;
+  agents: GatewayAgent[];
+}
+
+export interface GatewayLogLine {
+  at: string;
+  req?: string;
+  ip?: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  ms?: number;
+  client?: string;
+  event?: string;
+  authError?: string;
+  text?: string;
+}
+
+export interface ProvenanceEntry {
+  id: string;
+  at: string;
+  machine: string;
+  caller: string;
+  via: string[];
+  ip: string;
+  method: string;
+  path: string;
+  status: number;
+  ms: number;
+  target?: { id: string; hubId?: string; name?: string; conversationId?: string };
+  detail?: string;
+}
+
 export interface ResumeJob {
   id: string;
   phase: string;
