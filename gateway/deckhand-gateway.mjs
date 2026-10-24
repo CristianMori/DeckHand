@@ -5,8 +5,8 @@
 // and is published to the internet by Tailscale Funnel (real certificate, no
 // open port). The hub's own 5959 never faces the internet.
 //
-// Trust is set up once: the operator mints a one-time bootstrap token (15
-// minutes, single use, good only for POST /enroll); the client enrolls its own
+// Trust is set up once: the operator mints a one-time bootstrap token (one
+// minute, single use, good only for POST /enroll); the client enrolls its own
 // Ed25519 + X25519 public keys with it and gets the gateway's back. No private
 // key ever crosses the wire. From then on every request is Ed25519-signed
 // (replays refused) and every body travels sealed to the other side's X25519
