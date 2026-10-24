@@ -8,6 +8,7 @@ import { openNewSessionDialog } from './newSessionDialog';
 import { openResumeDialog } from './resumeDialog';
 import { openHandoffDialog } from './handoffDialog';
 import { openAdminDialog } from './adminDialog';
+import { openAuditDialog } from './auditDialog';
 import { openFilesDialog } from './filesDialog';
 import { openManageDialog, updateManageDialog } from './manageDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
@@ -323,6 +324,7 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
 (document.getElementById('resume-btn') as HTMLButtonElement).onclick = () =>
   openResumeDialog((s) => select(s));
 (document.getElementById('admin-btn') as HTMLButtonElement).onclick = () => void openAdminDialog();
+(document.getElementById('audit-btn') as HTMLButtonElement).onclick = () => void openAuditDialog();
 (document.getElementById('files-btn') as HTMLButtonElement).onclick = () => void openFilesDialog();
 (document.getElementById('manage-btn') as HTMLButtonElement).onclick = () =>
   openManageDialog(() => sessions, (hubId) => {

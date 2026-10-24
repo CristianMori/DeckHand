@@ -467,10 +467,16 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tui-mouse .xterm-rows,
 .tui-mouse .xterm { cursor: default !important; }
 
-/* ── admin dialog: machines | gateway agents, log underneath ── */
-#admin-dialog { width: 1180px; }
-.ad-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.ad-columns .resume-list { max-height: 32vh; }
+/* ── admin dialog ── */
+#admin-dialog { width: 560px; }
+
+/* ── audit dialog: gateway agents | log ── */
+#audit-dialog { width: 1280px; }
+.au-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+.au-layout .resume-list { max-height: 66vh; }
+.au-main { min-width: 0; }
+.au-main .ad-log-head { margin-top: 0; margin-bottom: 0; }
+.au-main .ad-log { max-height: 66vh; }
 .ad-col-title {
   font-family: var(--font-display); font-size: 10px; letter-spacing: 0.18em;
   color: var(--ink-dim); margin-bottom: 8px; display: block;
@@ -492,5 +498,5 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .ad-table td:nth-child(n+8) { max-width: 320px; overflow-wrap: anywhere; }
 .ad-table tr.bad td { color: #e88; }
 .ad-table a { color: var(--amber); }
-@media (max-width: 760px) { .ad-columns { grid-template-columns: 1fr; } }
+@media (max-width: 860px) { .au-layout { grid-template-columns: 1fr; } }
 .ad-target { font-size: 11px; color: var(--ink-dim); margin: -10px 0 14px; min-height: 1em; }

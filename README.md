@@ -208,7 +208,7 @@ client or another hub on someone's behalf. Each line names the caller
 `gateway:<client>`, `dashboard`, `hub:<machine>` for a hub's own work), the
 hubs it passed through, the session it acted on, what was asked (first 300
 characters) and the answer. A request keeps one id across every hop, so the
-ADMIN dialog's CROSS REQUESTS log, merged from all machines, follows an action
+**AUDIT** window's cross-requests log, merged from all machines, follows an action
 from a gateway client or an agent to the hub that carried it out. Dashboard
 polling and hubs' background syncing are not logged.
 
@@ -535,7 +535,7 @@ certificate, no open port); the hub's 5959 never faces the internet.
 - **Revocation:** `revoke <id>` deletes the enrolled key (and any pending
   token); `bootstrap <id>` again also locks the current key out at once.
   Both take effect on the next request.
-- **Admin view:** the ADMIN dialog lists every client that was given a token
+- **Audit view:** the AUDIT window lists every client that was given a token
   and has not been revoked (token pending or enrolled), whether it is live (a request in the last 5
   minutes) and its last interaction; clicking one shows its full request log.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
