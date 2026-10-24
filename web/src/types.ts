@@ -109,7 +109,7 @@ export interface AdminStatus {
 
 export interface GatewayAgent {
   id: string;
-  status: 'enrolled' | 'pending' | 'revoked';
+  status: 'enrolled' | 'pending';
   enrolledAt?: string;
   tokenExpiresAt?: string;
   lastSeen?: string;

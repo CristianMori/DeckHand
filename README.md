@@ -536,7 +536,7 @@ certificate, no open port); the hub's 5959 never faces the internet.
   token); `bootstrap <id>` again also locks the current key out at once.
   Both take effect on the next request.
 - **Admin view:** the ADMIN dialog lists every client that was given a token
-  (pending, enrolled, revoked), whether it is live (a request in the last 5
+  and has not been revoked (token pending or enrolled), whether it is live (a request in the last 5
   minutes) and its last interaction; clicking one shows its full request log.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
   `deckhand-gateway`, Funnel on 443).

@@ -18,8 +18,8 @@ const TAIL_BYTES = 8 * 1024 * 1024;
 
 export interface GatewayAgent {
   id: string;
-  /** enrolled = holds keys; pending = token minted, not used yet; revoked = had a key, gone now */
-  status: 'enrolled' | 'pending' | 'revoked';
+  /** enrolled = holds keys; pending = token minted, not used yet */
+  status: 'enrolled' | 'pending';
   enrolledAt?: string;
   tokenExpiresAt?: string;
   lastSeen?: string;
@@ -92,11 +92,7 @@ export function gatewayAgents(): GatewayAgent[] {
     if (!agents.has(id)) agents.set(id, { id, status, live: false, requests: 0, denied: 0 });
     return agents.get(id)!;
   };
-  // everyone who ever got a token shows up, revoked ones included
-  for (const l of lines) {
-    if (l.event === 'bootstrap' && l.client) ensure(l.client, 'revoked');
-    if (l.event === 'enroll' && l.client && l.status === 200) ensure(l.client, 'revoked');
-  }
+  // only current holders: enrolled clients and unused tokens (revoked ones drop off; their log stays)
   for (const p of pending) Object.assign(ensure(p.id, 'pending'), { status: 'pending', tokenExpiresAt: new Date(p.expiresAt).toISOString() });
   for (const c of clients) Object.assign(ensure(c.id, 'enrolled'), { status: 'enrolled', enrolledAt: c.enrolledAt });
   for (const l of lines) {

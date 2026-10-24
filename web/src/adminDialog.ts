@@ -154,9 +154,7 @@ export async function openAdminDialog() {
         ? '<span class="chip working">LIVE</span>'
         : a.status === 'enrolled'
           ? '<span class="chip idle">ENROLLED</span>'
-          : a.status === 'pending'
-            ? '<span class="chip waiting">TOKEN PENDING</span>'
-            : '<span class="chip exited">REVOKED</span>';
+          : '<span class="chip waiting">TOKEN PENDING</span>';
       row.innerHTML = `
         <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${chip}</div>
         <div class="resume-snippet">last interaction: ${esc(fmtWhen(a.lastSeen))}</div>
