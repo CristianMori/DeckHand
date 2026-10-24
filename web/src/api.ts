@@ -1,4 +1,4 @@
-import type { AdminStatus, AgentInfo, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, UpdateAllResult, AgentInfo, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -142,6 +142,7 @@ export const api = {
     fetch(`/api/admin/check${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   adminUpdate: (machine?: string) =>
     fetch(`/api/admin/update${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
+  adminUpdateAll: () => fetch('/api/admin/update-all', { method: 'POST' }).then((r) => json<UpdateAllResult>(r)),
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   gatewayAgents: () => fetch('/api/gateway/agents').then((r) => json<GatewayAgentsInfo>(r)),

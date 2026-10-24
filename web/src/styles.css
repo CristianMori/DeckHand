@@ -493,3 +493,4 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .ad-table tr.bad td { color: #e88; }
 .ad-table a { color: var(--amber); }
 @media (max-width: 760px) { .ad-columns { grid-template-columns: 1fr; } }
+.ad-target { font-size: 11px; color: var(--ink-dim); margin: -10px 0 14px; min-height: 1em; }

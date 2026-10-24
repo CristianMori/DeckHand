@@ -580,6 +580,15 @@ ADMIN → CHECK FOR UPDATES. Applying: Windows hands off to a detached runner
 macOS/Linux extract in place and exit for launchd/systemd to restart. A dev checkout
 (no `version.json` → build 0) reports `DEV` in ADMIN and never auto-updates.
 
+**ADMIN → UPDATE ALL** pins the fleet to the newest published build: it
+leaves a mark, `fleet-target.json`, on the release machine (publishing does
+not touch it), tells every connected hub to update now, and updates the hub
+you clicked on last. A machine that was off reads the mark ~90 s after its
+hub starts and every 10 minutes after that, and updates itself when it is
+behind (live sessions are saved first and come back after the restart). The
+ADMIN dialog shows the current fleet target. Hubs only install the newest
+published build, so a machine catching up later lands on the target or newer.
+
 ---
 
 ## Configuration reference

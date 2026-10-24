@@ -9,8 +9,20 @@ import type { Federation } from './federation.js';
 import type { VersionInfo } from './version.js';
 
 const CHECK_INTERVAL_MS = 6 * 3600_000;
+/** how often a hub looks at the fleet target (UPDATE ALL) */
+const TARGET_INTERVAL_MS = 10 * 60_000;
 /** which fleet machine hosts releases */
-const UPDATE_MACHINE = process.env.HUB_UPDATE_MACHINE || 'vps-node';
+export const UPDATE_MACHINE = process.env.HUB_UPDATE_MACHINE || 'vps-node';
+/** UPDATE ALL's mark, next to the releases on the release machine */
+export const FLEET_TARGET_FILE = 'fleet-target.json';
+
+/** "everyone should be on at least this build" — left by UPDATE ALL */
+export interface FleetTarget {
+  build: number;
+  version: string;
+  requestedAt: string;
+  requestedBy: string;
+}
 
 export interface UpdateStatus {
   version: string;
@@ -22,6 +34,7 @@ export interface UpdateStatus {
   updating: boolean;
   lastCheckAt?: number;
   error?: string;
+  fleetTarget?: FleetTarget;
 }
 
 /**
@@ -33,6 +46,8 @@ export interface UpdateStatus {
  */
 export class Updater {
   status: UpdateStatus;
+  /** runs before a self-started update (UPDATE ALL catch-up): remember live sessions */
+  beforeApply?: () => void;
 
   constructor(
     private current: VersionInfo,
@@ -43,7 +58,29 @@ export class Updater {
     this.status = { ...current, updateAvailable: false, updating: false };
     const timer = setInterval(() => void this.check(), CHECK_INTERVAL_MS);
     timer.unref();
-    setTimeout(() => void this.check(), 90_000).unref(); // after discovery settles
+    setTimeout(() => void this.check().then(() => this.followFleetTarget()), 90_000).unref(); // after discovery settles
+    // a machine that was off when UPDATE ALL ran catches up on its own
+    setInterval(() => void this.followFleetTarget(), TARGET_INTERVAL_MS).unref();
+  }
+
+  /** Read UPDATE ALL's mark; update this hub when it is behind it. */
+  async followFleetTarget(): Promise<void> {
+    const base = this.releaseBase();
+    if (!base || this.status.updating) return;
+    try {
+      const res = await fetch(`${base}/releases/${FLEET_TARGET_FILE}`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return; // no UPDATE ALL yet
+      const target = (await res.json()) as FleetTarget;
+      this.status.fleetTarget = target;
+      // dev trees (build 0) never auto-update
+      if (this.current.build === 0 || !(target.build > this.current.build)) return;
+      console.log(`[updater] fleet target is build ${target.build} (UPDATE ALL by ${target.requestedBy} at ${target.requestedAt}); this hub is on ${this.current.build}: updating`);
+      this.beforeApply?.();
+      await this.apply();
+    } catch (err) {
+      this.status.updating = false;
+      this.status.error = `fleet target: ${err instanceof Error ? err.message : err}`;
+    }
   }
 
   private releaseBase(): string | null {

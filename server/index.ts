@@ -4,7 +4,7 @@ import { startBeacon } from './beacon.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
-import { rename } from 'node:fs/promises';
+import { mkdir as mkdirAsync, rename, writeFile as writeFileAsync } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
@@ -28,7 +28,7 @@ import { Discovery } from './discovery.js';
 import { Federation, type PeerAlert } from './federation.js';
 import { createSyncManager, bootstrapSyncConfig, type SyncManager } from './syncthing.js';
 import { loadVersionInfo } from './version.js';
-import { Updater } from './updater.js';
+import { FLEET_TARGET_FILE, UPDATE_MACHINE, Updater, type FleetTarget } from './updater.js';
 import {
   storeMeta,
   applyUpload,
@@ -82,6 +82,7 @@ const selfRef = {
   baseUrl: () => `http://127.0.0.1:${actualPort}`,
 };
 const updater = new Updater(VERSION, federation, selfRef);
+updater.beforeApply = () => savePersisted(manager); // a self-started update restores live sessions too
 const pusher = new TranscriptPusher(federation, selfRef, {
   isLive: (id) => !!manager.byClaudeSessionId(id)?.proc,
 });
@@ -344,6 +345,80 @@ app.post('/api/admin/update', (req, res) => {
     console.error('[updater] apply failed:', err);
   });
   res.json({ ok: true, note: 'updating — hub restarts itself when done' });
+});
+
+/** Leave UPDATE ALL's mark where every hub looks for it (the release machine). */
+async function writeFleetTarget(target: FleetTarget) {
+  const dir = join(DATA_DIR, 'releases');
+  await mkdirAsync(dir, { recursive: true });
+  await writeFileAsync(join(dir, FLEET_TARGET_FILE), JSON.stringify(target, null, 2));
+}
+
+// Release machine only: record the fleet target. Hubs read it from /releases.
+app.post('/api/admin/fleet-target', async (req, res) => {
+  if (discovery.selfName !== UPDATE_MACHINE) return res.status(409).json({ error: `the fleet target lives on ${UPDATE_MACHINE}` });
+  const b = req.body ?? {};
+  const build = Number(b.build);
+  if (!Number.isInteger(build) || build < 1) return res.status(400).json({ error: 'build: a positive integer' });
+  const target: FleetTarget = {
+    build,
+    version: String(b.version ?? ''),
+    requestedAt: String(b.requestedAt ?? new Date().toISOString()),
+    requestedBy: String(b.requestedBy ?? 'unknown'),
+  };
+  await writeFleetTarget(target);
+  res.json(target);
+});
+
+/**
+ * UPDATE ALL: pin the fleet to the newest published build, then tell every
+ * connected hub to update now. A hub that is off catches up when it comes
+ * back: it reads the mark at start and every 10 minutes (Updater.followFleetTarget).
+ */
+app.post('/api/admin/update-all', async (_req, res) => {
+  const status = await updater.check();
+  if (!status.latestBuild) return res.status(502).json({ error: status.error ?? 'release machine not reachable' });
+  const target: FleetTarget = {
+    build: status.latestBuild,
+    version: status.latestVersion ?? '',
+    requestedAt: new Date().toISOString(),
+    requestedBy: discovery.selfName,
+  };
+  try {
+    if (discovery.selfName === UPDATE_MACHINE) await writeFleetTarget(target);
+    else {
+      const origin = federation.peerByMachine(UPDATE_MACHINE);
+      if (!origin) return res.status(502).json({ error: `${UPDATE_MACHINE} is not connected: the mark could not be left` });
+      const out = await federation.forward(origin, '/api/admin/fleet-target', { method: 'POST', body: target });
+      if (out.status !== 200) return res.status(502).json({ error: (out.body as { error?: string })?.error ?? `mark refused (${out.status})` });
+    }
+  } catch (err) {
+    return res.status(502).json({ error: `mark: ${err instanceof Error ? err.message : err}` });
+  }
+  const machines: { machine: string; told: boolean; error?: string }[] = [];
+  const seen = new Set([discovery.selfName]);
+  for (const peer of federation.connectedPeers()) {
+    if (seen.has(peer.info.machine)) continue;
+    seen.add(peer.info.machine);
+    try {
+      const out = await federation.forward(peer, '/api/admin/update', { method: 'POST' });
+      machines.push({ machine: peer.info.machine, told: out.status === 200, ...(out.status === 200 ? {} : { error: `answered ${out.status}` }) });
+    } catch (err) {
+      machines.push({ machine: peer.info.machine, told: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  const offline = federation.machines(discovery.selfName).filter((m) => !m.connected).map((m) => m.machine);
+  const selfBehind = VERSION.build > 0 && VERSION.build < target.build;
+  res.json({ target, machines: [...machines, { machine: discovery.selfName, told: selfBehind }], offline });
+  // this hub last, after the answer is out
+  if (selfBehind) {
+    savePersisted(manager);
+    updater.apply().catch((err) => {
+      updater.status.updating = false;
+      updater.status.error = err instanceof Error ? err.message : String(err);
+      console.error('[updater] apply failed:', err);
+    });
+  }
 });
 
 // remote debugging: tail this machine's launcher-captured log

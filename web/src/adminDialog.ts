@@ -25,6 +25,7 @@ export async function openAdminDialog() {
   const dialog = document.getElementById('admin-dialog') as HTMLDialogElement;
   dialog.innerHTML = `
     <h2>FLEET ADMIN</h2>
+    <div class="ad-target" id="ad-target"></div>
     <div class="ad-columns">
       <section>
         <div class="ad-col-title">MACHINES</div>
@@ -42,12 +43,14 @@ export async function openAdminDialog() {
     </div>
     <div class="ad-log" id="ad-log"><div class="empty-note">loading…</div></div>
     <div class="dialog-actions">
+      <button class="primary-btn" id="ad-update-all">UPDATE ALL</button>
       <button class="ghost-btn" id="ad-check">CHECK FOR UPDATES</button>
       <button class="ghost-btn" id="ad-close">CLOSE</button>
     </div>
   `;
   dialog.showModal();
   const rowsEl = dialog.querySelector('#ad-rows') as HTMLElement;
+  const targetEl = dialog.querySelector('#ad-target') as HTMLElement;
   const agentsEl = dialog.querySelector('#ad-agents') as HTMLElement;
   const logEl = dialog.querySelector('#ad-log') as HTMLElement;
   const logTitle = dialog.querySelector('#ad-log-title') as HTMLElement;
@@ -188,6 +191,10 @@ export async function openAdminDialog() {
     machines.length = 0;
     machines.push(...fleet.filter((m) => m.connected).map((m) => m.machine));
     const statuses = await Promise.all(machines.map((m) => statusFor(m)));
+    const target = statuses.find((s) => s?.fleetTarget)?.fleetTarget;
+    targetEl.textContent = target
+      ? `fleet target: build ${target.build} — UPDATE ALL by ${target.requestedBy}, ${new Date(target.requestedAt).toLocaleString()}. Machines that come back behind it update themselves.`
+      : '';
 
     rowsEl.innerHTML = '';
     machines.forEach((machine, i) => {
@@ -264,6 +271,28 @@ export async function openAdminDialog() {
     };
     watchTimer = window.setTimeout(() => void tick(), 4000);
   }
+
+  (dialog.querySelector('#ad-update-all') as HTMLButtonElement).onclick = async () => {
+    const btn = dialog.querySelector('#ad-update-all') as HTMLButtonElement;
+    if (!confirm('Update every hub to the newest published build? Each hub restarts; live sessions come back as they were. Machines that are off update themselves when they return.')) return;
+    btn.disabled = true;
+    btn.textContent = 'UPDATING ALL…';
+    try {
+      const r = await api.adminUpdateAll();
+      const builds = new Map(await Promise.all(machines.map(async (m) => [m, (await statusFor(m))?.build ?? 0] as const)));
+      for (const m of r.machines) if (m.told) watching.set(m.machine, builds.get(m.machine) ?? 0);
+      targetEl.textContent =
+        `fleet target: build ${r.target.build}. Told: ${r.machines.filter((m) => m.told).map((m) => m.machine).join(', ') || 'nobody (all up to date)'}` +
+        (r.offline.length ? `. Offline, will update on return: ${r.offline.join(', ')}` : '') +
+        (r.machines.some((m) => m.error) ? `. Problems: ${r.machines.filter((m) => m.error).map((m) => `${m.machine} (${m.error})`).join(', ')}` : '');
+      void watchLoop();
+    } catch (err) {
+      targetEl.textContent = `UPDATE ALL failed: ${err instanceof Error ? err.message : err}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'UPDATE ALL';
+    }
+  };
 
   (dialog.querySelector('#ad-check') as HTMLButtonElement).onclick = async () => {
     const btn = dialog.querySelector('#ad-check') as HTMLButtonElement;

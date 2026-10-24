@@ -105,6 +105,14 @@ export interface AdminStatus {
   updating: boolean;
   lastCheckAt?: number;
   error?: string;
+  /** left by UPDATE ALL: hubs that come back behind it update themselves */
+  fleetTarget?: { build: number; version: string; requestedAt: string; requestedBy: string };
+}
+
+export interface UpdateAllResult {
+  target: { build: number; version: string; requestedAt: string; requestedBy: string };
+  machines: { machine: string; told: boolean; error?: string }[];
+  offline: string[];
 }
 
 export interface GatewayAgent {
