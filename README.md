@@ -489,7 +489,7 @@ Rules of the road:
 `gateway/deckhand-gateway.mjs` is a separate, dependency-free process on the
 store machine that lets an outside agent (one that cannot join Tailscale)
 reach a few opted-in sessions. It listens on `127.0.0.1:5990` only and is
-published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net:8443` (real
+published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` on 443 (real
 certificate, no open port); the hub's 5959 never faces the internet.
 
 - **Enrollment:** `node gateway/deckhand-gateway.mjs bootstrap <id>` writes a
@@ -522,7 +522,7 @@ certificate, no open port); the hub's 5959 never faces the internet.
   token); `bootstrap <id>` again also locks the current key out at once.
   Both take effect on the next request.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
-  `deckhand-gateway`, Funnel on 8443).
+  `deckhand-gateway`, Funnel on 443).
 
 ### Even Realities glasses (G2 + R1)
 

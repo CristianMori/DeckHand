@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the Deckhand public gateway on the store machine (Linux, systemd, root).
 # Runs from the hub's install dir (/opt/deckhand), listens on 127.0.0.1:5990,
-# and is published by Tailscale Funnel on https://<this machine>.<tailnet>.ts.net:8443.
+# and is published by Tailscale Funnel on https://<this machine>.<tailnet>.ts.net (port 443: some networks allow nothing else).
 #
 #   sudo bash gateway/install-gateway.sh            install / refresh the unit, start it, enable Funnel
 #   sudo node gateway/deckhand-gateway.mjs bootstrap <id>   one-time enrollment token for a client
@@ -44,5 +44,5 @@ systemctl enable --now deckhand-gateway
 systemctl restart deckhand-gateway
 
 # public HTTPS with a real certificate; only the gateway port is published
-tailscale funnel --bg --https=8443 "http://127.0.0.1:$PORT"
+tailscale funnel --bg --https=443 "http://127.0.0.1:$PORT"
 tailscale funnel status
