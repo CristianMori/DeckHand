@@ -355,7 +355,8 @@ async function writeFleetTarget(target: FleetTarget) {
 }
 
 // Release machine only: record the fleet target. Hubs read it from /releases.
-app.post('/api/admin/fleet-target', async (req, res) => {
+// registered before the hub-wide JSON parser (like every /api/admin route): parse here
+app.post('/api/admin/fleet-target', express.json({ type: () => true, limit: '16kb' }), async (req, res) => {
   if (discovery.selfName !== UPDATE_MACHINE) return res.status(409).json({ error: `the fleet target lives on ${UPDATE_MACHINE}` });
   const b = req.body ?? {};
   const build = Number(b.build);
