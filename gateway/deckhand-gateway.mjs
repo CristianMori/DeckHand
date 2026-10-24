@@ -53,7 +53,8 @@ const CLIENTS = join(DIR, 'clients.json');
 const BOOTSTRAP = join(DIR, 'bootstrap.json');
 const CONFIG_FILE = join(DIR, 'config.json');
 const LOG_FILE = process.env.DECKHAND_GATEWAY_LOG || '/var/log/deckhand-gateway/audit.log';
-const BOOTSTRAP_TTL_MS = 15 * 60_000;
+/** a bootstrap token is good for one minute after it is minted */
+const BOOTSTRAP_TTL_MS = 60_000;
 
 const DEFAULTS = {
   port: 5990,

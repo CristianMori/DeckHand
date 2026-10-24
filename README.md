@@ -493,7 +493,7 @@ published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` on 443 (re
 certificate, no open port); the hub's 5959 never faces the internet.
 
 - **Enrollment:** `node gateway/deckhand-gateway.mjs bootstrap <id>` writes a
-  one-time token (single use, 15 minutes, good only for `POST /enroll`) and
+  one-time token (single use, 1 minute, good only for `POST /enroll`) and
   the gateway's public keys to the root-only `/etc/deckhand-gateway/bootstrap-<id>.txt`.
   The client generates its own Ed25519 + X25519 key pairs and enrolls only
   the public halves; the token burns and the file is deleted. No private key
