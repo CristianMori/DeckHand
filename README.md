@@ -484,6 +484,38 @@ Rules of the road:
   "do you trust this folder?" prompt. If some other prompt does appear, the
   session sits in STARTING — `screen` shows it, `keys` answers it.
 
+### Public gateway (agents off the tailnet)
+
+`gateway/deckhand-gateway.mjs` is a separate, dependency-free process on the
+store machine that lets an outside agent (one that cannot join Tailscale)
+reach a few opted-in sessions. It listens on `127.0.0.1:5990` only and is
+published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` (real
+certificate, no open port); the hub's 5959 never faces the internet.
+
+- **Auth, both required:** `Authorization: Bearer <token>` (256-bit, stored
+  as SHA-256, constant-time compare) and an HMAC-SHA256 signature in
+  `X-DH-Signature` over `METHOD\nPATH?QUERY\nX-DH-Timestamp\nX-DH-Nonce\nhex(sha256(body))`,
+  with `X-DH-Key` naming the key. Timestamps older than 5 minutes and reused
+  nonces are refused. `gateway/gateway-client.mjs` is the reference signer.
+- **Allowlist:** `GET /v1/sessions`, `/v1/fleet`, `/v1/agents`, `/v1/projects`,
+  `/v1/sessions/:id`, `/v1/sessions/:id/exchanges?n=`, `/v1/sessions/:id/last-reply`,
+  `/v1/sessions/:id/screen`, `/v1/sessions/:id/wait?timeoutMs=&until=`,
+  `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
+  `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
+- **Reach:** only Claude/Codex sessions whose folder is in `allowFolders`
+  (`/etc/deckhand-gateway/config.json`) and that are not on auto-yes or
+  bypass-permissions; any other session answers 404 as if it did not exist.
+  Prompts arrive stamped `[Deckhand gateway, key <id>]`.
+- **Limits:** 64 KB bodies, 60 requests/minute per key, 10 bad-auth attempts
+  in 10 minutes lock the caller out for 15. Every request is a JSON line in
+  `/var/log/deckhand-gateway/audit.log` (no secrets).
+- **Keys:** `node gateway/deckhand-gateway.mjs keygen <id>` writes the new
+  secrets to the root-only `/etc/deckhand-gateway/handoff-<id>.txt` (hand
+  over, then delete); `revoke <id>` takes effect on the next request; rotate
+  = keygen a new id, switch the client, revoke the old one.
+- **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
+  `deckhand-gateway`, Funnel on 443).
+
 ### Even Realities glasses (G2 + R1)
 
 The Even app's built-in **Terminal** client is made for Even's own
