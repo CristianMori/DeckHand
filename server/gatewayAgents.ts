@@ -93,7 +93,8 @@ export function gatewayAgents(): GatewayAgent[] {
     return agents.get(id)!;
   };
   // only current holders: enrolled clients and unused tokens (revoked ones drop off; their log stays)
-  for (const p of pending) Object.assign(ensure(p.id, 'pending'), { status: 'pending', tokenExpiresAt: new Date(p.expiresAt).toISOString() });
+  // a token that expired unused is no longer valid: it does not list
+  for (const p of pending.filter((x) => x.expiresAt > Date.now())) Object.assign(ensure(p.id, 'pending'), { status: 'pending', tokenExpiresAt: new Date(p.expiresAt).toISOString() });
   for (const c of clients) Object.assign(ensure(c.id, 'enrolled'), { status: 'enrolled', enrolledAt: c.enrolledAt });
   for (const l of lines) {
     if (!l.client || !agents.has(l.client) || l.event) continue;

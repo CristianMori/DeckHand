@@ -535,9 +535,11 @@ certificate, no open port); the hub's 5959 never faces the internet.
 - **Revocation:** `revoke <id>` deletes the enrolled key (and any pending
   token); `bootstrap <id>` again also locks the current key out at once.
   Both take effect on the next request.
-- **Audit view:** the AUDIT window lists every client that was given a token
-  and has not been revoked (token pending or enrolled), whether it is live (a request in the last 5
-  minutes) and its last interaction; clicking one shows its full request log.
+- **Agents view:** ADMIN (next to the machines) and AUDIT list every agent
+  holding a valid token — enrolled, or a token minted and not yet expired;
+  revoked clients and expired tokens drop off — whether it is live (a request
+  in the last 5 minutes) and its last interaction. Clicking one opens its full
+  request log in AUDIT.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
   `deckhand-gateway`, Funnel on 443).
 

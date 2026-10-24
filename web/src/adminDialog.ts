@@ -1,4 +1,5 @@
 import { api } from './api';
+import { openAuditDialog, renderGatewayAgents } from './auditDialog';
 import type { AdminStatus } from './types';
 
 function fmtUptime(s?: number): string {
@@ -13,7 +14,16 @@ export async function openAdminDialog() {
   dialog.innerHTML = `
     <h2>FLEET ADMIN</h2>
     <div class="ad-target" id="ad-target"></div>
-    <div class="resume-list" id="ad-rows"><div class="empty-note">querying fleet…</div></div>
+    <div class="ad-columns">
+      <section>
+        <div class="ad-col-title">MACHINES</div>
+        <div class="resume-list" id="ad-rows"><div class="empty-note">querying fleet…</div></div>
+      </section>
+      <section>
+        <div class="ad-col-title">AGENTS WITH A VALID TOKEN</div>
+        <div class="resume-list" id="ad-agents"><div class="empty-note">querying gateway…</div></div>
+      </section>
+    </div>
     <div class="dialog-actions">
       <button class="primary-btn" id="ad-update-all">UPDATE ALL</button>
       <button class="ghost-btn" id="ad-check">CHECK FOR UPDATES</button>
@@ -24,6 +34,19 @@ export async function openAdminDialog() {
   const rowsEl = dialog.querySelector('#ad-rows') as HTMLElement;
   const targetEl = dialog.querySelector('#ad-target') as HTMLElement;
   (dialog.querySelector('#ad-close') as HTMLButtonElement).onclick = () => dialog.close();
+
+  // gateway agents: live, last interaction; a click opens their requests in AUDIT
+  const agentsEl = dialog.querySelector('#ad-agents') as HTMLElement;
+  const refreshAgents = () =>
+    renderGatewayAgents(agentsEl, (id) => {
+      dialog.close();
+      void openAuditDialog({ agent: id });
+    });
+  void refreshAgents();
+  const agentTimer = window.setInterval(() => {
+    if (!dialog.open) return window.clearInterval(agentTimer);
+    void refreshAgents();
+  }, 15_000);
 
   const machines: string[] = [];
   let watching = new Map<string, number>(); // machine -> build we expect to exceed

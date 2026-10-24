@@ -467,8 +467,11 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tui-mouse .xterm-rows,
 .tui-mouse .xterm { cursor: default !important; }
 
-/* ── admin dialog ── */
-#admin-dialog { width: 560px; }
+/* ── admin dialog: machines | agents with a valid token ── */
+#admin-dialog { width: 1000px; }
+.ad-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.ad-columns .resume-list { max-height: 60vh; }
+@media (max-width: 760px) { .ad-columns { grid-template-columns: 1fr; } }
 
 /* ── audit dialog: gateway agents | log ── */
 #audit-dialog { width: 1280px; }

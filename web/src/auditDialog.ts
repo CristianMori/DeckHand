@@ -18,7 +18,46 @@ function fmtWhen(iso?: string): string {
 
 const fmtTime = (iso: string) => new Date(iso).toLocaleString();
 
-export async function openAuditDialog() {
+/**
+ * The public-gateway agents holding a valid token (enrolled, or a token
+ * minted and not expired), live or not, with their last interaction. Shared
+ * by ADMIN and AUDIT; `onPick` runs when one is clicked.
+ */
+export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) => void): Promise<void> {
+  const info = await api.gatewayAgents().catch(() => null);
+  if (!info) {
+    el.innerHTML = '<div class="empty-note">gateway machine not reachable</div>';
+    return;
+  }
+  if (!info.present) {
+    el.innerHTML = `<div class="empty-note">no gateway installed on ${esc(info.machine)}</div>`;
+    return;
+  }
+  if (!info.agents.length) {
+    el.innerHTML = '<div class="empty-note">no agent holds a valid token</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const a of info.agents) {
+    const row = document.createElement('div');
+    row.className = 'resume-row admin-row';
+    const chip = a.live
+      ? '<span class="chip working">LIVE</span>'
+      : a.status === 'enrolled'
+        ? '<span class="chip idle">ENROLLED</span>'
+        : '<span class="chip waiting">TOKEN PENDING</span>';
+    row.innerHTML = `
+      <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${chip}</div>
+      <div class="resume-snippet">last interaction: ${esc(fmtWhen(a.lastSeen))}</div>
+      <div class="resume-snippet">${esc(a.requests)} request${a.requests === 1 ? "" : "s"}${a.denied ? ` · ${esc(a.denied)} refused` : ''}${a.lastRequest ? ` · last ${esc(a.lastRequest)}` : ''}</div>
+      <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : a.tokenExpiresAt ? `token expires ${esc(fmtTime(a.tokenExpiresAt))}` : ''}</div>`;
+    row.title = "show this agent's requests in AUDIT";
+    row.onclick = () => onPick(a.id);
+    el.appendChild(row);
+  }
+}
+
+export async function openAuditDialog(opts: { agent?: string } = {}) {
   const dialog = document.getElementById('audit-dialog') as HTMLDialogElement;
   dialog.innerHTML = `
     <h2>AUDIT</h2>
@@ -123,41 +162,10 @@ export async function openAuditDialog() {
   (dialog.querySelector('#au-log-all') as HTMLButtonElement).onclick = () => void showFleetLog();
 
   // ── gateway agents column
-  async function refreshAgents() {
-    const info = await api.gatewayAgents().catch(() => null);
-    if (!info) {
-      agentsEl.innerHTML = '<div class="empty-note">gateway machine not reachable</div>';
-      return;
-    }
-    if (!info.present) {
-      agentsEl.innerHTML = `<div class="empty-note">no gateway installed on ${esc(info.machine)}</div>`;
-      return;
-    }
-    if (!info.agents.length) {
-      agentsEl.innerHTML = '<div class="empty-note">no agent holds a token</div>';
-      return;
-    }
-    agentsEl.innerHTML = '';
-    for (const a of info.agents) {
-      const row = document.createElement('div');
-      row.className = 'resume-row admin-row';
-      const chip = a.live
-        ? '<span class="chip working">LIVE</span>'
-        : a.status === 'enrolled'
-          ? '<span class="chip idle">ENROLLED</span>'
-          : '<span class="chip waiting">TOKEN PENDING</span>';
-      row.innerHTML = `
-        <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${chip}</div>
-        <div class="resume-snippet">last interaction: ${esc(fmtWhen(a.lastSeen))}</div>
-        <div class="resume-snippet">${esc(a.requests)} requests${a.denied ? ` · ${esc(a.denied)} refused` : ''}${a.lastRequest ? ` · last ${esc(a.lastRequest)}` : ''}</div>
-        <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : a.tokenExpiresAt ? `token expires ${esc(fmtTime(a.tokenExpiresAt))}` : ''}</div>`;
-      row.onclick = () => void showAgentLog(a.id);
-      agentsEl.appendChild(row);
-    }
-  }
+  const refreshAgents = () => renderGatewayAgents(agentsEl, (id) => void showAgentLog(id));
 
   void refreshAgents();
-  void showFleetLog();
+  void (opts.agent ? showAgentLog(opts.agent) : showFleetLog());
   // keep LIVE and last-interaction current while the window is open
   const agentTimer = window.setInterval(() => {
     if (!dialog.open) return window.clearInterval(agentTimer);
