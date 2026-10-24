@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { rename } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
@@ -382,6 +382,22 @@ app.post(
     res.json({ path: target });
   },
 );
+
+// The bytes of a dropped file back, by the path the POST answered — the iOS app
+// shows attached photos inline. Any session's drop folder on this hub counts:
+// the folder is named after the hub id, which changes on every hub restart,
+// so a photo from before the restart sits under an older one.
+app.get('/api/sessions/:id/drop', (req, res) => {
+  const id = String(req.params.id);
+  const session = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+  if (!session) return res.status(404).json({ error: 'unknown session' });
+  const root = resolve(DROPS_DIR);
+  const target = resolve(String(req.query.path ?? ''));
+  const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  if (!fold(target).startsWith(fold(root) + sep)) return res.status(400).json({ error: 'path is not a dropped file' });
+  if (!existsSync(target) || !statSync(target).isFile()) return res.status(404).json({ error: 'no such dropped file' });
+  res.sendFile(target, { dotfiles: 'allow' });
+});
 
 // Durable conversation store (lives on STORE_MACHINE, normally vps-node).
 // Push route takes raw bytes — registered before the JSON body parser.
