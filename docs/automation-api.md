@@ -232,7 +232,7 @@ each tagged with `machine`).
 | `POST /api/sessions/:id/remove` | – | forget an EXITED card |
 | `POST /api/sessions/:id/rename` | `name` | rename a stopped session **and its folder** on every machine that has it (conversations, memory, sync, cards follow); 409 while any session in that folder runs. Response adds `machines:[{machine,done|error}]` and `offline` |
 | `POST /api/sessions/:id/drop?name=` | raw bytes | save an attachment on that session's hub → `{path}` to paste into the prompt |
-| `GET /api/sessions/:id/drop?path=` | – | the bytes of a file the POST saved (any path under this hub's `drops/`, else 400; 404 when gone) |
+| `GET /api/sessions/:id/drop?path=` | – | the bytes of a file the POST saved (any path under the owning hub's `drops/`, else 400; 404 when gone). Both drop routes forward the raw bytes to the hub that owns the session |
 | `GET /api/renames` | – | the fleet rename log hubs catch up from |
 | `POST /api/renames` | `from`, `to` | log a folder rename done by hand, so offline machines follow it |
 | `GET /api/memories?q=&limit=&format=text` | – | search fleet memory (full text, prefixes match); no `q` lists the newest |

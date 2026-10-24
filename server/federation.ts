@@ -253,6 +253,24 @@ export class Federation extends EventEmitter {
     return { status: res.status, body: text, contentType };
   }
 
+  /** Forward a call whose body and answer are raw bytes (file uploads and downloads). */
+  async forwardRaw(
+    peer: Peer,
+    path: string,
+    init: { method: string; body?: Buffer; contentType?: string },
+  ): Promise<{ status: number; contentType: string; bytes: Buffer }> {
+    const res = await fetch(`${peer.info.url}${path}`, {
+      method: init.method,
+      headers: init.body !== undefined ? { 'Content-Type': init.contentType || 'application/octet-stream' } : undefined,
+      body: init.body === undefined ? undefined : new Uint8Array(init.body),
+    });
+    return {
+      status: res.status,
+      contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+      bytes: Buffer.from(await res.arrayBuffer()),
+    };
+  }
+
   termWsUrl(peer: Peer, hubId: string): string {
     return `ws://${peer.info.ip}:${peer.info.port}/ws/term/${hubId}`;
   }

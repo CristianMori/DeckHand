@@ -357,15 +357,38 @@ app.get('/api/agents', async (req, res) => {
 // the client sends the bytes here and pastes the saved path into the prompt.
 // Registered before the JSON body parser — the body is raw binary.
 const DROPS_DIR = join(DATA_DIR, 'drops');
+
+/**
+ * sessionAction for the drop routes: same handles (hub id, conversation id or
+ * a unique prefix), but a session on another machine gets the raw bytes
+ * proxied to and from its hub — the file lives where the session runs.
+ */
+function dropAction(
+  local: (session: HubSession, req: express.Request, res: express.Response) => unknown,
+): express.RequestHandler {
+  return async (req, res) => {
+    const id = String(req.params.id);
+    const session = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+    if (session) return local(session, req, res);
+    const peer = federation.peerBySession(id);
+    if (!peer) return res.status(404).json({ error: 'unknown session' });
+    try {
+      const out = await federation.forwardRaw(peer, req.originalUrl, {
+        method: req.method,
+        body: req.method === 'POST' ? (Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)) : undefined,
+        contentType: req.get('content-type'),
+      });
+      res.status(out.status).type(out.contentType).send(out.bytes);
+    } catch {
+      res.status(502).json({ error: `forward to ${peer.info.machine} failed` });
+    }
+  };
+}
+
 app.post(
   '/api/sessions/:id/drop',
   express.raw({ type: () => true, limit: '100mb' }),
-  (req, res) => {
-    // same handles sessionAction accepts: the hub id, or the conversation id
-    // (or a unique prefix), which survives hub restarts — the iOS app sends that
-    const id = String(req.params.id);
-    const session = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
-    if (!session) return res.status(404).json({ error: 'unknown session' });
+  dropAction((session, req, res) => {
     const rawName = String(req.query.name ?? 'dropped-file');
     const safe = rawName.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(-150) || 'dropped-file';
     const dir = join(DROPS_DIR, session.hubId);
@@ -380,24 +403,21 @@ app.post(
     }
     writeFileSync(target, Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
     res.json({ path: target });
-  },
+  }),
 );
 
 // The bytes of a dropped file back, by the path the POST answered — the iOS app
 // shows attached photos inline. Any session's drop folder on this hub counts:
 // the folder is named after the hub id, which changes on every hub restart,
 // so a photo from before the restart sits under an older one.
-app.get('/api/sessions/:id/drop', (req, res) => {
-  const id = String(req.params.id);
-  const session = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
-  if (!session) return res.status(404).json({ error: 'unknown session' });
+app.get('/api/sessions/:id/drop', dropAction((_session, req, res) => {
   const root = resolve(DROPS_DIR);
   const target = resolve(String(req.query.path ?? ''));
   const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
   if (!fold(target).startsWith(fold(root) + sep)) return res.status(400).json({ error: 'path is not a dropped file' });
   if (!existsSync(target) || !statSync(target).isFile()) return res.status(404).json({ error: 'no such dropped file' });
   res.sendFile(target, { dotfiles: 'allow' });
-});
+}));
 
 // Durable conversation store (lives on STORE_MACHINE, normally vps-node).
 // Push route takes raw bytes — registered before the JSON body parser.
