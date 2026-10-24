@@ -1,7 +1,8 @@
 import { spawn, execFile } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
-import { writeFile, mkdir } from 'node:fs/promises';
-import { Readable } from 'node:stream';
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { Readable, Writable } from 'node:stream';
+import { createGunzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { DATA_DIR, HUB_ROOT } from './config.js';
@@ -35,6 +36,35 @@ export interface UpdateStatus {
   lastCheckAt?: number;
   error?: string;
   fleetTarget?: FleetTarget;
+  /** a verified release already downloaded here: updating needs no release machine */
+  staged?: { build: number; version: string; bytes: number; at: string };
+  staging?: boolean;
+}
+
+/** prestaged release: data/update-staged.tgz with its build beside it */
+const STAGED_TGZ = join(DATA_DIR, 'update-staged.tgz');
+const STAGED_META = join(DATA_DIR, 'update-staged.json');
+
+function readStaged(): UpdateStatus['staged'] {
+  try {
+    return existsSync(STAGED_TGZ) && existsSync(STAGED_META) ? JSON.parse(readFileSync(STAGED_META, 'utf8')) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The archive is whole: it gunzips to the end and the gzip checksum holds.
+ * Node's own zlib, not tar: which tar a machine finds first varies, and GNU
+ * tar reads "C:\..." as a remote host.
+ */
+async function gzipIsWhole(file: string): Promise<boolean> {
+  try {
+    await pipeline(createReadStream(file), createGunzip(), new Writable({ write: (_c, _e, cb) => cb() }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -55,7 +85,8 @@ export class Updater {
     /** self identity — the release origin serves updates to itself locally */
     private self: { name: () => string; baseUrl: () => string },
   ) {
-    this.status = { ...current, updateAvailable: false, updating: false };
+    this.status = { ...current, updateAvailable: false, updating: false, staged: readStaged() };
+    if (this.status.staged && !(this.status.staged.build > current.build)) this.status.staged = undefined; // already installed
     const timer = setInterval(() => void this.check(), CHECK_INTERVAL_MS);
     timer.unref();
     setTimeout(() => void this.check().then(() => this.followFleetTarget()), 90_000).unref(); // after discovery settles
@@ -115,21 +146,72 @@ export class Updater {
     } catch (err) {
       this.status.error = err instanceof Error ? err.message : String(err);
     }
+    // prestage in the background: a later update needs no release machine
+    if (this.status.updateAvailable) void this.prestage().catch(() => {});
+    return this.status;
+  }
+
+  private stagingRun?: Promise<void>;
+
+  /**
+   * Download the newest release next to the hub and verify it, unless that
+   * build is already staged. Updating then works while the release machine
+   * is away (restarting for its own update, say).
+   */
+  prestage(): Promise<void> {
+    this.stagingRun ??= (async () => {
+      const want = this.status.latestBuild;
+      if (!want || !this.status.updateAvailable) return;
+      if (this.status.staged?.build === want) return;
+      const base = this.releaseBase();
+      if (!base) throw new Error('release machine not connected');
+      this.status.staging = true;
+      const part = `${STAGED_TGZ}.part`;
+      try {
+        const res = await fetch(`${base}/releases/deckhand-release.tgz`, { signal: AbortSignal.timeout(10 * 60_000) });
+        if (!res.ok || !res.body) throw new Error(`download failed: ${res.status}`);
+        await pipeline(Readable.fromWeb(res.body as never), createWriteStream(part));
+        const bytes = (await stat(part)).size;
+        const expected = Number(res.headers.get('content-length'));
+        if (expected && bytes !== expected) throw new Error(`download cut short (${bytes} of ${expected} bytes)`);
+        if (!(await gzipIsWhole(part))) throw new Error('downloaded release is not a whole archive');
+        await rename(part, STAGED_TGZ);
+        const staged = { build: want, version: this.status.latestVersion ?? '', bytes, at: new Date().toISOString() };
+        await writeFile(STAGED_META, JSON.stringify(staged));
+        this.status.staged = staged;
+        console.log(`[updater] staged build ${want} (${Math.round(bytes / 1024)} KB)`);
+      } catch (err) {
+        await rm(part, { force: true }).catch(() => {});
+        this.status.error = `staging: ${err instanceof Error ? err.message : err}`;
+        throw err;
+      } finally {
+        this.status.staging = false;
+      }
+    })().finally(() => (this.stagingRun = undefined));
+    return this.stagingRun;
+  }
+
+  /** Check, then wait until the newest build is staged here. */
+  async checkAndStage(): Promise<UpdateStatus> {
+    await this.check();
+    if (this.status.updateAvailable) await this.prestage().catch(() => {});
     return this.status;
   }
 
   async apply(): Promise<void> {
     if (this.status.updating) return;
     await this.check();
-    if (!this.status.updateAvailable) throw new Error(this.status.error ?? 'no update available');
-    const base = this.releaseBase();
-    if (!base) throw new Error('release machine not connected');
+    // the newest build, staged now if it is not yet (and the release machine answers)
+    if (this.status.updateAvailable) await this.prestage().catch(() => {});
+    const staged = this.status.staged;
+    // whatever is staged and newer than this hub will do when the release machine is away
+    if (!staged || !(staged.build > this.current.build) || this.current.build === 0) {
+      throw new Error(this.status.error ?? 'no update available');
+    }
 
     this.status.updating = true;
-    const tgz = join(DATA_DIR, 'update.tgz');
-    const res = await fetch(`${base}/releases/deckhand-release.tgz`);
-    if (!res.ok || !res.body) throw new Error(`download failed: ${res.status}`);
-    await pipeline(Readable.fromWeb(res.body as never), createWriteStream(tgz));
+    const tgz = STAGED_TGZ;
+    console.log(`[updater] installing staged build ${staged.build}`);
 
     if (process.platform === 'win32') {
       // under a service manager (DECKHAND_SERVICE set) the manager restarts
@@ -141,7 +223,8 @@ export class Updater {
           '@echo off',
           'timeout /t 3 /nobreak >nul',
           `cd /d "${HUB_ROOT}"`,
-          `tar -xzf "${tgz}" -C "${HUB_ROOT}"`,
+          // Windows' own bsdtar: a GNU tar earlier on PATH (Git's) reads "C:\..." as a remote host
+          `"%SystemRoot%\\System32\\tar.exe" -xzf "${tgz}" -C "${HUB_ROOT}"`,
           'call npm install --no-audit --no-fund >nul 2>&1',
           'if not defined DECKHAND_SERVICE if not defined CLAUDEHUB_SERVICE (',
           `  start "" "${join(HUB_ROOT, 'start-hub.cmd')}"`,

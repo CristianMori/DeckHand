@@ -107,6 +107,9 @@ export interface AdminStatus {
   error?: string;
   /** left by UPDATE ALL: hubs that come back behind it update themselves */
   fleetTarget?: { build: number; version: string; requestedAt: string; requestedBy: string };
+  /** release already downloaded and verified here */
+  staged?: { build: number; version: string; bytes: number; at: string };
+  staging?: boolean;
 }
 
 export interface UpdateAllResult {

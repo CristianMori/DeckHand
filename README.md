@@ -575,15 +575,21 @@ powershell -File scripts\publish.ps1
 Builds the frontend, stamps `version.json` (semver + git commit count as a
 monotonic build number), tars the tree, uploads to the home machine's
 release shelf. Every hub notices within 6 hours, or immediately via
-ADMIN → CHECK FOR UPDATES. Applying: Windows hands off to a detached runner
+ADMIN → CHECK FOR UPDATES. Every check **prestages** a newer build: it is
+downloaded to `data/update-staged.tgz` and verified (complete download, gzip
+checksum) before it counts, so applying installs from that file and works
+while the release machine is away, e.g. restarting for its own update; a bad
+download never replaces a good staged copy. ADMIN shows "build N staged" per
+machine. Applying: Windows hands off to a detached runner
 (swap files, `npm install`, relaunch — or let the service manager relaunch);
 macOS/Linux extract in place and exit for launchd/systemd to restart. A dev checkout
 (no `version.json` → build 0) reports `DEV` in ADMIN and never auto-updates.
 
 **ADMIN → UPDATE ALL** pins the fleet to the newest published build: it
 leaves a mark, `fleet-target.json`, on the release machine (publishing does
-not touch it), tells every connected hub to update now, and updates the hub
-you clicked on last. A machine that was off reads the mark ~90 s after its
+not touch it), has every connected hub stage the release, then tells them to
+update, the release machine last among them, and updates the hub you
+clicked on last of all. A machine that was off reads the mark ~90 s after its
 hub starts and every 10 minutes after that, and updates itself when it is
 behind (live sessions are saved first and come back after the restart). The
 ADMIN dialog shows the current fleet target. Hubs only install the newest

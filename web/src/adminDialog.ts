@@ -70,7 +70,7 @@ export async function openAdminDialog() {
           ${badge}
           <span class="resume-age">up ${fmtUptime(s.uptimeS)}</span>
         </div>
-        <div class="resume-snippet">v${s.version} · build ${s.build}${s.error ? ` · ⚠ ${s.error}` : ''}</div>
+        <div class="resume-snippet">v${s.version} · build ${s.build}${s.staging ? ' · staging…' : s.staged && s.staged.build > s.build ? ` · build ${s.staged.build} staged` : ''}${s.error ? ` · ⚠ ${s.error}` : ''}</div>
         <div class="card-actions"></div>
       `;
       (row.querySelector('.resume-proj') as HTMLElement).textContent = machine;

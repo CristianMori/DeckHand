@@ -331,9 +331,10 @@ app.get('/api/admin/status', (req, res) => {
   });
 });
 
+// check, and prestage the newest build so updating needs no release machine later
 app.post('/api/admin/check', async (req, res) => {
   if (adminForward(req, res)) return;
-  res.json(await updater.check());
+  res.json(await updater.checkAndStage());
 });
 
 app.post('/api/admin/update', (req, res) => {
@@ -377,7 +378,7 @@ app.post('/api/admin/fleet-target', express.json({ type: () => true, limit: '16k
  * back: it reads the mark at start and every 10 minutes (Updater.followFleetTarget).
  */
 app.post('/api/admin/update-all', async (_req, res) => {
-  const status = await updater.check();
+  const status = await updater.checkAndStage();
   if (!status.latestBuild) return res.status(502).json({ error: status.error ?? 'release machine not reachable' });
   const target: FleetTarget = {
     build: status.latestBuild,
@@ -398,9 +399,13 @@ app.post('/api/admin/update-all', async (_req, res) => {
   }
   const machines: { machine: string; told: boolean; error?: string }[] = [];
   const seen = new Set([discovery.selfName]);
-  for (const peer of federation.connectedPeers()) {
-    if (seen.has(peer.info.machine)) continue;
-    seen.add(peer.info.machine);
+  const peers = federation.connectedPeers().filter((p) => !seen.has(p.info.machine) && seen.add(p.info.machine));
+  // 1. everyone downloads the release while the release machine is still up
+  await Promise.all(peers.map((p) => federation.forward(p, '/api/admin/check', { method: 'POST' }).catch(() => null)));
+  // 2. then they install it: the release machine goes last of the peers, the
+  //    hub that was clicked after everyone (below)
+  const ordered = [...peers.filter((p) => p.info.machine !== UPDATE_MACHINE), ...peers.filter((p) => p.info.machine === UPDATE_MACHINE)];
+  for (const peer of ordered) {
     try {
       const out = await federation.forward(peer, '/api/admin/update', { method: 'POST' });
       machines.push({ machine: peer.info.machine, told: out.status === 200, ...(out.status === 200 ? {} : { error: `answered ${out.status}` }) });
