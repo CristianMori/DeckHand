@@ -1,35 +1,110 @@
 #!/usr/bin/env node
-// Reference client for the Deckhand gateway: shows the signing scheme and
-// doubles as a test tool. Credentials come from the environment, never argv:
-//   DH_GATEWAY_URL   e.g. https://vps-node.example.ts.net
-//   DH_KEY_ID, DH_TOKEN, DH_HMAC_SECRET
+// Reference client for the Deckhand gateway (wire format in wire.mjs); also the
+// test tool. The identity file holds this client's PRIVATE keys: keep it 0600
+// on the client machine, it never leaves it.
 //
-//   node gateway-client.mjs GET /v1/sessions
-//   node gateway-client.mjs POST /v1/sessions/<id>/prompt '{"text":"hi","waitMs":120000}'
-//
-// Signing: canonical = METHOD \n PATH?QUERY \n TIMESTAMP \n NONCE \n hex(sha256(body))
-// signature = hex(HMAC-SHA256(hmac secret, canonical)); headers below.
+//   node gateway-client.mjs init <identity.json> <https://gateway-url>
+//   node gateway-client.mjs enroll <identity.json>          (bootstrap token read from DH_BOOTSTRAP_TOKEN)
+//   node gateway-client.mjs call <identity.json> GET /v1/sessions
+//   node gateway-client.mjs call <identity.json> POST /v1/sessions/<id>/prompt '{"text":"hi","waitMs":120000}'
 
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  b64u,
+  newKeyPair,
+  open,
+  privateFromJwk,
+  privateToJwk,
+  publicFromRaw,
+  rawPublic,
+  requestCanonical,
+  responseCanonical,
+  seal,
+  signText,
+  verifyText,
+} from './wire.mjs';
 
-export function signedHeaders({ method, path, body = '', keyId, token, hmacSecret, timestamp, nonce }) {
-  const ts = String(timestamp ?? Math.floor(Date.now() / 1000));
-  const n = nonce ?? randomBytes(16).toString('base64url');
-  const canonical = [method.toUpperCase(), path, ts, n, createHash('sha256').update(body).digest('hex')].join('\n');
-  return {
-    Authorization: `Bearer ${token}`,
-    'X-DH-Key': keyId,
+export function newIdentity(url) {
+  const ed = newKeyPair('ed25519');
+  const x = newKeyPair('x25519');
+  return { url: url.replace(/\/+$/, ''), ed25519: privateToJwk(ed.privateKey), x25519: privateToJwk(x.privateKey) };
+}
+
+export const identityPublic = (id) => ({ ed25519: id.ed25519.x, x25519: id.x25519.x });
+
+/** Trade the one-time token for enrollment; pins the gateway's keys into the identity. */
+export async function enroll(id, bootstrapToken, expectGateway) {
+  const res = await fetch(`${id.url}/enroll`, {
+    method: 'POST',
+    headers: { Authorization: `Bootstrap ${bootstrapToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(identityPublic(id)),
+  });
+  const data = await res.json();
+  if (res.status !== 200) throw new Error(`enroll: ${res.status} ${data.error}`);
+  // the bootstrap file lists the gateway keys: a mismatch means someone is in the middle
+  if (expectGateway && (expectGateway.ed25519 !== data.gateway.ed25519 || expectGateway.x25519 !== data.gateway.x25519)) {
+    throw new Error('enroll: gateway keys differ from the bootstrap file');
+  }
+  return { ...id, clientId: data.clientId, gateway: data.gateway };
+}
+
+/** One signed, sealed request; verifies and opens the sealed answer. */
+export async function call(id, method, path, bodyObj, over = {}) {
+  const nonce = over.nonce ?? randomBytes(18).toString('base64url');
+  const ts = String(over.timestamp ?? Math.floor(Date.now() / 1000));
+  const gwX = publicFromRaw(id.gateway.x25519, 'X25519');
+  const body = bodyObj === undefined ? '' : (over.rawBody ?? seal(JSON.stringify(bodyObj), gwX, { direction: 'request', methodOrStatus: method, path, nonce }));
+  const signKey = over.signKey ?? privateFromJwk(id.ed25519);
+  const headers = {
+    'X-DH-Client': id.clientId,
     'X-DH-Timestamp': ts,
-    'X-DH-Nonce': n,
-    'X-DH-Signature': createHmac('sha256', hmacSecret).update(canonical).digest('hex'),
+    'X-DH-Nonce': nonce,
+    'X-DH-Signature': signText(signKey, requestCanonical(method, path, ts, nonce, over.signedBody ?? body)),
     ...(body ? { 'Content-Type': 'application/json' } : {}),
   };
+  const res = await fetch(`${id.url}${path}`, { method, headers, body: body || undefined });
+  const text = await res.text();
+  const sig = res.headers.get('x-dh-signature');
+  if (!sig) return { status: res.status, sealed: false, data: safeJson(text), headers };
+  const verified = res.headers.get('x-dh-nonce') === nonce && verifyText(publicFromRaw(id.gateway.ed25519, 'Ed25519'), responseCanonical(res.status, nonce, text), sig);
+  if (!verified) throw new Error('response signature does not verify');
+  const xPriv = privateFromJwk(id.x25519);
+  const xPub = publicFromRaw(id.x25519.x, 'X25519');
+  const plain = open(text, xPriv, xPub, { direction: 'response', methodOrStatus: String(res.status), nonce });
+  return { status: res.status, sealed: true, verified, data: safeJson(plain), headers, rawBody: body };
 }
 
-if (import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/').split('/').pop() ?? '')) {
-  const [method = 'GET', path = '/v1/sessions', body = ''] = process.argv.slice(2);
-  const env = process.env;
-  const headers = signedHeaders({ method, path, body, keyId: env.DH_KEY_ID, token: env.DH_TOKEN, hmacSecret: env.DH_HMAC_SECRET });
-  const res = await fetch(`${env.DH_GATEWAY_URL}${path}`, { method, headers, body: body || undefined });
-  console.log(res.status, await res.text());
+const safeJson = (t) => {
+  try {
+    return JSON.parse(t);
+  } catch {
+    return t;
+  }
+};
+
+const save = (file, id) => {
+  writeFileSync(file, JSON.stringify(id, null, 2), { mode: 0o600 });
+  chmodSync(file, 0o600);
+};
+
+const isMain = process.argv[1] && import.meta.url.toLowerCase().endsWith(process.argv[1].replace(/\\/g, '/').toLowerCase().split('/').pop());
+if (isMain) {
+  const [cmd, file, ...rest] = process.argv.slice(2);
+  if (cmd === 'init') {
+    save(file, newIdentity(rest[0]));
+    console.log(`identity written to ${file}; public keys:`, identityPublic(JSON.parse(readFileSync(file, 'utf8'))));
+  } else if (cmd === 'enroll') {
+    const id = await enroll(JSON.parse(readFileSync(file, 'utf8')), process.env.DH_BOOTSTRAP_TOKEN);
+    save(file, id);
+    console.log(`enrolled as ${id.clientId}; gateway keys pinned`, id.gateway);
+  } else if (cmd === 'call') {
+    const [method, path, body] = rest;
+    const r = await call(JSON.parse(readFileSync(file, 'utf8')), method, path, body ? JSON.parse(body) : undefined);
+    console.log(r.status, JSON.stringify(r.data, null, 2));
+  } else {
+    console.log('usage: gateway-client.mjs init <identity.json> <url> | enroll <identity.json> | call <identity.json> METHOD PATH [json]');
+  }
 }
+
+export { b64u, rawPublic };

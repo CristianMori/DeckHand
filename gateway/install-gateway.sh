@@ -4,7 +4,7 @@
 # and is published by Tailscale Funnel on https://<this machine>.<tailnet>.ts.net.
 #
 #   sudo bash gateway/install-gateway.sh            install / refresh the unit, start it, enable Funnel
-#   sudo node gateway/deckhand-gateway.mjs keygen <id>
+#   sudo node gateway/deckhand-gateway.mjs bootstrap <id>   one-time enrollment token for a client
 #   edit /etc/deckhand-gateway/config.json  ->  {"allowFolders": ["FolderA", ...]}
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }

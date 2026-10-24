@@ -492,11 +492,20 @@ reach a few opted-in sessions. It listens on `127.0.0.1:5990` only and is
 published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` (real
 certificate, no open port); the hub's 5959 never faces the internet.
 
-- **Auth, both required:** `Authorization: Bearer <token>` (256-bit, stored
-  as SHA-256, constant-time compare) and an HMAC-SHA256 signature in
-  `X-DH-Signature` over `METHOD\nPATH?QUERY\nX-DH-Timestamp\nX-DH-Nonce\nhex(sha256(body))`,
-  with `X-DH-Key` naming the key. Timestamps older than 5 minutes and reused
-  nonces are refused. `gateway/gateway-client.mjs` is the reference signer.
+- **Enrollment:** `node gateway/deckhand-gateway.mjs bootstrap <id>` writes a
+  one-time token (single use, 15 minutes, good only for `POST /enroll`) and
+  the gateway's public keys to the root-only `/etc/deckhand-gateway/bootstrap-<id>.txt`.
+  The client generates its own Ed25519 + X25519 key pairs and enrolls only
+  the public halves; the token burns and the file is deleted. No private key
+  ever crosses the wire.
+- **Every request:** Ed25519 signature (`X-DH-Signature`) over
+  `DH2\nMETHOD\nPATH?QUERY\nX-DH-Timestamp\nX-DH-Nonce\nhex(sha256(body))`,
+  `X-DH-Client` naming the client; timestamps older than 5 minutes and reused
+  nonces are refused. Bodies both ways are sealed (ephemeral X25519 ECDH to the
+  other side's static key → HKDF-SHA256 → ChaCha20-Poly1305, bound to method,
+  path and nonce), and answers are signed with the gateway's Ed25519 key. The
+  wire format is spelled out in `gateway/wire.mjs`; `gateway/gateway-client.mjs`
+  is the reference client.
 - **Allowlist:** `GET /v1/sessions`, `/v1/fleet`, `/v1/agents`, `/v1/projects`,
   `/v1/sessions/:id`, `/v1/sessions/:id/exchanges?n=`, `/v1/sessions/:id/last-reply`,
   `/v1/sessions/:id/screen`, `/v1/sessions/:id/wait?timeoutMs=&until=`,
@@ -505,14 +514,13 @@ certificate, no open port); the hub's 5959 never faces the internet.
 - **Reach:** only Claude/Codex sessions whose folder is in `allowFolders`
   (`/etc/deckhand-gateway/config.json`) and that are not on auto-yes or
   bypass-permissions; any other session answers 404 as if it did not exist.
-  Prompts arrive stamped `[Deckhand gateway, key <id>]`.
-- **Limits:** 64 KB bodies, 60 requests/minute per key, 10 bad-auth attempts
-  in 10 minutes lock the caller out for 15. Every request is a JSON line in
-  `/var/log/deckhand-gateway/audit.log` (no secrets).
-- **Keys:** `node gateway/deckhand-gateway.mjs keygen <id>` writes the new
-  secrets to the root-only `/etc/deckhand-gateway/handoff-<id>.txt` (hand
-  over, then delete); `revoke <id>` takes effect on the next request; rotate
-  = keygen a new id, switch the client, revoke the old one.
+  Prompts arrive stamped `[Deckhand gateway, client <id>]`.
+- **Limits:** 64 KB bodies, 60 requests/minute per client, 10 bad-auth
+  attempts in 10 minutes lock the caller out for 15. Every request is a JSON
+  line in `/var/log/deckhand-gateway/audit.log` (no secrets).
+- **Revocation:** `revoke <id>` deletes the enrolled key (and any pending
+  token); `bootstrap <id>` again also locks the current key out at once.
+  Both take effect on the next request.
 - **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
   `deckhand-gateway`, Funnel on 443).
 
