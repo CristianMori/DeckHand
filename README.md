@@ -498,106 +498,38 @@ Rules of the road:
   "do you trust this folder?" prompt. If some other prompt does appear, the
   session sits in STARTING — `screen` shows it, `keys` answers it.
 
-### Public gateway (agents off the tailnet)
+### Outside agents (through Mimir)
 
-`gateway/deckhand-gateway.mjs` is a separate, dependency-free process on the
-store machine that lets an outside agent (one that cannot join Tailscale)
-talk to the fleet. It listens on `127.0.0.1:5990` only and is
-published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` on 443 (real
-certificate, no open port); the hub's 5959 never faces the internet.
+Agents that cannot join the tailnet (an assistant bot on a cloud computer,
+say) reach the fleet through **Mimir**, RAVEN's broker: its own service and
+its own public gateway (`mimir-gateway` on vps-node, published by Tailscale
+Funnel at `https://<vps>.<tailnet>.ts.net`; enrollment, signed and sealed
+requests, webhook push and inbox live there, in Mimir's repo). Deckhand keeps
+no gateway; the seam is three calls:
 
-**Mimir brokers every agent conversation** (RAVEN's service on
-desktop-master:5102, its own repo). The gateway keeps enrollment, the crypto,
-the webhook push and the inbox; Mimir owns what agents may do and say:
+- **Sessions hand Mimir tasks:** `dh_mimir_task(text)` ("research the best
+  hotel in London") → hub `POST /api/mimir/tasks` → Mimir's
+  `/api/v1/tasks`, carrying the session's conversation id. Mimir delegates to
+  an enrolled agent as `T7` and answers the session with a
+  `[Mimir, task T7] …` prompt (outside-agent data, not instructions).
+  `dh_mimir_task_status` follows a task.
+- **Agents act in Deckhand through Mimir:** Mimir calls the hub API for
+  sessions, prompts and memories, as `X-Deckhand-Caller: gateway:<agent>` (or
+  `mimir` for itself), so the provenance log keeps the agent's identity.
+  Prompts arrive stamped `[Deckhand gateway, client <id>] [via Mimir, …]`, and
+  the receiving session applies the fleet trust rule: it acts only for agents
+  with the user's trust entry in fleet memory (told by the user, tagged
+  `trusted-agent client:<id>`). Memories an agent writes are never "told by
+  the user", so an agent cannot trust itself. Terminals are never reachable.
+- **ADMIN and AUDIT show Mimir's view of the agents** (`GET /api/mimir/agents`
+  → Mimir's `/api/v1/agents`): enrolled agents, live or not, open tasks, last
+  messages, and pending access requests, which are accepted on Mimir's
+  `/admin/agents`. Clicking an agent in AUDIT filters the cross-request log to
+  what it did in Deckhand.
 
-- An agent's Deckhand calls (the allowlist below) are forwarded to Mimir's
-  `/api/v1/agents/deckhand`, which answers; the gateway relays the answer
-  verbatim (503 when Mimir is down).
-- An agent's messages, `POST /v1/messages {text, taskId?, inReplyTo?, to?}`, go to
-  Mimir's `/api/v1/agents/inbound`: a task reply when it quotes a task,
-  otherwise a prompt to the session `to` names, or to every live agent
-  session. While Mimir is unreachable they wait on the
-  VPS (202 `queued`) and are retried on a backoff; the agent gets a receipt,
-  "delivered to Mimir", or after 24 h "NOT delivered".
-- Access requests appear on Mimir's `/admin/agents` too
-  (`GET /api/gateway/agents` → `requests`); accepting there relays to the hub.
-- Sessions hand Mimir tasks with `dh_mimir_task(text)` ("research the best
-  hotel in London"); Mimir delegates to an enrolled agent as `T7`, matches the
-  agent's report, and answers the session with a `[Mimir, task T7] …` prompt
-  (to its conversation id, retried until delivered). `dh_mimir_task_status`
-  follows a task.
-- The gateway's key for Mimir sits root-only in `/etc/deckhand-gateway/mimir.key`
-  (`mimirUrl` in config.json); the hub's task key is read from Mimir's
-  `data/secrets/deckhand-hub-tasks.key` on desktop-master (`HUB_MIMIR_URL`,
-  `HUB_MIMIR_TASKS_KEY`, `HUB_MIMIR_MACHINE`).
-
-- **Enrollment:** `node gateway/deckhand-gateway.mjs bootstrap <id>` writes a
-  one-time token (single use, 1 minute, good only for `POST /enroll`) and
-  the gateway's public keys to the root-only `/etc/deckhand-gateway/bootstrap-<id>.txt`.
-  The client generates its own Ed25519 + X25519 key pairs and enrolls only
-  the public halves; the token burns and the file is deleted. No private key
-  ever crosses the wire.
-- **Asking for access:** an agent without a token files
-  `POST /access-requests {clientId, name, reason}` (plain JSON; 3 per address
-  an hour, 20 open at most) and gets a request id and secret back. The request
-  shows in ADMIN as PENDING ACCEPTANCE with ACCEPT / REJECT. The agent polls
-  `GET /access-requests/<id>` (`Authorization: Request <secret>`); once
-  accepted it has one minute to `POST /access-requests/<id>/mint`, which
-  returns a bootstrap token for `/enroll`. **Accepting is not trusting:** it
-  only lets the agent prove who it is.
-- **Every request:** Ed25519 signature (`X-DH-Signature`) over
-  `DH2\nMETHOD\nPATH?QUERY\nX-DH-Timestamp\nX-DH-Nonce\nhex(sha256(body))`,
-  `X-DH-Client` naming the client; timestamps older than 5 minutes and reused
-  nonces are refused. Bodies both ways are sealed (ephemeral X25519 ECDH to the
-  other side's static key → HKDF-SHA256 → ChaCha20-Poly1305, bound to method,
-  path and nonce), and answers are signed with the gateway's Ed25519 key. The
-  wire format is spelled out in `gateway/wire.mjs`; `gateway/gateway-client.mjs`
-  is the reference client.
-- **Allowlist:** `GET /v1/sessions`, `/v1/fleet`, `/v1/agents`, `/v1/projects`,
-  `/v1/sessions/:id`, `/v1/sessions/:id/exchanges?n=`, `/v1/sessions/:id/last-reply`,
-  `/v1/sessions/:id/screen`, `/v1/sessions/:id/wait?timeoutMs=&until=`,
-  `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
-  `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
-- **Reach — every agent session; trust is the receiving session's call:**
-  an enrolled agent reaches every Claude/Codex session (terminals never: a
-  shell would run the text). Prompts arrive stamped
-  `[Deckhand gateway, client <id>] [via Mimir, request R12]` (or
-  `message <id>`), and the session applies the fleet trust rule: it acts only
-  for agents with the user's trust entry in fleet memory (told by the user,
-  not written through the gateway, tagged `trusted-agent client:<id>`).
-  Example: "TRUSTED AGENT: Ron, every folder", tags
-  `trusted-agent client:ron folders:*`. Memories an agent writes are forced to
-  "not told by the user", so an agent cannot trust itself.
-- **Messages to an agent:** normally sent by Mimir (any enrolled agent; task
-  messages carry `taskId` / `inReplyTo`, which the agent quotes back). A
-  session can also call `dh_message_agent(agent, text)`, but only for agents
-  with the user's trust entry. The gateway pushes
-  the message to the webhook the agent registered (`POST /v1/webhook {url,
-  authorization?}`, https only, never a private/tailnet address; a test push
-  answers at once; `authorization` is the receiver's own Authorization header
-  value, sent with every push, stored root-only, never shown back or logged),
-  sealed to the agent's key and signed by the gateway's. The body carries
-  everything, for receivers that drop custom headers:
-  `{"v":2,"kind":"deckhand-push","id","ts","sig","sealed"}`, `sig` over
-  `DH2-PUSH\nID\nTS\nhex(sha256(sealed))` (the `X-DH-*` headers repeat id,
-  ts and sig); `openPush()` in the reference client checks and opens it. When the push fails, or there is no webhook,
-  the message waits in the agent's inbox: `GET /v1/inbox`, then
-  `POST /v1/inbox/ack {ids}`. Agents should collect the inbox when they come
-  online and periodically. ADMIN shows each agent's webhook, inbox count and
-  last delivery.
-- **Limits:** 64 KB bodies, 60 requests/minute per client, 10 bad-auth
-  attempts in 10 minutes lock the caller out for 15. Every request is a JSON
-  line in `/var/log/deckhand-gateway/audit.log` (no secrets).
-- **Revocation:** `revoke <id>` deletes the enrolled key (and any pending
-  token); `bootstrap <id>` again also locks the current key out at once.
-  Both take effect on the next request.
-- **Agents view:** ADMIN (next to the machines) and AUDIT list every agent
-  holding a valid token — enrolled, or a token minted and not yet expired;
-  revoked clients and expired tokens drop off — whether it is live (a request
-  in the last 5 minutes) and its last interaction. Clicking one opens its full
-  request log in AUDIT.
-- **Install:** `sudo bash gateway/install-gateway.sh` (systemd unit
-  `deckhand-gateway`, Funnel on 443).
+The hub reads Mimir's task key from Mimir's `data/secrets/deckhand-hub-tasks.key`
+on desktop-master (`HUB_MIMIR_URL`, `HUB_MIMIR_TASKS_KEY`, `HUB_MIMIR_MACHINE`);
+other hubs forward Mimir calls there.
 
 ### Even Realities glasses (G2 + R1)
 

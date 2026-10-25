@@ -20,8 +20,8 @@ export async function openAdminDialog() {
         <div class="resume-list" id="ad-rows"><div class="empty-note">querying fleet…</div></div>
       </section>
       <section>
-        <div class="ad-col-title">AGENTS WITH A VALID TOKEN</div>
-        <div class="resume-list" id="ad-agents"><div class="empty-note">querying gateway…</div></div>
+        <div class="ad-col-title">OUTSIDE AGENTS (MIMIR)</div>
+        <div class="resume-list" id="ad-agents"><div class="empty-note">asking Mimir…</div></div>
       </section>
     </div>
     <div class="dialog-actions">
@@ -35,7 +35,7 @@ export async function openAdminDialog() {
   const targetEl = dialog.querySelector('#ad-target') as HTMLElement;
   (dialog.querySelector('#ad-close') as HTMLButtonElement).onclick = () => dialog.close();
 
-  // gateway agents: live, last interaction; a click opens their requests in AUDIT
+  // outside agents (Mimir's view): live, last interaction; a click shows in AUDIT what they did in Deckhand
   const agentsEl = dialog.querySelector('#ad-agents') as HTMLElement;
   const refreshAgents = () =>
     renderGatewayAgents(agentsEl, (id) => {

@@ -1,4 +1,4 @@
-import type { AdminStatus, UpdateAllResult, AgentInfo, MimirAgent, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, UpdateAllResult, AgentInfo, MimirAgent, MimirRequest, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -145,13 +145,8 @@ export const api = {
   adminUpdateAll: () => fetch('/api/admin/update-all', { method: 'POST' }).then((r) => json<UpdateAllResult>(r)),
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
-  gatewayAgents: () => fetch('/api/gateway/agents').then((r) => json<GatewayAgentsInfo>(r)),
-  /** Mimir's view of the agents (the broker): Deckhand access, open tasks, last messages */
-  mimirAgents: () => fetch('/api/mimir/agents').then((r) => json<{ agents: MimirAgent[] }>(r)),
-  gatewayDecide: (requestId: string, decision: 'accept' | 'reject') =>
-    fetch(`/api/gateway/requests/${encodeURIComponent(requestId)}/${decision}`, { method: 'POST' }).then((r) => json<unknown>(r)),
-  gatewayAgentLog: (id: string, limit = 300) =>
-    fetch(`/api/gateway/agents/${encodeURIComponent(id)}/log?limit=${limit}`).then((r) => json<GatewayLogLine[]>(r)),
+  /** Mimir's view of the outside agents (the broker): enrolled agents and access requests */
+  mimirAgents: () => fetch('/api/mimir/agents').then((r) => json<{ agents: MimirAgent[]; requests: MimirRequest[] | null }>(r)),
   provenance: (machine: string, opts: { q?: string; id?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams({ machine, limit: String(opts.limit ?? 300) });
     if (opts.q) qs.set('q', opts.q);

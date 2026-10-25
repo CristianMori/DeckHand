@@ -118,43 +118,6 @@ export interface UpdateAllResult {
   offline: string[];
 }
 
-export interface GatewayAgent {
-  id: string;
-  /** requested = asked for access, waiting for the user; accepted = may mint its token until request.mintUntil */
-  status: 'enrolled' | 'pending' | 'requested' | 'accepted';
-  request?: { id: string; name: string; reason: string; ip: string; createdAt: string; mintUntil?: string };
-  enrolledAt?: string;
-  tokenExpiresAt?: string;
-  lastSeen?: string;
-  live: boolean;
-  requests: number;
-  denied: number;
-  lastRequest?: string;
-  webhook?: string;
-  inbox: number;
-  lastMessage?: { at: string; delivered: string; webhookError?: string };
-}
-
-export interface GatewayAgentsInfo {
-  machine: string;
-  present: boolean;
-  agents: GatewayAgent[];
-}
-
-export interface GatewayLogLine {
-  at: string;
-  req?: string;
-  ip?: string;
-  method?: string;
-  path?: string;
-  status?: number;
-  ms?: number;
-  client?: string;
-  event?: string;
-  authError?: string;
-  text?: string;
-}
-
 export interface ProvenanceEntry {
   id: string;
   at: string;
@@ -188,13 +151,28 @@ export interface ControlMessage {
   machine?: string;
 }
 
-/** Mimir's view of one outside agent (times are UTC without a Z) */
+/** Mimir's view of one outside agent (times are UTC, sometimes without a Z) */
 export interface MimirAgent {
   id: string;
+  status: string;
+  live: boolean;
   available: boolean;
-  deckhandAccess: string | string[];
+  enrolledAt?: string;
+  lastSeen?: string | null;
+  webhook?: string;
+  inbox?: number;
   lastMessageInAtUtc: string | null;
   lastMessageOutAtUtc: string | null;
   lastDeckhandCallAtUtc: string | null;
   openTasks: number;
+}
+
+export interface MimirRequest {
+  id: string;
+  agent: string;
+  status: string;
+  at: string;
+  note?: string;
+  name?: string;
+  ip?: string;
 }

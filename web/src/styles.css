@@ -503,3 +503,4 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .ad-table a { color: var(--amber); }
 @media (max-width: 860px) { .au-layout { grid-template-columns: 1fr; } }
 .ad-target { font-size: 11px; color: var(--ink-dim); margin: -10px 0 14px; min-height: 1em; }
+.au-layout a, .admin-row a, .ad-columns a { color: var(--amber); }

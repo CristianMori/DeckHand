@@ -1,14 +1,17 @@
 import { api } from './api';
 
-// AUDIT: who reached the fleet and what they did. Left, the public-gateway
-// agents holding a token (live, last interaction); right, a log — one agent's
-// requests, or every machine's provenance log — where any request id opens
-// that request at every hop.
+// AUDIT: who reached the fleet and what they did. Left, the outside agents
+// (they live in Mimir, RAVEN's broker, with its own gateway); right, every
+// machine's provenance log, where any request id opens that request at every
+// hop and an agent's name filters to what it did in Deckhand.
+
+/** Mimir's own page: agents, access requests (accept / reject), its trail */
+export const MIMIR_ADMIN_URL = 'http://desktop-master:5102/admin/agents';
 
 const esc = (s: unknown) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-function fmtWhen(iso?: string): string {
+function fmtWhen(iso?: string | null): string {
   if (!iso) return 'never';
   const t = Date.parse(iso);
   const ago = Math.round((Date.now() - t) / 1000);
@@ -17,91 +20,55 @@ function fmtWhen(iso?: string): string {
 }
 
 const fmtTime = (iso: string) => new Date(iso).toLocaleString();
+// Mimir's times may come without a Z suffix: they are UTC
+const utc = (t?: string | null) => (t ? fmtWhen(/Z$|[+-]\d\d:\d\d$/.test(t) ? t : `${t}Z`) : 'never');
 
 /**
- * The public-gateway agents holding a valid token (enrolled, or a token
- * minted and not expired), live or not, with their last interaction. Shared
- * by ADMIN and AUDIT; `onPick` runs when one is clicked.
+ * The outside agents as Mimir sees them: enrolled ones (live, last
+ * interaction, open tasks, messages) and pending access requests, which are
+ * accepted on Mimir's page. Shared by ADMIN and AUDIT; `onPick` runs when an
+ * agent is clicked.
  */
 export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) => void): Promise<void> {
-  const [info, mimir] = await Promise.all([api.gatewayAgents().catch(() => null), api.mimirAgents().catch(() => null)]);
-  const viaMimir = new Map((mimir?.agents ?? []).map((m) => [m.id, m]));
-  // Mimir's times are UTC without a Z suffix
-  const utc = (t: string | null) => (t ? fmtWhen(/Z$/.test(t) ? t : `${t}Z`) : 'never');
-  if (!info) {
-    el.innerHTML = '<div class="empty-note">gateway machine not reachable</div>';
+  const mimir = await api.mimirAgents().catch(() => null);
+  if (!mimir) {
+    el.innerHTML = '<div class="empty-note">Mimir is not reachable</div>';
     return;
   }
-  if (!info.present) {
-    el.innerHTML = `<div class="empty-note">no gateway installed on ${esc(info.machine)}</div>`;
-    return;
-  }
-  if (!info.agents.length) {
-    el.innerHTML = '<div class="empty-note">no agent holds a valid token</div>';
+  const requests = (mimir.requests ?? []).filter((r) => r.status === 'requested' || r.status === 'accepted');
+  if (!mimir.agents.length && !requests.length) {
+    el.innerHTML = `<div class="empty-note">no outside agent enrolled · <a href="${MIMIR_ADMIN_URL}" target="_blank" rel="noopener">Mimir</a></div>`;
     return;
   }
   el.innerHTML = '';
-  for (const a of info.agents) {
+  for (const r of requests) {
+    // the user decides on Mimir's page; accepting only lets the agent enroll
     const row = document.createElement('div');
     row.className = 'resume-row admin-row';
-    if (a.request && (a.status === 'requested' || a.status === 'accepted')) {
-      // an access request: the user decides. Accepting only lets the agent enroll;
-      // what it may reach still comes from the user's trust entries in fleet memory.
-      const r = a.request;
-      row.innerHTML = `
-        <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${
-          a.status === 'requested' ? '<span class="chip waiting">PENDING ACCEPTANCE</span>' : '<span class="chip idle">ACCEPTED</span>'
-        }</div>
-        <div class="resume-snippet">${esc(r.name)} — “${esc(r.reason)}”</div>
-        <div class="resume-snippet">asked ${esc(fmtWhen(r.createdAt))} from ${esc(r.ip)}</div>
-        <div class="resume-snippet">${
-          a.status === 'accepted'
-            ? `may mint its token until ${esc(new Date(r.mintUntil ?? '').toLocaleTimeString())}`
-            : 'accepting lets it enroll only: access comes from your trust entries in fleet memory'
-        }</div>
-        <div class="card-actions"></div>`;
-      const actions = row.querySelector('.card-actions') as HTMLElement;
-      const button = (label: string, cls: string, decision: 'accept' | 'reject') => {
-        const b = document.createElement('button');
-        b.className = cls;
-        b.textContent = label;
-        b.onclick = async (ev) => {
-          ev.stopPropagation();
-          b.disabled = true;
-          await api.gatewayDecide(r.id, decision).catch((err) => alert(`${label} failed: ${err instanceof Error ? err.message : err}`));
-          void renderGatewayAgents(el, onPick);
-        };
-        actions.appendChild(b);
-      };
-      if (a.status === 'requested') button('ACCEPT', 'primary-btn', 'accept');
-      button('REJECT', 'ghost-btn danger', 'reject');
-      el.appendChild(row);
-      continue;
-    }
+    row.innerHTML = `
+      <div class="resume-row-top"><span class="resume-proj">${esc(r.agent)}</span>${
+        r.status === 'requested' ? '<span class="chip waiting">PENDING ACCEPTANCE</span>' : '<span class="chip idle">ACCEPTED</span>'
+      }</div>
+      <div class="resume-snippet">${esc(r.name ?? '')}${r.note ? ` — “${esc(r.note)}”` : ''}</div>
+      <div class="resume-snippet">asked ${esc(fmtWhen(r.at))}${r.ip ? ` from ${esc(r.ip)}` : ''}</div>
+      <div class="resume-snippet"><a href="${MIMIR_ADMIN_URL}" target="_blank" rel="noopener">accept or reject on Mimir's page</a></div>`;
+    el.appendChild(row);
+  }
+  for (const a of mimir.agents) {
+    const row = document.createElement('div');
+    row.className = 'resume-row admin-row';
     const chip = a.live
       ? '<span class="chip working">LIVE</span>'
       : a.status === 'enrolled'
         ? '<span class="chip idle">ENROLLED</span>'
-        : '<span class="chip waiting">TOKEN PENDING</span>';
+        : `<span class="chip waiting">${esc(String(a.status ?? '').toUpperCase())}</span>`;
     row.innerHTML = `
       <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${chip}</div>
-      <div class="resume-snippet">last interaction: ${esc(fmtWhen(a.lastSeen))}</div>
-      <div class="resume-snippet">${esc(a.requests)} request${a.requests === 1 ? "" : "s"}${a.denied ? ` · ${esc(a.denied)} refused` : ''}${a.lastRequest ? ` · last ${esc(a.lastRequest)}` : ''}</div>
-      <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : a.tokenExpiresAt ? `token expires ${esc(fmtTime(a.tokenExpiresAt))}` : ''}</div>
-      ${
-        a.status === 'enrolled'
-          ? `<div class="resume-snippet">messages: ${a.webhook ? 'webhook set' : 'no webhook (inbox only)'}${a.inbox ? ` · <b>${esc(a.inbox)} waiting in inbox</b>` : ''}${
-              a.lastMessage ? ` · last ${a.lastMessage.delivered === 'webhook' ? 'pushed' : 'queued'} ${esc(fmtWhen(a.lastMessage.at))}${a.lastMessage.webhookError ? ` (push failed: ${esc(a.lastMessage.webhookError)})` : ''}` : ''
-            }</div>`
-          : ''
-      }${(() => {
-        const m = viaMimir.get(a.id);
-        if (!m) return mimir ? '' : '<div class="resume-snippet">Mimir: not reachable</div>';
-        const access = Array.isArray(m.deckhandAccess) ? m.deckhandAccess.join(', ') : m.deckhandAccess;
-        return `<div class="resume-snippet">Mimir: ${m.openTasks ? `<b>${esc(m.openTasks)} open task${m.openTasks === 1 ? '' : 's'}</b>` : 'no open tasks'} · Deckhand access: ${esc(access)}</div>
-          <div class="resume-snippet">last message in ${esc(utc(m.lastMessageInAtUtc))} · out ${esc(utc(m.lastMessageOutAtUtc))} · last Deckhand call ${esc(utc(m.lastDeckhandCallAtUtc))}</div>`;
-      })()}`;
-    row.title = "show this agent's requests in AUDIT";
+      <div class="resume-snippet">last interaction: ${esc(utc(a.lastSeen))}</div>
+      <div class="resume-snippet">${a.openTasks ? `<b>${esc(a.openTasks)} open task${a.openTasks === 1 ? '' : 's'}</b>` : 'no open tasks'} · last Deckhand call ${esc(utc(a.lastDeckhandCallAtUtc))}</div>
+      <div class="resume-snippet">messages in ${esc(utc(a.lastMessageInAtUtc))} · out ${esc(utc(a.lastMessageOutAtUtc))} · ${a.webhook ? 'webhook set' : 'no webhook (inbox only)'}${a.inbox ? ` · <b>${esc(a.inbox)} in inbox</b>` : ''}</div>
+      <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : ''}</div>`;
+    row.title = 'show what this agent did in Deckhand (AUDIT)';
     row.onclick = () => onPick(a.id);
     el.appendChild(row);
   }
@@ -113,8 +80,9 @@ export async function openAuditDialog(opts: { agent?: string } = {}) {
     <h2>AUDIT</h2>
     <div class="au-layout">
       <section>
-        <div class="ad-col-title">GATEWAY AGENTS</div>
-        <div class="resume-list" id="au-agents"><div class="empty-note">querying gateway…</div></div>
+        <div class="ad-col-title">OUTSIDE AGENTS (MIMIR)</div>
+        <div class="resume-list" id="au-agents"><div class="empty-note">asking Mimir…</div></div>
+        <div class="resume-snippet"><a href="${MIMIR_ADMIN_URL}" target="_blank" rel="noopener">Mimir's trail: tasks, messages, every hop</a></div>
       </section>
       <section class="au-main">
         <div class="ad-log-head">
@@ -136,10 +104,7 @@ export async function openAuditDialog(opts: { agent?: string } = {}) {
   const filterEl = dialog.querySelector('#au-log-filter') as HTMLInputElement;
   (dialog.querySelector('#au-close') as HTMLButtonElement).onclick = () => dialog.close();
 
-  // ── log pane: one gateway agent's requests, or every machine's provenance log
-  let logMode: { kind: 'fleet' } | { kind: 'agent'; id: string } = { kind: 'fleet' };
   let logSeq = 0;
-
   const wireTraceLinks = () =>
     logEl.querySelectorAll<HTMLAnchorElement>('.ad-trace').forEach((a) => {
       a.onclick = (ev) => {
@@ -148,18 +113,17 @@ export async function openAuditDialog(opts: { agent?: string } = {}) {
       };
     });
 
-  async function showFleetLog(opts: { id?: string } = {}) {
-    logMode = { kind: 'fleet' };
+  async function showFleetLog(o: { id?: string; title?: string } = {}) {
     const seq = ++logSeq;
-    logTitle.textContent = opts.id ? `REQUEST ${opts.id.slice(0, 8)} — EVERY HOP` : 'CROSS REQUESTS — ALL MACHINES';
+    logTitle.textContent = o.title ?? (o.id ? `REQUEST ${o.id.slice(0, 8)} — EVERY HOP` : 'CROSS REQUESTS — ALL MACHINES');
     const fleet = await api.fleet().catch(() => []);
     const machines = fleet.filter((m) => m.connected).map((m) => m.machine);
     const q = filterEl.value.trim();
-    const results = await Promise.all(machines.map((m) => api.provenance(m, { q: q || undefined, id: opts.id, limit: 300 }).catch(() => [])));
+    const results = await Promise.all(machines.map((m) => api.provenance(m, { q: q || undefined, id: o.id, limit: 300 }).catch(() => [])));
     if (seq !== logSeq) return;
     const rows = results.flat().sort((a, b) => b.at.localeCompare(a.at)).slice(0, 500);
     if (!rows.length) {
-      logEl.innerHTML = '<div class="empty-note">nothing logged yet</div>';
+      logEl.innerHTML = '<div class="empty-note">nothing logged</div>';
       return;
     }
     logEl.innerHTML = `<table class="ad-table"><thead><tr>
@@ -177,45 +141,26 @@ export async function openAuditDialog(opts: { agent?: string } = {}) {
     wireTraceLinks();
   }
 
-  async function showAgentLog(id: string) {
-    logMode = { kind: 'agent', id };
-    const seq = ++logSeq;
-    logTitle.textContent = `GATEWAY AGENT ${id.toUpperCase()} — REQUESTS`;
-    const lines = await api.gatewayAgentLog(id, 500).catch(() => []);
-    if (seq !== logSeq) return;
-    const q = filterEl.value.trim().toLowerCase();
-    const rows = q ? lines.filter((l) => JSON.stringify(l).toLowerCase().includes(q)) : lines;
-    if (!rows.length) {
-      logEl.innerHTML = '<div class="empty-note">no requests logged for this agent</div>';
-      return;
-    }
-    logEl.innerHTML = `<table class="ad-table"><thead><tr>
-      <th>WHEN</th><th>FROM</th><th>REQUEST</th><th>STATUS</th><th>WHAT</th><th>ID</th>
-    </tr></thead><tbody>${rows
-      .map((l) => {
-        const what = l.event ? `${l.event}${l.authError ? `: ${l.authError}` : ''}` : (l.authError ?? l.text ?? '');
-        const req = l.method ? `${l.method} ${l.path}` : '';
-        return `<tr class="${(l.status ?? 200) >= 400 ? 'bad' : ''}"><td>${esc(fmtTime(l.at))}</td><td>${esc(l.ip ?? '')}</td>
-          <td>${esc(req)}</td><td>${esc(l.status ?? '')}${l.ms !== undefined ? ` · ${esc(l.ms)}ms` : ''}</td><td>${esc(what)}</td>
-          <td>${l.req ? `<a href="#" class="ad-trace" data-id="${esc(l.req)}">${esc(l.req.slice(0, 8))}</a>` : ''}</td></tr>`;
-      })
-      .join('')}</tbody></table>`;
-    // a gateway request's id is the id it carries through the hubs
-    wireTraceLinks();
-  }
+  /** What an agent did in Deckhand: Mimir's calls on its behalf carry caller gateway:<agent>. */
+  const showAgent = (id: string) => {
+    filterEl.value = `gateway:${id}`;
+    void showFleetLog({ title: `AGENT ${id.toUpperCase()} — WHAT IT DID IN DECKHAND` });
+  };
 
   let filterTimer: number | undefined;
   filterEl.oninput = () => {
     window.clearTimeout(filterTimer);
-    filterTimer = window.setTimeout(() => void (logMode.kind === 'agent' ? showAgentLog(logMode.id) : showFleetLog()), 300);
+    filterTimer = window.setTimeout(() => void showFleetLog(), 300);
   };
-  (dialog.querySelector('#au-log-all') as HTMLButtonElement).onclick = () => void showFleetLog();
+  (dialog.querySelector('#au-log-all') as HTMLButtonElement).onclick = () => {
+    filterEl.value = '';
+    void showFleetLog();
+  };
 
-  // ── gateway agents column
-  const refreshAgents = () => renderGatewayAgents(agentsEl, (id) => void showAgentLog(id));
-
+  const refreshAgents = () => renderGatewayAgents(agentsEl, showAgent);
   void refreshAgents();
-  void (opts.agent ? showAgentLog(opts.agent) : showFleetLog());
+  if (opts.agent) showAgent(opts.agent);
+  else void showFleetLog();
   // keep LIVE and last-interaction current while the window is open
   const agentTimer = window.setInterval(() => {
     if (!dialog.open) return window.clearInterval(agentTimer);

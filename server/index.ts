@@ -46,7 +46,6 @@ import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
-import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, gatewayRequests, revokeAgent, sendAgentMessage } from './gatewayAgents.js';
 import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
@@ -281,85 +280,8 @@ app.get('/api/provenance', (req, res) => {
   );
 });
 
-// Public-gateway clients and their request logs, from the machine that runs the gateway.
-app.get('/api/gateway/agents', (req, res) => {
-  if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
-  res.json({ machine: discovery.selfName, present: gatewayPresent(), agents: gatewayPresent() ? gatewayAgents() : [], requests: gatewayPresent() ? gatewayRequests() : [] });
-});
-app.get('/api/gateway/agents/:id/log', (req, res) => {
-  if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
-  res.json(gatewayAgentLog(String(req.params.id), Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000)));
-});
-
-// ACCEPT / REJECT an agent's access request. Accepting only lets it mint a
-// token and enroll (prove who it is); what it may reach is decided by the
-// user's own trust entries in fleet memory, never by accepting.
-app.post('/api/gateway/requests/:id/:decision', async (req, res) => {
-  const decision = String(req.params.decision);
-  const id = String(req.params.id);
-  if ((decision !== 'accept' && decision !== 'reject') || !/^[0-9a-f-]{36}$/.test(id)) return res.status(400).json({ error: 'POST /api/gateway/requests/<request id>/accept|reject' });
-  if (!gatewayPresent()) {
-    const peer = federation.peerByMachine(STORE_MACHINE);
-    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
-    const out = await federation.forward(peer, req.path, { method: 'POST' }).catch(() => null);
-    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
-  }
-  try {
-    res.json(await decideRequest(id, decision));
-  } catch (err) {
-    res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-// A message to a gateway agent: pushed to its webhook, or left in its inbox.
-// Mimir (the broker) may message any enrolled agent: delegating a task to an
-// agent the user accepted is what accepting it approved. Anyone else may only
-// message agents with the user's trust entry in fleet memory.
-app.post('/api/gateway/agents/:id/messages', express.json({ type: () => true, limit: '64kb' }), async (req, res) => {
-  const clientId = String(req.params.id).toLowerCase();
-  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId) || !text) return res.status(400).json({ error: 'POST /api/gateway/agents/<client>/messages {"text": "...", "taskId"?: "...", "inReplyTo"?: "..."}' });
-  const extra: { taskId?: string; inReplyTo?: string } = {};
-  for (const k of ['taskId', 'inReplyTo'] as const) if (typeof req.body?.[k] === 'string' && req.body[k]) extra[k] = String(req.body[k]).slice(0, 200);
-  if (!gatewayPresent()) {
-    const peer = federation.peerByMachine(STORE_MACHINE);
-    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
-    const out = await federation.forward(peer, req.path, { method: 'POST', body: { text, ...extra } }).catch(() => null);
-    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
-  }
-  const from = String(req.headers['x-deckhand-caller'] ?? '') || (/mozilla/i.test(String(req.headers['user-agent'] ?? '')) ? 'dashboard' : 'api');
-  if (from !== 'mimir') {
-    // the trust rule, outward: nothing leaves for an agent without the user's trust entry
-    const trusted = (await recall('trusted-agent', 200).catch(() => [])).some((m) => {
-      const tags = m.tags.toLowerCase().split(/[\s,]+/);
-      return m.instructed && !m.deleted && !m.originMachine.startsWith('gateway:') && !m.originSession.startsWith('gateway:') &&
-        tags.includes('trusted-agent') && (tags.includes(`client:${clientId}`) || tags.includes('client:*'));
-    });
-    if (!trusted) return res.status(403).json({ error: `${clientId} has no trust entry in fleet memory: not sending (hand Mimir a task instead)` });
-  }
-  try {
-    res.json(await sendAgentMessage(clientId, from, text, extra));
-  } catch (err) {
-    res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-// Revoke a gateway agent: its key (and any pending token) go at once.
-app.post('/api/gateway/agents/:id/revoke', async (req, res) => {
-  const clientId = String(req.params.id).toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId)) return res.status(400).json({ error: 'bad client id' });
-  if (!gatewayPresent()) {
-    const peer = federation.peerByMachine(STORE_MACHINE);
-    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
-    const out = await federation.forward(peer, req.path, { method: 'POST' }).catch(() => null);
-    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
-  }
-  try {
-    res.json({ revoked: clientId, note: await revokeAgent(clientId) });
-  } catch (err) {
-    res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+// Outside agents live in Mimir (its own service and gateway); Deckhand only
+// hands it tasks and shows its view of the agents.
 
 // Mimir: hand it a task (a session's reply address travels along), follow a
 // task, and see its view of the agents. Answered on the machine holding
