@@ -58,10 +58,14 @@ export function responseCanonical(status, nonce, body) {
 }
 
 /**
- * A message pushed to a client's webhook (gateway → client), header X-DH-Signature:
- *   canonical = "DH2-PUSH\n" MESSAGE_ID "\n" TIMESTAMP "\n" hex(sha256(body bytes as sent))
- * The body is an envelope sealed to the client's X25519 key with
- * DIRECTION = "push", METHOD-or-STATUS = "MSG", path "", NONCE = the message id.
+ * A message pushed to a client's webhook (gateway → client). The body carries
+ * everything (receivers may drop custom headers):
+ *   {"v":2,"kind":"deckhand-push","id":MESSAGE_ID,"ts":TIMESTAMP,"sig":SIGNATURE,"sealed":ENVELOPE_STRING}
+ *   SIGNATURE = gateway Ed25519 over
+ *     "DH2-PUSH\n" MESSAGE_ID "\n" TIMESTAMP "\n" hex(sha256(ENVELOPE_STRING))
+ *   ENVELOPE_STRING = an envelope sealed to the client's X25519 key with
+ *     DIRECTION = "push", METHOD-or-STATUS = "MSG", path "", NONCE = the message id.
+ * X-DH-Message / X-DH-Timestamp / X-DH-Signature headers repeat id, ts and sig.
  */
 export function pushCanonical(messageId, timestamp, body) {
   return ['DH2-PUSH', messageId, String(timestamp), sha256hex(body ?? '')].join('\n');

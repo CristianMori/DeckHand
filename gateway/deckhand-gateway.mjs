@@ -255,12 +255,16 @@ function postWebhook(url, body, headers) {
 
 /** Push one message: sealed to the client's key, signed by the gateway's. */
 async function pushMessage(client, msg, keys) {
-  const body = seal(JSON.stringify(msg), publicFromRaw(client.x25519, 'X25519'), { direction: 'push', methodOrStatus: 'MSG', nonce: msg.id });
+  const sealed = seal(JSON.stringify(msg), publicFromRaw(client.x25519, 'X25519'), { direction: 'push', methodOrStatus: 'MSG', nonce: msg.id });
   const ts = String(Math.floor(Date.now() / 1000));
+  const sig = signText(keys.edPriv, pushCanonical(msg.id, ts, sealed));
+  // id, timestamp and signature travel inside the body too: some receivers
+  // (hosted automation endpoints) drop custom headers
+  const body = JSON.stringify({ v: 2, kind: 'deckhand-push', id: msg.id, ts, sig, sealed });
   await postWebhook(client.webhook, body, {
     'X-DH-Message': msg.id,
     'X-DH-Timestamp': ts,
-    'X-DH-Signature': signText(keys.edPriv, pushCanonical(msg.id, ts, body)),
+    'X-DH-Signature': sig,
     // the receiver's own secret, when it wants one (set by the client, never shown back)
     ...(client.webhookAuthorization ? { Authorization: client.webhookAuthorization } : {}),
   });

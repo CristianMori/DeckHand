@@ -549,10 +549,11 @@ certificate, no open port); the hub's 5959 never faces the internet.
   authorization?}`, https only, never a private/tailnet address; a test push
   answers at once; `authorization` is the receiver's own Authorization header
   value, sent with every push, stored root-only, never shown back or logged),
-  sealed to the agent's key and signed by the gateway's
-  (`X-DH-Message`, `X-DH-Timestamp`, `X-DH-Signature` over
-  `DH2-PUSH\nID\nTIMESTAMP\nhex(sha256(body))`; `openPush()` in the reference
-  client checks and opens it). When the push fails, or there is no webhook,
+  sealed to the agent's key and signed by the gateway's. The body carries
+  everything, for receivers that drop custom headers:
+  `{"v":2,"kind":"deckhand-push","id","ts","sig","sealed"}`, `sig` over
+  `DH2-PUSH\nID\nTS\nhex(sha256(sealed))` (the `X-DH-*` headers repeat id,
+  ts and sig); `openPush()` in the reference client checks and opens it. When the push fails, or there is no webhook,
   the message waits in the agent's inbox: `GET /v1/inbox`, then
   `POST /v1/inbox/ack {ids}`. Agents should collect the inbox when they come
   online and periodically. ADMIN shows each agent's webhook, inbox count and
