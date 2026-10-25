@@ -187,3 +187,14 @@ export interface ControlMessage {
   detail?: string;
   machine?: string;
 }
+
+/** Mimir's view of one outside agent (times are UTC without a Z) */
+export interface MimirAgent {
+  id: string;
+  available: boolean;
+  deckhandAccess: string | string[];
+  lastMessageInAtUtc: string | null;
+  lastMessageOutAtUtc: string | null;
+  lastDeckhandCallAtUtc: string | null;
+  openTasks: number;
+}

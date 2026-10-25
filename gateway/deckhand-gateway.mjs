@@ -10,9 +10,12 @@
 // Ed25519 + X25519 public keys with it and gets the gateway's back. No private
 // key ever crosses the wire. From then on every request is Ed25519-signed
 // (replays refused) and every body travels sealed to the other side's X25519
-// key (see wire.mjs). Only the routes below exist, and they reach only
-// Claude/Codex sessions without auto-yes, in folders the user's trust entries
-// in fleet memory grant that client.
+// key (see wire.mjs). Mimir (RAVEN's broker, desktop-master:5102) owns the
+// conversations: an agent's Deckhand calls (sessions, fleet, memories) are
+// forwarded to Mimir, which applies the user's trust entries; an agent's
+// messages (POST /v1/messages) go to Mimir's inbound, queued here while Mimir
+// is unreachable. The gateway keeps enrollment, the crypto, the webhook push
+// and the inbox.
 //
 //   node deckhand-gateway.mjs serve
 //   node deckhand-gateway.mjs bootstrap <id>   one-time enrollment token (revokes <id>'s current key)
@@ -42,14 +45,15 @@
 //   bootstrap-<id>.txt the token for the user to hand over (delete once handed over)
 //   requests.json      access requests: [{id, clientId, name, reason, ip, status, ...}]
 //   inbox/<client>.json messages waiting for that client (push failed or no webhook)
-//   config.json        {port, hubUrl, publicUrl, limits...}
-// Which sessions a client reaches is not configured here: it comes from the
-// user's trust entries in fleet memory (see trustFor).
+//   mimir.key          the sb_ key Mimir issued to the gateway (scope "agents")
+//   mimir-outbox.json  agent messages waiting for Mimir (it was unreachable)
+//   config.json        {port, mimirUrl, mimirKeyFile, publicUrl, limits...}
+// Which sessions a client reaches is not configured here: Mimir decides, from
+// the user's trust entries in fleet memory.
 // Audit log: one JSON line per request in DECKHAND_GATEWAY_LOG (default /var/log/deckhand-gateway/audit.log).
 //
 // No dependencies.
 
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { lookup as dnsLookup } from 'node:dns';
@@ -96,7 +100,10 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
 
 const DEFAULTS = {
   port: 5990,
-  hubUrl: 'http://127.0.0.1:5959',
+  /** Mimir, which brokers every agent conversation */
+  mimirUrl: 'http://100.88.229.93:5102',
+  /** the sb_ key Mimir issued to the gateway (scope "agents"); root-only */
+  mimirKeyFile: '',
   /** public base URL, written into the bootstrap file for the client */
   publicUrl: '',
   maxBodyBytes: 64 * 1024,
@@ -270,15 +277,20 @@ async function pushMessage(client, msg, keys) {
   });
 }
 
-/** CLI `message <client>`: push, or leave in the inbox when the push fails. Prints the outcome as JSON. */
-async function message(clientId) {
-  const input = JSON.parse(readFileSync(0, 'utf8'));
+/**
+ * Deliver one message to a client: push to its webhook, or leave it in its
+ * inbox when the push fails. extra: taskId / inReplyTo (task replies quote
+ * them back), kind ("message" | "receipt"), regarding (a receipt's message).
+ */
+async function deliverToClient(clientId, from, text, extra = {}) {
   const client = clients().find((c) => c.id === clientId);
   if (!client) throw new Error(`${clientId} is not an enrolled gateway client`);
-  const text = String(input.text ?? '').trim();
+  text = String(text ?? '').trim();
   if (!text) throw new Error('message text is empty');
   if (text.length > MESSAGE_MAX) throw new Error(`message is over ${MESSAGE_MAX} characters`);
-  const msg = { id: randomUUID(), at: new Date().toISOString(), from: String(input.from ?? 'unknown').slice(0, 200), text };
+  const fields = {};
+  for (const k of ['taskId', 'inReplyTo', 'kind', 'regarding']) if (typeof extra[k] === 'string' && extra[k]) fields[k] = extra[k].slice(0, 200);
+  const msg = { id: randomUUID(), at: new Date().toISOString(), from: String(from ?? 'unknown').slice(0, 200), text, ...fields };
   let delivered = 'inbox';
   let webhookError;
   if (client.webhook) {
@@ -290,8 +302,130 @@ async function message(clientId) {
     }
   }
   if (delivered === 'inbox') writeInbox(clientId, [...readInbox(clientId), { ...msg, ...(webhookError ? { webhookError } : {}) }]);
-  audit({ event: 'message', client: clientId, message: msg.id, from: msg.from, delivered, ...(webhookError ? { webhookError } : {}) });
-  console.log(JSON.stringify({ id: msg.id, delivered, ...(webhookError ? { webhookError } : {}) }));
+  audit({ event: 'message', client: clientId, message: msg.id, from: msg.from, delivered, ...fields, ...(webhookError ? { webhookError } : {}) });
+  return { id: msg.id, delivered, ...(webhookError ? { webhookError } : {}) };
+}
+
+/** CLI `message <client>` (JSON {from, text, taskId?, inReplyTo?} on stdin): prints the outcome as JSON. */
+async function message(clientId) {
+  const input = JSON.parse(readFileSync(0, 'utf8'));
+  console.log(JSON.stringify(await deliverToClient(clientId, input.from, input.text, input)));
+}
+
+// --------------------------------------------------------------- Mimir link
+
+const MIMIR_OUTBOX = join(DIR, 'mimir-outbox.json');
+/** how long a message waits for Mimir before the agent is told it was not delivered */
+const MIMIR_QUEUE_MS = 24 * 3600_000;
+
+function mimirKey(cfg) {
+  const file = cfg.mimirKeyFile || join(DIR, 'mimir.key');
+  try {
+    return readFileSync(file, 'utf8').trim();
+  } catch {
+    throw new Error(`no Mimir key at ${file}`);
+  }
+}
+
+async function mimirPost(cfg, path, body, timeoutMs) {
+  const res = await fetch(`${cfg.mimirUrl.replace(/\/+$/, '')}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${mimirKey(cfg)}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text();
+  let data = text;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    /* text answer */
+  }
+  return { status: res.status, data };
+}
+
+/** Hand one agent message to Mimir; true once Mimir has stored it. */
+async function toMimirInbound(cfg, m) {
+  try {
+    const out = await mimirPost(cfg, '/api/v1/agents/inbound', m, 15_000);
+    return out.status >= 200 && out.status < 300 ? out.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Retry queued messages; on delivery or after 24 h, tell the agent which. */
+async function flushMimirOutbox(cfg) {
+  const queued = readJson(MIMIR_OUTBOX, []);
+  if (!queued.length) return;
+  const keep = [];
+  for (const q of queued) {
+    const now = Date.now();
+    if (now - Date.parse(q.queuedAt) > MIMIR_QUEUE_MS) {
+      audit({ event: 'mimir-expired', client: q.message.agent, message: q.message.messageId });
+      await deliverToClient(q.message.agent, 'gateway', `Your message ${q.message.messageId} was NOT delivered: Mimir was unreachable for 24 hours. Send it again if it still matters.`, { kind: 'receipt', regarding: q.message.messageId }).catch(() => {});
+      continue;
+    }
+    if (now < (q.nextAttemptAt ?? 0)) {
+      keep.push(q);
+      continue;
+    }
+    if (await toMimirInbound(cfg, q.message)) {
+      audit({ event: 'mimir-delivered', client: q.message.agent, message: q.message.messageId, attempts: (q.attempts ?? 0) + 1 });
+      await deliverToClient(q.message.agent, 'gateway', `Your message ${q.message.messageId} was delivered to Mimir.`, { kind: 'receipt', regarding: q.message.messageId }).catch(() => {});
+      continue;
+    }
+    const attempts = (q.attempts ?? 0) + 1;
+    keep.push({ ...q, attempts, nextAttemptAt: now + Math.min(30_000 * 2 ** attempts, 30 * 60_000) });
+  }
+  writePrivate(MIMIR_OUTBOX, JSON.stringify(keep, null, 2));
+}
+
+/** POST /v1/messages: to Mimir now, or queued (202) while it is away. */
+async function agentMessage(cfg, clientId, body, requestId) {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (!text) throw new HttpError(400, 'text is required');
+  if (text.length > MESSAGE_MAX) throw new HttpError(400, `text is over ${MESSAGE_MAX} characters`);
+  const m = { messageId: requestId, agent: clientId, at: new Date().toISOString(), text };
+  for (const k of ['taskId', 'inReplyTo']) if (typeof body[k] === 'string' && body[k]) m[k] = body[k].slice(0, 200);
+  const stored = await toMimirInbound(cfg, m);
+  if (stored) return [200, { status: 'delivered', messageId: m.messageId, disposition: stored.disposition ?? null }];
+  writePrivate(MIMIR_OUTBOX, JSON.stringify([...readJson(MIMIR_OUTBOX, []), { message: m, queuedAt: m.at, attempts: 0, nextAttemptAt: Date.now() + 30_000 }], null, 2));
+  return [202, { status: 'queued', messageId: m.messageId, note: 'Mimir is unreachable: the message waits here; you get a receipt when it is delivered, or after 24 h if it never is' }];
+}
+
+/** Agent Deckhand calls Mimir answers for (it applies the user's trust entries). */
+const FORWARD_ROUTES = [
+  ['GET', /^\/v1\/sessions$/],
+  ['GET', /^\/v1\/fleet$/],
+  ['GET', /^\/v1\/agents$/],
+  ['GET', /^\/v1\/projects$/],
+  ['GET', /^\/v1\/sessions\/[^/]+$/],
+  ['GET', /^\/v1\/sessions\/[^/]+\/exchanges$/],
+  ['GET', /^\/v1\/sessions\/[^/]+\/last-reply$/],
+  ['GET', /^\/v1\/sessions\/[^/]+\/screen$/],
+  ['GET', /^\/v1\/sessions\/[^/]+\/wait$/],
+  ['POST', /^\/v1\/sessions\/[^/]+\/prompt$/],
+  ['GET', /^\/v1\/memories$/],
+  ['POST', /^\/v1\/memories$/],
+];
+
+/** Forward one agent call to Mimir and relay its answer verbatim. */
+async function forwardToMimir(cfg, clientId, requestId, method, url, body) {
+  // long waits: the call may block up to waitMs / timeoutMs (cap 15 min), plus margin
+  const wait = Math.min(Number(body?.waitMs ?? url.searchParams.get('timeoutMs') ?? 0) || 0, cfg.maxWaitMs);
+  try {
+    const out = await mimirPost(
+      cfg,
+      '/api/v1/agents/deckhand',
+      { requestId, agent: clientId, at: new Date().toISOString(), method, path: url.pathname, query: url.search.replace(/^\?/, ''), body: method === 'POST' ? body : null },
+      wait + 30_000 + 15_000,
+    );
+    if (out.status !== 200 || typeof out.data !== 'object' || out.data === null) return [502, { error: `Mimir answered ${out.status}` }];
+    return [Number(out.data.status) || 502, out.data.body ?? null];
+  } catch {
+    return [503, { error: 'Mimir is unreachable; try again later' }];
+  }
 }
 
 // ------------------------------------------------------------ access requests
@@ -476,100 +610,6 @@ function authenticate(req, raw, cfg) {
   return { client, nonce };
 }
 
-/** the request being served: its audit id and client, handed to the hub for its provenance log */
-const trace = new AsyncLocalStorage();
-
-async function hub(cfg, method, path, body, timeoutMs = 30_000) {
-  const t = trace.getStore();
-  const traceHeaders = t ? { 'X-Deckhand-Request': t.req, 'X-Deckhand-Caller': `gateway:${t.client}`, 'X-Deckhand-Via': 'gateway' } : {};
-  const res = await fetch(`${cfg.hubUrl}${path}`, {
-    method,
-    headers: { Accept: 'application/json', ...traceHeaders, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const text = await res.text();
-  let data = text;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    /* text answer */
-  }
-  if (!res.ok) throw new HttpError(res.status, typeof data === 'object' && data?.error ? data.error : `hub answered ${res.status}`);
-  return data;
-}
-
-const folderOf = (cwd) => String(cwd ?? '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
-
-/**
- * What a client may reach, read from fleet memory on every request: the trust
- * entries the user made (instructed, never written by a gateway client),
- * tagged `trusted-agent`, naming the client (`client:<id>`, or `client:*` for
- * every gateway client) and the folders (`folders:*`, or `folders:A,B`; none
- * given = every folder). No entry, no access; forgetting it revokes.
- */
-async function trustFor(cfg, clientId) {
-  const found = await hub(cfg, 'GET', `/api/memories?q=${encodeURIComponent('trusted-agent')}&limit=200`);
-  const access = { all: false, folders: new Set(), entries: [] };
-  for (const m of Array.isArray(found) ? found : []) {
-    const tags = String(m.tags ?? '').toLowerCase().split(/[\s,]+/).filter(Boolean);
-    const byGateway = String(m.originMachine ?? '').startsWith('gateway:') || String(m.originSession ?? '').startsWith('gateway:');
-    if (!m.instructed || m.deleted || byGateway || !tags.includes('trusted-agent')) continue;
-    if (!tags.includes(`client:${clientId.toLowerCase()}`) && !tags.includes('client:*')) continue;
-    access.entries.push(m.id);
-    // folder lists may span several tags: folders:A,B arrives split into "folders:a" and "b"
-    const raw = String(m.tags ?? '').match(/folders:([^\s]+)/i)?.[1];
-    if (!raw || raw === '*') access.all = true;
-    else for (const f of raw.split(',').filter(Boolean)) access.folders.add(f.toLowerCase());
-  }
-  return access;
-}
-
-/** May the gateway touch this session, for the client being served? */
-function allowed(s) {
-  const access = trace.getStore()?.access;
-  return (
-    !!s &&
-    !!access &&
-    (access.all || access.folders.has(folderOf(s.cwd).toLowerCase())) &&
-    // agent sessions only (a terminal would run the text as a command); auto-yes
-    // and bypass-permissions sessions are visible too: the user's choice
-    (s.agentType === 'claude' || s.agentType === 'codex')
-  );
-}
-
-/** Look the session up through the hub (any id form, any machine) and check it is allowed. */
-async function allowedSession(cfg, id) {
-  if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) throw new HttpError(400, 'bad session id');
-  let s;
-  try {
-    s = await hub(cfg, 'GET', `/api/sessions/${encodeURIComponent(id)}`);
-  } catch (err) {
-    if (err instanceof HttpError && err.status === 404) throw new HttpError(404, 'unknown session');
-    throw err;
-  }
-  // a session outside the client's trust looks exactly like one that does not exist
-  if (!allowed(s)) throw new HttpError(404, 'unknown session');
-  return s;
-}
-
-const pick = (s) => ({
-  hubId: s.hubId,
-  conversationId: s.claudeSessionId,
-  name: s.name,
-  folder: folderOf(s.cwd),
-  machine: s.machine,
-  agentType: s.agentType,
-  state: s.state,
-  detail: s.detail,
-  alive: s.alive,
-});
-
-const intParam = (v, def, min, max) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), min), max) : def;
-};
-
 /** The client's own mailbox: no trust entry needed. */
 const MAILBOX_ROUTES = [
   ['GET', /^\/v1\/webhook$/, async (_cfg, _m, _url, _body, clientId) => {
@@ -616,77 +656,6 @@ const MAILBOX_ROUTES = [
     const after = before.filter((m) => !ids.has(m.id));
     writeInbox(clientId, after);
     return { removed: before.length - after.length, remaining: after.length };
-  }],
-];
-
-/** The allowlist: [method, pattern, handler]. Anything else is 404. */
-const ROUTES = [
-  ['GET', /^\/v1\/sessions$/, async (cfg) => {
-    const all = await hub(cfg, 'GET', '/api/sessions');
-    return (Array.isArray(all) ? all : []).filter((s) => allowed(s)).map(pick);
-  }],
-  ['GET', /^\/v1\/fleet$/, async (cfg) => {
-    const ms = await hub(cfg, 'GET', '/api/fleet');
-    return (Array.isArray(ms) ? ms : []).map((m) => ({ machine: m.machine, connected: m.connected, self: m.self }));
-  }],
-  ['GET', /^\/v1\/agents$/, async (cfg) => hub(cfg, 'GET', '/api/agents')],
-  ['GET', /^\/v1\/projects$/, async (cfg) => {
-    // the folders this client's trust reaches that have a session in them
-    const all = await hub(cfg, 'GET', '/api/sessions');
-    return [...new Set((Array.isArray(all) ? all : []).filter((s) => allowed(s)).map((s) => folderOf(s.cwd)))].sort();
-  }],
-  ['GET', /^\/v1\/sessions\/([^/]+)$/, async (cfg, m) => pick(await allowedSession(cfg, m[1]))],
-  ['GET', /^\/v1\/sessions\/([^/]+)\/exchanges$/, async (cfg, m, url) => {
-    const s = await allowedSession(cfg, m[1]);
-    return hub(cfg, 'GET', `/api/sessions/${s.hubId}/exchanges?n=${intParam(url.searchParams.get('n'), 5, 1, 50)}`);
-  }],
-  ['GET', /^\/v1\/sessions\/([^/]+)\/last-reply$/, async (cfg, m) => {
-    const s = await allowedSession(cfg, m[1]);
-    const es = await hub(cfg, 'GET', `/api/sessions/${s.hubId}/exchanges?n=1`);
-    return { ...pick(s), exchange: Array.isArray(es) ? (es[0] ?? null) : null };
-  }],
-  ['GET', /^\/v1\/sessions\/([^/]+)\/screen$/, async (cfg, m) => {
-    const s = await allowedSession(cfg, m[1]);
-    return { screen: await hub(cfg, 'GET', `/api/sessions/${s.hubId}/screen`) };
-  }],
-  ['GET', /^\/v1\/sessions\/([^/]+)\/wait$/, async (cfg, m, url) => {
-    const s = await allowedSession(cfg, m[1]);
-    const t = intParam(url.searchParams.get('timeoutMs'), 60_000, 1_000, cfg.maxWaitMs);
-    const until = url.searchParams.get('until') === 'idle' ? 'idle' : 'settled';
-    return hub(cfg, 'GET', `/api/sessions/${s.hubId}/wait?until=${until}&timeout=${t}`, undefined, t + 30_000);
-  }],
-  ['POST', /^\/v1\/sessions\/([^/]+)\/prompt$/, async (cfg, m, _url, body, clientId) => {
-    const s = await allowedSession(cfg, m[1]);
-    const text = typeof body.text === 'string' ? body.text.trim() : '';
-    if (!text) throw new HttpError(400, 'text is required');
-    if (text.length > 20_000) throw new HttpError(400, 'text is over 20000 characters');
-    const out = { text: `[Deckhand gateway, client ${clientId}] ${text}`, queue: body.queue === true };
-    if (body.waitMs !== undefined) out.wait = intParam(body.waitMs, 0, 0, cfg.maxWaitMs);
-    const r = await hub(cfg, 'POST', `/api/sessions/${s.hubId}/prompt`, out, (out.wait ?? 0) + 30_000);
-    return { ...pick({ ...s, ...r }), reply: r.reply ?? null, timedOut: !!r.timedOut };
-  }],
-  ['GET', /^\/v1\/memories$/, async (cfg, _m, url) => {
-    const q = url.searchParams.get('q') ?? '';
-    return hub(cfg, 'GET', `/api/memories?q=${encodeURIComponent(q.slice(0, 200))}&limit=${intParam(url.searchParams.get('limit'), 20, 1, 50)}`);
-  }],
-  ['POST', /^\/v1\/memories$/, async (cfg, _m, _url, body, clientId) => {
-    const fact = typeof body.fact === 'string' ? body.fact.trim() : '';
-    if (!fact) throw new HttpError(400, 'fact is required');
-    const scope = body.scope === 'project' ? 'project' : 'global';
-    const project = scope === 'project' ? String(body.project ?? '') : undefined;
-    const access = trace.getStore()?.access;
-    if (scope === 'project' && !(access?.all || access?.folders.has(project.toLowerCase()))) {
-      throw new HttpError(400, 'project must be a folder this client is trusted with');
-    }
-    return hub(cfg, 'POST', '/api/memories', {
-      fact,
-      scope,
-      project,
-      tags: typeof body.tags === 'string' ? body.tags : '',
-      instructed: false,
-      originSession: `gateway:${clientId}`,
-      originMachine: `gateway:${clientId}`,
-    });
   }],
 ];
 
@@ -810,8 +779,10 @@ async function handle(req, res, keys) {
   rate.set(client.id, window);
 
   const url = new URL(req.url ?? '/', 'http://gateway');
-  const route = [...ROUTES, ...MAILBOX_ROUTES].find(([method, re]) => method === req.method && re.test(url.pathname));
-  if (!route) return reply(404, { error: 'no such route' });
+  const mailbox = MAILBOX_ROUTES.find(([method, re]) => method === req.method && re.test(url.pathname));
+  const forward = FORWARD_ROUTES.some(([method, re]) => method === req.method && re.test(url.pathname));
+  const messages = req.method === 'POST' && url.pathname === '/v1/messages';
+  if (!mailbox && !forward && !messages) return reply(404, { error: 'no such route' });
 
   let body = {};
   if (raw.length) {
@@ -821,14 +792,18 @@ async function handle(req, res, keys) {
       return reply(400, { error: 'body must be a sealed envelope for this request' });
     }
   }
+  const said = req.method === 'POST' ? { text: String(body?.text ?? body?.fact ?? '').slice(0, 200) } : {};
   try {
-    // trust is looked up fresh for every request: a forgotten trust entry locks the client out at once
-    const access = await trustFor(cfg, client.id);
-    const data = await trace.run({ req: log.req, client: client.id, access }, () => route[2](cfg, url.pathname.match(route[1]), url, body ?? {}, client.id));
-    reply(200, data, req.method === 'POST' ? { text: String(body.text ?? body.fact ?? '').slice(0, 200) } : {});
+    if (mailbox) return reply(200, await mailbox[2](cfg, url.pathname.match(mailbox[1]), url, body ?? {}, client.id), said);
+    if (messages) {
+      const [status, data] = await agentMessage(cfg, client.id, body ?? {}, log.req);
+      return reply(status, data, { ...said, mimir: data.status });
+    }
+    const [status, data] = await forwardToMimir(cfg, client.id, log.req, req.method, url, body ?? {});
+    reply(status, data, { ...said, via: 'mimir' });
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 502;
-    reply(status, { error: err instanceof HttpError ? err.message : 'hub unreachable' }, status === 502 ? { hubError: String(err?.message ?? err) } : {});
+    reply(status, { error: err instanceof HttpError ? err.message : 'gateway error' }, status === 502 ? { error: String(err?.message ?? err) } : {});
   }
 }
 
@@ -843,7 +818,14 @@ function serve() {
     });
   });
   server.requestTimeout = cfg.maxWaitMs + 60_000;
-  server.listen(cfg.port, '127.0.0.1', () => console.log(`[gateway] listening on 127.0.0.1:${cfg.port}, hub ${cfg.hubUrl}; access from fleet-memory trust entries`));
+  server.listen(cfg.port, '127.0.0.1', () => console.log(`[gateway] listening on 127.0.0.1:${cfg.port}; agents' calls and messages go to Mimir at ${cfg.mimirUrl}`));
+  // messages that waited for Mimir: retried on a backoff, receipts to the agents
+  let flushing = false;
+  setInterval(() => {
+    if (flushing) return;
+    flushing = true;
+    flushMimirOutbox(config()).catch((err) => console.error('[gateway] mimir outbox:', err)).finally(() => (flushing = false));
+  }, 30_000).unref();
 }
 
 const [cmd, arg] = process.argv.slice(2);

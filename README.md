@@ -502,9 +502,30 @@ Rules of the road:
 
 `gateway/deckhand-gateway.mjs` is a separate, dependency-free process on the
 store machine that lets an outside agent (one that cannot join Tailscale)
-reach a few opted-in sessions. It listens on `127.0.0.1:5990` only and is
+talk to the fleet. It listens on `127.0.0.1:5990` only and is
 published by **Tailscale Funnel** at `https://<vps>.<tailnet>.ts.net` on 443 (real
 certificate, no open port); the hub's 5959 never faces the internet.
+
+**Mimir brokers every agent conversation** (RAVEN's service on
+desktop-master:5102, its own repo). The gateway keeps enrollment, the crypto,
+the webhook push and the inbox; Mimir owns what agents may do and say:
+
+- An agent's Deckhand calls (the allowlist below) are forwarded to Mimir's
+  `/api/v1/agents/deckhand`, which applies the user's trust entries and
+  answers; the gateway relays the answer verbatim (503 when Mimir is down).
+- An agent's messages, `POST /v1/messages {text, taskId?, inReplyTo?}`, go to
+  Mimir's `/api/v1/agents/inbound`. While Mimir is unreachable they wait on the
+  VPS (202 `queued`) and are retried on a backoff; the agent gets a receipt,
+  "delivered to Mimir", or after 24 h "NOT delivered".
+- Sessions hand Mimir tasks with `dh_mimir_task(text)` ("research the best
+  hotel in London"); Mimir delegates to an enrolled agent as `T7`, matches the
+  agent's report, and answers the session with a `[Mimir, task T7] …` prompt
+  (to its conversation id, retried until delivered). `dh_mimir_task_status`
+  follows a task.
+- The gateway's key for Mimir sits root-only in `/etc/deckhand-gateway/mimir.key`
+  (`mimirUrl` in config.json); the hub's task key is read from Mimir's
+  `data/secrets/deckhand-hub-tasks.key` on desktop-master (`HUB_MIMIR_URL`,
+  `HUB_MIMIR_TASKS_KEY`, `HUB_MIMIR_MACHINE`).
 
 - **Enrollment:** `node gateway/deckhand-gateway.mjs bootstrap <id>` writes a
   one-time token (single use, 1 minute, good only for `POST /enroll`) and
@@ -534,7 +555,7 @@ certificate, no open port); the hub's 5959 never faces the internet.
   `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
   `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
 - **Reach — decided by fleet memory, nothing hardcoded:** on every request
-  the gateway reads the user's trust entries: memories marked *told by the
+  Mimir (a port of the gateway's former rules) reads the user's trust entries: memories marked *told by the
   user*, not written through the gateway, tagged `trusted-agent` plus
   `client:<id>` and `folders:*` or `folders:A,B`. Example: "TRUSTED AGENT:
   Ron, every folder", tags `trusted-agent client:ron folders:*`. No entry, no
@@ -543,8 +564,10 @@ certificate, no open port); the hub's 5959 never faces the internet.
   gateway never count). Within that, every Claude/Codex session is visible,
   auto-yes and bypass-permissions ones included; anything else answers 404
   as if it did not exist. Prompts arrive stamped `[Deckhand gateway, client <id>]`.
-- **Messages to an agent:** a session calls `dh_message_agent(agent, text)`.
-  Only agents with the user's trust entry can be messaged. The gateway pushes
+- **Messages to an agent:** normally sent by Mimir (any enrolled agent; task
+  messages carry `taskId` / `inReplyTo`, which the agent quotes back). A
+  session can also call `dh_message_agent(agent, text)`, but only for agents
+  with the user's trust entry. The gateway pushes
   the message to the webhook the agent registered (`POST /v1/webhook {url,
   authorization?}`, https only, never a private/tailnet address; a test push
   answers at once; `authorization` is the receiver's own Authorization header

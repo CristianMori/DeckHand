@@ -177,7 +177,7 @@ export function decideRequest(requestId: string, decision: 'accept' | 'reject'):
 }
 
 /** Hand a message to the gateway: pushed to the agent's webhook, or left in its inbox. */
-export function sendAgentMessage(clientId: string, from: string, text: string): Promise<{ id: string; delivered: 'webhook' | 'inbox'; webhookError?: string }> {
+export function sendAgentMessage(clientId: string, from: string, text: string, extra: { taskId?: string; inReplyTo?: string } = {}): Promise<{ id: string; delivered: 'webhook' | 'inbox'; webhookError?: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
@@ -192,6 +192,18 @@ export function sendAgentMessage(clientId: string, from: string, text: string): 
         }
       },
     );
-    child.stdin?.end(JSON.stringify({ from, text }));
+    child.stdin?.end(JSON.stringify({ from, text, ...extra }));
+  });
+}
+
+/** Revoke a client through the gateway's CLI: its key and any pending token go. */
+export function revokeAgent(clientId: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [join(HUB_ROOT, 'gateway', 'deckhand-gateway.mjs'), 'revoke', clientId],
+      { env: { ...process.env, DECKHAND_GATEWAY_DIR: GATEWAY_DIR, DECKHAND_GATEWAY_LOG: GATEWAY_LOG }, timeout: 15_000 },
+      (err, stdout, stderr) => (err ? reject(new Error(String(stderr || err.message).trim())) : resolve(String(stdout).trim())),
+    );
   });
 }

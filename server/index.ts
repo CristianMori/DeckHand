@@ -46,7 +46,8 @@ import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
-import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, sendAgentMessage } from './gatewayAgents.js';
+import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, revokeAgent, sendAgentMessage } from './gatewayAgents.js';
+import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
@@ -310,31 +311,89 @@ app.post('/api/gateway/requests/:id/:decision', async (req, res) => {
   }
 });
 
-// A message from a session (or the dashboard) to a gateway agent: pushed to its
-// webhook, or left in its inbox. Only to agents the user trusts in fleet memory.
+// A message to a gateway agent: pushed to its webhook, or left in its inbox.
+// Mimir (the broker) may message any enrolled agent: delegating a task to an
+// agent the user accepted is what accepting it approved. Anyone else may only
+// message agents with the user's trust entry in fleet memory.
 app.post('/api/gateway/agents/:id/messages', express.json({ type: () => true, limit: '64kb' }), async (req, res) => {
   const clientId = String(req.params.id).toLowerCase();
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId) || !text) return res.status(400).json({ error: 'POST /api/gateway/agents/<client>/messages {"text": "..."}' });
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId) || !text) return res.status(400).json({ error: 'POST /api/gateway/agents/<client>/messages {"text": "...", "taskId"?: "...", "inReplyTo"?: "..."}' });
+  const extra: { taskId?: string; inReplyTo?: string } = {};
+  for (const k of ['taskId', 'inReplyTo'] as const) if (typeof req.body?.[k] === 'string' && req.body[k]) extra[k] = String(req.body[k]).slice(0, 200);
   if (!gatewayPresent()) {
     const peer = federation.peerByMachine(STORE_MACHINE);
     if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
-    const out = await federation.forward(peer, req.path, { method: 'POST', body: { text } }).catch(() => null);
+    const out = await federation.forward(peer, req.path, { method: 'POST', body: { text, ...extra } }).catch(() => null);
     return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
   }
-  // the trust rule, outward: nothing leaves for an agent without the user's trust entry
-  const trusted = (await recall('trusted-agent', 200).catch(() => [])).some((m) => {
-    const tags = m.tags.toLowerCase().split(/[\s,]+/);
-    return m.instructed && !m.deleted && !m.originMachine.startsWith('gateway:') && !m.originSession.startsWith('gateway:') &&
-      tags.includes('trusted-agent') && (tags.includes(`client:${clientId}`) || tags.includes('client:*'));
-  });
-  if (!trusted) return res.status(403).json({ error: `${clientId} has no trust entry in fleet memory: not sending` });
   const from = String(req.headers['x-deckhand-caller'] ?? '') || (/mozilla/i.test(String(req.headers['user-agent'] ?? '')) ? 'dashboard' : 'api');
+  if (from !== 'mimir') {
+    // the trust rule, outward: nothing leaves for an agent without the user's trust entry
+    const trusted = (await recall('trusted-agent', 200).catch(() => [])).some((m) => {
+      const tags = m.tags.toLowerCase().split(/[\s,]+/);
+      return m.instructed && !m.deleted && !m.originMachine.startsWith('gateway:') && !m.originSession.startsWith('gateway:') &&
+        tags.includes('trusted-agent') && (tags.includes(`client:${clientId}`) || tags.includes('client:*'));
+    });
+    if (!trusted) return res.status(403).json({ error: `${clientId} has no trust entry in fleet memory: not sending (hand Mimir a task instead)` });
+  }
   try {
-    res.json(await sendAgentMessage(clientId, from, text));
+    res.json(await sendAgentMessage(clientId, from, text, extra));
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// Revoke a gateway agent: its key (and any pending token) go at once.
+app.post('/api/gateway/agents/:id/revoke', async (req, res) => {
+  const clientId = String(req.params.id).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId)) return res.status(400).json({ error: 'bad client id' });
+  if (!gatewayPresent()) {
+    const peer = federation.peerByMachine(STORE_MACHINE);
+    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
+    const out = await federation.forward(peer, req.path, { method: 'POST' }).catch(() => null);
+    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
+  }
+  try {
+    res.json({ revoked: clientId, note: await revokeAgent(clientId) });
+  } catch (err) {
+    res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Mimir: hand it a task (a session's reply address travels along), follow a
+// task, and see its view of the agents. Answered on the machine holding
+// Mimir's key, forwarded there from any other hub.
+async function mimirRoute(req: express.Request, res: express.Response, method: 'GET' | 'POST', path: string, body?: unknown) {
+  if (!mimirHere()) {
+    const peer = federation.peerByMachine(MIMIR_MACHINE);
+    if (!peer) return res.status(502).json({ error: `${MIMIR_MACHINE} (Mimir's machine) is not connected` });
+    // forward the request as it came: the other hub reshapes it for Mimir itself
+    const out = await federation.forward(peer, req.originalUrl, { method, body: method === 'POST' ? req.body : undefined }).catch(() => null);
+    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${MIMIR_MACHINE} failed` });
+  }
+  try {
+    const out = await mimirCall(method, path, body);
+    res.status(out.status).json(out.body);
+  } catch (err) {
+    res.status(503).json({ error: `Mimir is unreachable: ${err instanceof Error ? err.message : err}` });
+  }
+}
+app.get('/api/mimir/agents', (req, res) => void mimirRoute(req, res, 'GET', '/api/v1/agents'));
+app.get('/api/mimir/tasks/:id', (req, res) => void mimirRoute(req, res, 'GET', `/api/v1/tasks/${encodeURIComponent(String(req.params.id))}`));
+app.post('/api/mimir/tasks', express.json({ type: () => true, limit: '64kb' }), (req, res) => {
+  const b = req.body ?? {};
+  const text = typeof b.text === 'string' ? b.text.trim() : '';
+  const conversationId = typeof b.conversationId === 'string' ? b.conversationId : '';
+  if (!text) return res.status(400).json({ error: 'POST /api/mimir/tasks {"text": "...", "conversationId": "<your DECKHAND_CONVERSATION>", "delegate"?: "<agent>"}' });
+  const caller = String(req.headers['x-deckhand-caller'] ?? '') || 'api';
+  void mimirRoute(req, res, 'POST', '/api/v1/tasks', {
+    text,
+    ...(typeof b.delegate === 'string' && b.delegate ? { delegate: b.delegate } : {}),
+    // the result comes back as a "[Mimir, task T7] …" prompt to that conversation; without one, poll
+    replyTo: conversationId ? { kind: 'deckhand', conversationId } : { kind: 'poll' },
+    requester: caller,
+  });
 });
 
 // Fleet identity — what sibling hubs probe for during discovery.

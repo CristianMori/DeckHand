@@ -1,4 +1,4 @@
-import type { AdminStatus, UpdateAllResult, AgentInfo, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AdminStatus, UpdateAllResult, AgentInfo, MimirAgent, GatewayAgentsInfo, GatewayLogLine, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -146,6 +146,8 @@ export const api = {
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   gatewayAgents: () => fetch('/api/gateway/agents').then((r) => json<GatewayAgentsInfo>(r)),
+  /** Mimir's view of the agents (the broker): Deckhand access, open tasks, last messages */
+  mimirAgents: () => fetch('/api/mimir/agents').then((r) => json<{ agents: MimirAgent[] }>(r)),
   gatewayDecide: (requestId: string, decision: 'accept' | 'reject') =>
     fetch(`/api/gateway/requests/${encodeURIComponent(requestId)}/${decision}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   gatewayAgentLog: (id: string, limit = 300) =>

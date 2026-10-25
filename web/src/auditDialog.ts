@@ -24,7 +24,10 @@ const fmtTime = (iso: string) => new Date(iso).toLocaleString();
  * by ADMIN and AUDIT; `onPick` runs when one is clicked.
  */
 export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) => void): Promise<void> {
-  const info = await api.gatewayAgents().catch(() => null);
+  const [info, mimir] = await Promise.all([api.gatewayAgents().catch(() => null), api.mimirAgents().catch(() => null)]);
+  const viaMimir = new Map((mimir?.agents ?? []).map((m) => [m.id, m]));
+  // Mimir's times are UTC without a Z suffix
+  const utc = (t: string | null) => (t ? fmtWhen(/Z$/.test(t) ? t : `${t}Z`) : 'never');
   if (!info) {
     el.innerHTML = '<div class="empty-note">gateway machine not reachable</div>';
     return;
@@ -91,7 +94,13 @@ export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) 
               a.lastMessage ? ` · last ${a.lastMessage.delivered === 'webhook' ? 'pushed' : 'queued'} ${esc(fmtWhen(a.lastMessage.at))}${a.lastMessage.webhookError ? ` (push failed: ${esc(a.lastMessage.webhookError)})` : ''}` : ''
             }</div>`
           : ''
-      }`;
+      }${(() => {
+        const m = viaMimir.get(a.id);
+        if (!m) return mimir ? '' : '<div class="resume-snippet">Mimir: not reachable</div>';
+        const access = Array.isArray(m.deckhandAccess) ? m.deckhandAccess.join(', ') : m.deckhandAccess;
+        return `<div class="resume-snippet">Mimir: ${m.openTasks ? `<b>${esc(m.openTasks)} open task${m.openTasks === 1 ? '' : 's'}</b>` : 'no open tasks'} · Deckhand access: ${esc(access)}</div>
+          <div class="resume-snippet">last message in ${esc(utc(m.lastMessageInAtUtc))} · out ${esc(utc(m.lastMessageOutAtUtc))} · last Deckhand call ${esc(utc(m.lastDeckhandCallAtUtc))}</div>`;
+      })()}`;
     row.title = "show this agent's requests in AUDIT";
     row.onclick = () => onPick(a.id);
     el.appendChild(row);
