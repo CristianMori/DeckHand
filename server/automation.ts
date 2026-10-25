@@ -40,9 +40,17 @@ export const KEYS: Record<string, string> = {
 export async function typePrompt(manager: SessionManager, session: HubSession, text: string) {
   manager.write(session.hubId, text);
   // the CR must arrive in its own chunk — text+CR together reads as a paste
-  // to the TUI and lands in the composer without submitting
-  await sleep(120);
+  // to the TUI and lands in the composer without submitting. A long text
+  // reaches the TUI as several paste chunks: give the last one time to land.
+  await sleep(Math.min(3000, 120 + Math.floor(text.length / 8)));
   manager.write(session.hubId, '\r');
+  // a long paste can still outrun that: if the agent did not start, the CR
+  // landed mid-paste and the prompt sits in the composer — submit once more
+  // (an empty composer ignores a stray CR, so this never doubles a prompt)
+  if (text.length > 500 && session.state !== 'WORKING') {
+    const started = await waitUntil(manager, () => session.state === 'WORKING' || !session.proc, 2500);
+    if (!started) manager.write(session.hubId, '\r');
+  }
 }
 
 /** Resolve true when pred holds (checked on every state change and on a
