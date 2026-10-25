@@ -167,6 +167,18 @@ export interface MimirAgent {
   openTasks: number;
 }
 
+/** What one outside agent may reach (enforced by the hub; made in ADMIN → TRUST) */
+export interface AccessGrant {
+  id: string;
+  agent: string;
+  access: 'discover' | 'observe' | 'interact';
+  folders: string[] | '*';
+  sessions: string[];
+  fact: string;
+  createdAt: number;
+  originMachine: string;
+}
+
 export interface MimirRequest {
   id: string;
   agent: string;

@@ -239,9 +239,12 @@ each tagged with `machine`).
 | `GET /api/provenance?machine=&q=&id=&limit=` | – | one machine's provenance log, newest first: every change and every agent/gateway read, with caller, hops (`via`), target session and what was asked; `id` follows one request across hubs |
 | `POST /api/mimir/tasks` | `text`, `conversationId?`, `delegate?` | hand Mimir a task; the result comes back to that conversation as a `[Mimir, task T7]` prompt (MCP: `dh_mimir_task`) |
 | `GET /api/mimir/tasks/:id` | – | a Mimir task's status and result (MCP: `dh_mimir_task_status`) |
+| `GET /api/trust` | – | access grants for outside agents (`grants`), plus old plain-memory trust entries (`legacy`) |
+| `POST /api/trust` | `agent`, `access` (`discover`/`observe`/`interact`), `folders` (list or `"*"`) and/or `sessions` (conversation ids), `replaces?` | grant an outside agent access — the dashboard's ADMIN → TRUST; refused to sessions, agents and Mimir |
+| `DELETE /api/trust/:id` | – | revoke a grant (same callers) |
 | `GET /api/mimir/agents` | – | Mimir's view of the outside agents: enrolled ones (live, open tasks, last messages) and pending access requests (accepted on Mimir's /admin/agents) |
 
-Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `session:<hubId>/<conversation>@<machine>`, the gateway `gateway:<client>`); `X-Deckhand-Request` and `X-Deckhand-Via` carry the request id and the hubs it passed through, and every answer echoes `X-Deckhand-Request`.
+Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `session:<hubId>/<conversation>@<machine>`, Mimir `gateway:<agent>` on an agent's behalf, with `X-Deckhand-Delegate-Key` — such calls reach only what the agent's grants allow, see the README); `X-Deckhand-Request` and `X-Deckhand-Via` carry the request id and the hubs it passed through, and every answer echoes `X-Deckhand-Request`.
 | `POST /api/memories` | `fact`, `scope` (global\|machine\|project), `machine`, `project`, `tags`, `instructed`, `originSession`, `originFolder` | remember a fact fleet-wide; `queued:true` when the store machine is unreachable |
 | `DELETE /api/memories/:id` | – | forget a memory (id or unique prefix) |
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |

@@ -1,5 +1,6 @@
 import { api } from './api';
 import { openAuditDialog, renderGatewayAgents } from './auditDialog';
+import { renderTrustPanel } from './trustPanel';
 import type { AdminStatus } from './types';
 
 function fmtUptime(s?: number): string {
@@ -22,6 +23,8 @@ export async function openAdminDialog() {
       <section>
         <div class="ad-col-title">OUTSIDE AGENTS (MIMIR)</div>
         <div class="resume-list" id="ad-agents"><div class="empty-note">asking Mimir…</div></div>
+        <div class="ad-col-title tr-title">TRUST — WHAT EACH AGENT MAY REACH</div>
+        <div id="ad-trust"><div class="empty-note">loading grants…</div></div>
       </section>
     </div>
     <div class="dialog-actions">
@@ -43,6 +46,7 @@ export async function openAdminDialog() {
       void openAuditDialog({ agent: id });
     });
   void refreshAgents();
+  void renderTrustPanel(dialog.querySelector('#ad-trust') as HTMLElement);
   const agentTimer = window.setInterval(() => {
     if (!dialog.open) return window.clearInterval(agentTimer);
     void refreshAgents();

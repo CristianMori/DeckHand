@@ -504,3 +504,13 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 @media (max-width: 860px) { .au-layout { grid-template-columns: 1fr; } }
 .ad-target { font-size: 11px; color: var(--ink-dim); margin: -10px 0 14px; min-height: 1em; }
 .au-layout a, .admin-row a, .ad-columns a { color: var(--amber); }
+/* ADMIN → TRUST: access grants for outside agents */
+.tr-title { margin-top: 18px; }
+.tr-note { font-size: 11px; color: var(--ink-dim); margin-bottom: 8px; }
+.tr-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.tr-row .tr-where { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--ink); }
+.tr-row.tr-old .tr-where { color: var(--ink-dim); font-size: 11px; }
+.tr-form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.tr-form input { width: 110px; }
+.tr-form select { flex: 1; min-width: 120px; }
+.tr-error { color: #e88; font-size: 11px; min-height: 1em; margin-top: 4px; }

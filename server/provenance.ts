@@ -65,6 +65,11 @@ export function traceHeaders(): Record<string, string> {
   };
 }
 
+/** The trace of the request being handled (undefined outside one). */
+export function currentTrace(): TraceContext | undefined {
+  return store.getStore();
+}
+
 const header = (req: express.Request, name: string) => {
   const v = req.headers[name.toLowerCase()];
   return (Array.isArray(v) ? v[0] : v ?? '').slice(0, 300);

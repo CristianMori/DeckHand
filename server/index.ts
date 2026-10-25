@@ -44,8 +44,12 @@ import { listLocalFolders, type FolderInfo } from './fleetFolders.js';
 import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.js';
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
-import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
-import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
+import { applyOnAuthority, changesSince, findMemory, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, TRUST_ORIGIN, type MemoryOp } from './fleetMemory.js';
+import { currentTrace, initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
+import {
+  ACCESS_LEVELS, accessTo, accessToFolder, allGrants, atLeast, delegatedAgent, grantMemory, grantsFor, hasDelegateKey,
+  loadDelegateKey, looksLikeGrant, type Access,
+} from './agentAccess.js';
 import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
@@ -249,6 +253,69 @@ app.use(
     return s ? { id, hubId: s.hubId, name: s.name, conversationId: s.claudeSessionId } : undefined;
   }),
 );
+
+// Outside agents — calls Mimir makes on their behalf (caller gateway:<agent>).
+// Deny by default: an agent sees, reads or prompts only the sessions its
+// grants cover (agentAccess.ts), decided here before any session is touched.
+// A session with no grant answers 404, so its existence does not leak.
+function sessionInfoById(id: string): SessionInfo | undefined {
+  const local = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);
+  if (local) return local.info();
+  const peer = federation.peerBySession(id);
+  return peer?.sessions.find((x) => x.hubId === id || x.claudeSessionId === id || (id.length >= 8 && x.claudeSessionId.startsWith(id)));
+}
+app.use(async (req, res, next) => {
+  const trace = currentTrace();
+  const agent = delegatedAgent(trace?.caller);
+  if (!agent || !req.path.startsWith('/api/')) return next();
+  // straight from Mimir: it must hold the delegate key; a hub forwarding the call already checked it
+  const lastHop = trace?.via.at(-1);
+  const fromHub = !!lastHop && federation.machines(discovery.selfName).some((m) => m.machine === lastHop);
+  if (!fromHub && !hasDelegateKey(req)) return res.status(401).json({ error: "calls on an agent's behalf need the delegate key" });
+  const deny = (why: string) => res.status(403).json({ error: `${agent}: ${why}` });
+  const { method, path } = req;
+
+  if (method === 'GET' && path === '/api/sessions') return res.json(mergedList().filter((s) => accessTo(agent, s)));
+  if (method === 'GET' && (path === '/api/fleet' || path === '/api/agents')) {
+    return grantsFor(agent).length ? next() : deny('no access granted');
+  }
+  if (path === '/api/memories') {
+    // project memories of granted folders only; never the grants, never global or machine facts
+    if (method === 'GET') {
+      const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+      try {
+        const found = await recall(String(req.query.q ?? ''), 200);
+        return res.json(
+          found
+            .filter((m) => m.scope === 'project' && m.project && m.originSession !== TRUST_ORIGIN && atLeast(accessToFolder(agent, m.project), 'observe'))
+            .slice(0, limit),
+        );
+      } catch (err) {
+        return res.status(503).json({ error: errText(err) });
+      }
+    }
+    if (method === 'POST') {
+      const parsed = await new Promise<boolean>((done) => express.json({ type: () => true, limit: '64kb' })(req, res, (err?: unknown) => done(!err)));
+      if (!parsed) return res.status(400).json({ error: 'invalid JSON body' });
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      if (looksLikeGrant(b)) return deny('access grants are made by the user, in the dashboard');
+      if (b.scope !== 'project' || typeof b.project !== 'string' || !atLeast(accessToFolder(agent, b.project), 'interact')) {
+        return deny('an agent may only write project memories, in a folder it may interact with');
+      }
+      req.body = { ...b, instructed: false, originSession: `gateway:${agent}`, originMachine: `gateway:${agent}` };
+      return next();
+    }
+  }
+  const m = /^\/api\/sessions\/([^/]+)(?:\/(exchanges|screen|wait|prompt))?$/.exec(path);
+  if (m && (m[2] === 'prompt' ? method === 'POST' : method === 'GET')) {
+    const s = sessionInfoById(decodeURIComponent(m[1]));
+    const have = s ? accessTo(agent, s) : null;
+    if (!s || !have) return res.status(404).json({ error: 'unknown session' });
+    const need: Access = !m[2] ? 'discover' : m[2] === 'prompt' ? 'interact' : 'observe';
+    return atLeast(have, need) ? next() : deny(`${need} on this session is not granted (only ${have})`);
+  }
+  return deny('agents may only list, read and prompt the sessions they were granted');
+});
 
 /** GET forwarded to another machine with its query (minus `machine`), or false when it is ours. */
 function forwardGetWithQuery(req: express.Request, res: express.Response, machine: string | undefined): boolean {
@@ -1174,6 +1241,10 @@ app.get('/api/memories', async (req, res) => {
 app.post('/api/memories', async (req, res) => {
   const b = req.body ?? {};
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  // grants decide what outside agents reach: only the TRUST panel writes them
+  if (looksLikeGrant(b)) {
+    return res.status(403).json({ error: 'access grants for outside agents are made by the user in the dashboard (ADMIN → TRUST), not as memories' });
+  }
   try {
     res.json(await remember({
       fact: String(b.fact ?? ''),
@@ -1191,12 +1262,68 @@ app.post('/api/memories', async (req, res) => {
   }
 });
 app.delete('/api/memories/:id', async (req, res) => {
+  if (findMemory(String(req.params.id))?.originSession === TRUST_ORIGIN) {
+    return res.status(403).json({ error: 'that is an access grant: the user revokes it in the dashboard (ADMIN → TRUST)' });
+  }
   try {
     res.json(await forget(String(req.params.id)));
   } catch (err) {
     res.status(404).json({ error: errText(err) });
   }
 });
+// Access grants for outside agents (agentAccess.ts). The user's, from the
+// dashboard's TRUST panel: agents, sessions and Mimir are refused here.
+function trustCallerRefused(res: express.Response): boolean {
+  const caller = currentTrace()?.caller ?? '';
+  if (!/^(session:|gateway:|mimir)/i.test(caller)) return false;
+  res.status(403).json({ error: 'access grants are made by the user in the dashboard, not by sessions or agents' });
+  return true;
+}
+app.get('/api/trust', async (_req, res) => {
+  // trust entries written as plain memories before grants existed: shown so the user can convert them
+  const legacy = (await recall('trusted agent', 200).catch(() => [])).filter(
+    (m) => m.originSession !== TRUST_ORIGIN && looksLikeGrant({ fact: m.fact, tags: m.tags }),
+  );
+  res.json({ grants: allGrants(), legacy, levels: ACCESS_LEVELS });
+});
+app.post('/api/trust', async (req, res) => {
+  if (trustCallerRefused(res)) return;
+  const b = req.body ?? {};
+  const agent = String(b.agent ?? '').trim().toLowerCase();
+  if (!/^[\w.@-]{1,64}$/.test(agent)) return res.status(400).json({ error: 'agent: the id it enrolled with in Mimir' });
+  const access = String(b.access ?? 'interact') as Access;
+  if (!ACCESS_LEVELS.includes(access)) return res.status(400).json({ error: `access: ${ACCESS_LEVELS.join(', ')}` });
+  const clean = (v: unknown) => (Array.isArray(v) ? v : []).map((x) => String(x).trim()).filter((x) => /^[\w.-]{1,80}$/.test(x));
+  const folders = b.folders === '*' ? '*' : clean(b.folders);
+  const sessions = clean(b.sessions);
+  if (folders !== '*' && !folders.length && !sessions.length) return res.status(400).json({ error: 'grant at least one folder, every folder (*), or a session' });
+  const names = mergedList();
+  const sessionNames = sessions.map((id) => names.find((s) => s.claudeSessionId === id)?.name ?? id.slice(0, 8));
+  const { fact, tags } = grantMemory({ agent, access, folders, sessions, sessionNames, note: typeof b.note === 'string' ? b.note.slice(0, 120) : undefined });
+  try {
+    const out = await remember({ fact, tags, scope: 'global', instructed: true, originSession: TRUST_ORIGIN, originMachine: discovery.selfName });
+    // converting an old plain-memory trust entry: the grant replaces it
+    if (typeof b.replaces === 'string' && b.replaces) {
+      const old = findMemory(b.replaces);
+      if (old && old.originSession !== TRUST_ORIGIN && looksLikeGrant(old)) await forget(old.id).catch(() => {});
+    }
+    res.json(out);
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
+});
+app.delete('/api/trust/:id', async (req, res) => {
+  if (trustCallerRefused(res)) return;
+  const m = findMemory(String(req.params.id));
+  if (!m) return res.status(404).json({ error: 'no such grant here (or this machine has no memory store)' });
+  if (m.originSession !== TRUST_ORIGIN) return res.status(400).json({ error: 'not an access grant' });
+  try {
+    res.json(await forget(m.id));
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
+});
+
 // authority side: replicas send their changes here and pull from /changes
 app.post('/api/memories/apply', (req, res) => {
   if (discovery.selfName !== STORE_MACHINE) return res.status(409).json({ error: `memories are kept on ${STORE_MACHINE}` });
@@ -2025,6 +2152,7 @@ function listen(port: number, attemptsLeft: number) {
     restoreSessions();
     discovery.start();
     loadApiToken();
+    loadDelegateKey();
     if (LAN_ENABLED) {
       startBeacon({
         machine: () => discovery.selfName,

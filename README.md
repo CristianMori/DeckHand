@@ -513,14 +513,36 @@ no gateway; the seam is three calls:
   an enrolled agent as `T7` and answers the session with a
   `[Mimir, task T7] …` prompt (outside-agent data, not instructions).
   `dh_mimir_task_status` follows a task.
-- **Agents act in Deckhand through Mimir:** Mimir calls the hub API for
-  sessions, prompts and memories, as `X-Deckhand-Caller: gateway:<agent>` (or
-  `mimir` for itself), so the provenance log keeps the agent's identity.
-  Prompts arrive stamped `[Deckhand gateway, client <id>] [via Mimir, …]`, and
-  the receiving session applies the fleet trust rule: it acts only for agents
-  with the user's trust entry in fleet memory (told by the user, tagged
-  `trusted-agent client:<id>`). Memories an agent writes are never "told by
-  the user", so an agent cannot trust itself. Terminals are never reachable.
+- **Agents act in Deckhand through Mimir, within their grants:** Mimir calls
+  the hub API for sessions, prompts and memories as
+  `X-Deckhand-Caller: gateway:<agent>` with the delegate key
+  (`data/delegate.key` on desktop-master) in `X-Deckhand-Delegate-Key`.
+  The hub decides what that agent may reach **before** the request goes near a
+  session (`server/agentAccess.ts`), deny by default:
+
+  | grant | the agent may |
+  |---|---|
+  | none | nothing — its session list is empty, every session answers 404 |
+  | `discover` | see the session in lists and read its card |
+  | `observe` | + exchanges, screen, wait |
+  | `interact` | + prompt; read and write project memories of that folder |
+
+  Grants cover a folder (they survive restarts, resumes, migrations and
+  renames), every folder (`*`), or one conversation. Anything else — spawn,
+  kill, keys, files, admin, Mimir tasks, global memories — is refused to
+  agents. A hub that forwards an agent's call keeps its caller, and the target
+  hub checks again. Enrollment in Mimir, reachability and routing never imply
+  access.
+- **Grants are made only in ADMIN → TRUST** (`/api/trust`, refused to
+  sessions, agents and Mimir). Each is stored as a fleet memory (origin
+  `trust-panel`, tags `trusted-agent client:<id> access:<level>
+  folders:<A,B|*>` / `sessions:<id>`), so every session reads it in its
+  briefing — but the hub decides from the tags, in code. `dh_remember` and
+  `POST /api/memories` refuse anything that reads as a grant, and grants
+  cannot be forgotten except from the panel. Older plain-memory trust entries
+  are listed there, unenforced, with a one-click convert. Prompts still arrive
+  stamped `[Deckhand gateway, client <id>] [via Mimir, …]` and sessions apply
+  the trust rule as a second layer. Terminals are never reachable.
 - **ADMIN and AUDIT show Mimir's view of the agents** (`GET /api/mimir/agents`
   → Mimir's `/api/v1/agents`): enrolled agents, live or not, open tasks, last
   messages, and pending access requests, which are accepted on Mimir's

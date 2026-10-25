@@ -15,6 +15,13 @@ import { DATA_DIR } from './config.js';
  * waits in an outbox. Deletes are tombstones so they replicate too.
  */
 
+/**
+ * originSession of an access grant: only the hub's /api/trust route (the
+ * dashboard's TRUST panel, i.e. the user) writes memories with it. The hub
+ * reads these — and nothing else — to decide what an outside agent may reach.
+ */
+export const TRUST_ORIGIN = 'trust-panel';
+
 export type MemoryScope = 'global' | 'machine' | 'project';
 
 export interface Memory {
@@ -173,6 +180,12 @@ export function applyOnAuthority(op: MemoryOp): Memory[] {
     } else if (op.op === 'renameProject') {
       const rows = db.prepare('select * from memories where deleted = 0 and lower(project) = lower(?)').all(op.from) as unknown as Row[];
       for (const r of rows) stamp({ ...fromRow(r), project: op.to, updatedAt: Date.now() });
+      // access grants name folders in their tags (folders:A,B): they follow too
+      const grants = (db.prepare('select * from memories where deleted = 0 and origin_session = ?').all(TRUST_ORIGIN) as unknown as Row[]).map(fromRow);
+      for (const g of grants) {
+        const tags = renameFolderTag(g.tags, op.from, op.to);
+        if (tags !== g.tags) stamp({ ...g, tags, fact: g.fact.split(op.from).join(op.to), updatedAt: Date.now() });
+      }
     }
     prune(stamp);
     db.exec('commit');
@@ -296,6 +309,14 @@ function clean(m: Memory): Memory {
   };
 }
 
+/** folders:A,B with `from` renamed to `to` (case-insensitive) */
+function renameFolderTag(tags: string, from: string, to: string): string {
+  return tags
+    .split(/\s+/)
+    .map((t) => (t.toLowerCase().startsWith('folders:') ? `folders:${t.slice(8).split(',').map((x) => (x.toLowerCase() === from.toLowerCase() ? to : x)).join(',')}` : t))
+    .join(' ');
+}
+
 function mergeTags(a: string, b: string): string {
   const all = new Set(`${a} ${b}`.split(/[\s,]+/).filter(Boolean));
   return [...all].join(' ').slice(0, MAX_TAGS);
@@ -374,6 +395,19 @@ export async function recall(query: string, limit = 20): Promise<Memory[]> {
       where memories_fts match ? and m.deleted = 0 order by bm25(memories_fts), m.instructed desc limit ?`,
   ).all(match, limit) as unknown as Row[];
   return rows.map(fromRow);
+}
+
+/** Live access grants (see TRUST_ORIGIN), newest first. */
+export function trustEntries(): Memory[] {
+  if (!db) return [];
+  return (db.prepare('select * from memories where deleted = 0 and origin_session = ? order by updated_at desc').all(TRUST_ORIGIN) as unknown as Row[]).map(fromRow);
+}
+
+/** One live memory by id or unique prefix (undefined without a local store). */
+export function findMemory(id: string): Memory | undefined {
+  if (!db) return undefined;
+  const full = resolveId(id);
+  return full ? getRow(full) : undefined;
 }
 
 /** Memories that apply to a session on `machine` in project `project`, instructed first. */

@@ -1,4 +1,4 @@
-import type { AdminStatus, UpdateAllResult, AgentInfo, MimirAgent, MimirRequest, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AccessGrant, AdminStatus,UpdateAllResult, AgentInfo, MimirAgent, MimirRequest, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -147,6 +147,16 @@ export const api = {
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   /** Mimir's view of the outside agents (the broker): enrolled agents and access requests */
   mimirAgents: () => fetch('/api/mimir/agents').then((r) => json<{ agents: MimirAgent[]; requests: MimirRequest[] | null }>(r)),
+  /** access grants for outside agents, plus old plain-memory trust entries to convert */
+  trust: () =>
+    fetch('/api/trust').then((r) => json<{ grants: AccessGrant[]; legacy: { id: string; fact: string; tags: string }[] }>(r)),
+  trustGrant: (body: { agent: string; access: AccessGrant['access']; folders?: string[] | '*'; sessions?: string[]; replaces?: string }) =>
+    fetch('/api/trust', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<unknown>(r)),
+  trustRevoke: (id: string) => fetch(`/api/trust/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => json<unknown>(r)),
   provenance: (machine: string, opts: { q?: string; id?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams({ machine, limit: String(opts.limit ?? 300) });
     if (opts.q) qs.set('q', opts.q);
