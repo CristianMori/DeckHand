@@ -76,11 +76,12 @@ export const folderOf = (cwd: string) => cwd.replace(/[\\/]+$/, '').split(/[\\/]
 
 /** The strongest access any of the agent's grants gives on this session; null = none. */
 export function accessTo(agent: string, session: { cwd?: string; claudeSessionId?: string }): Access | null {
-  const folder = folderOf(session.cwd ?? '').toLowerCase();
+  // a folder grant covers that folder and everything under it (Cassandra → its vet: sessions in subfolders)
+  const segments = new Set((session.cwd ?? '').split(/[\\/]+/).filter(Boolean).map((x) => x.toLowerCase()));
   const conv = session.claudeSessionId ?? '';
   let best: Access | null = null;
   for (const g of grantsFor(agent)) {
-    const byFolder = g.folders === '*' || (!!folder && g.folders.some((f) => f.toLowerCase() === folder));
+    const byFolder = g.folders === '*' || g.folders.some((f) => segments.has(f.toLowerCase()));
     const bySession = !!conv && g.sessions.some((s) => s === conv || (s.length >= 8 && conv.startsWith(s)));
     if ((byFolder || bySession) && rank(g.access) > rank(best)) best = g.access;
   }

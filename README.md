@@ -527,7 +527,7 @@ no gateway; the seam is three calls:
   | `observe` | + exchanges, screen, wait |
   | `interact` | + prompt; read and write project memories of that folder |
 
-  Grants cover a folder (they survive restarts, resumes, migrations and
+  Grants cover a folder and everything under it (they survive restarts, resumes, migrations and
   renames), every folder (`*`), or one conversation. Anything else — spawn,
   kill, keys, files, admin, Mimir tasks, global memories — is refused to
   agents. A hub that forwards an agent's call keeps its caller, and the target
