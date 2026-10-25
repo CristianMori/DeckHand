@@ -207,3 +207,31 @@ export function revokeAgent(clientId: string): Promise<string> {
     );
   });
 }
+
+/**
+ * Access requests for an approval UI (Mimir's /admin/agents): open ones first,
+ * then the last 30 days of decided ones. Accept / reject go through
+ * POST /api/gateway/requests/<id>/accept|reject.
+ */
+export function gatewayRequests(): { id: string; agent: string; status: string; at: string; note?: string; name: string; ip: string; mintUntil?: string; decidedAt?: string }[] {
+  const reqs = readJson<{ id: string; clientId: string; name: string; reason: string; ip: string; createdAt: string; status: string; mintUntil?: number; decidedAt?: string }[]>(
+    join(GATEWAY_DIR, 'requests.json'),
+    [],
+  );
+  const now = Date.now();
+  const rank = (s: string) => (s === 'requested' ? 0 : s === 'accepted' ? 1 : 2);
+  return reqs
+    .map((r) => ({
+      id: r.id,
+      agent: r.clientId,
+      // the gateway's "pending" is "requested" here; an accepted request whose minute passed is "expired"
+      status: r.status === 'pending' ? 'requested' : r.status === 'accepted' && (r.mintUntil ?? 0) < now ? 'expired' : r.status,
+      at: r.createdAt,
+      note: r.reason,
+      name: r.name,
+      ip: r.ip,
+      ...(r.mintUntil ? { mintUntil: new Date(r.mintUntil).toISOString() } : {}),
+      ...(r.decidedAt ? { decidedAt: r.decidedAt } : {}),
+    }))
+    .sort((a, b) => rank(a.status) - rank(b.status) || b.at.localeCompare(a.at));
+}

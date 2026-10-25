@@ -511,12 +511,16 @@ desktop-master:5102, its own repo). The gateway keeps enrollment, the crypto,
 the webhook push and the inbox; Mimir owns what agents may do and say:
 
 - An agent's Deckhand calls (the allowlist below) are forwarded to Mimir's
-  `/api/v1/agents/deckhand`, which applies the user's trust entries and
-  answers; the gateway relays the answer verbatim (503 when Mimir is down).
-- An agent's messages, `POST /v1/messages {text, taskId?, inReplyTo?}`, go to
-  Mimir's `/api/v1/agents/inbound`. While Mimir is unreachable they wait on the
+  `/api/v1/agents/deckhand`, which answers; the gateway relays the answer
+  verbatim (503 when Mimir is down).
+- An agent's messages, `POST /v1/messages {text, taskId?, inReplyTo?, to?}`, go to
+  Mimir's `/api/v1/agents/inbound`: a task reply when it quotes a task,
+  otherwise a prompt to the session `to` names, or to every live agent
+  session. While Mimir is unreachable they wait on the
   VPS (202 `queued`) and are retried on a backoff; the agent gets a receipt,
   "delivered to Mimir", or after 24 h "NOT delivered".
+- Access requests appear on Mimir's `/admin/agents` too
+  (`GET /api/gateway/agents` → `requests`); accepting there relays to the hub.
 - Sessions hand Mimir tasks with `dh_mimir_task(text)` ("research the best
   hotel in London"); Mimir delegates to an enrolled agent as `T7`, matches the
   agent's report, and answers the session with a `[Mimir, task T7] …` prompt
@@ -554,16 +558,16 @@ the webhook push and the inbox; Mimir owns what agents may do and say:
   `/v1/sessions/:id/screen`, `/v1/sessions/:id/wait?timeoutMs=&until=`,
   `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
   `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
-- **Reach — decided by fleet memory, nothing hardcoded:** on every request
-  Mimir (a port of the gateway's former rules) reads the user's trust entries: memories marked *told by the
-  user*, not written through the gateway, tagged `trusted-agent` plus
-  `client:<id>` and `folders:*` or `folders:A,B`. Example: "TRUSTED AGENT:
-  Ron, every folder", tags `trusted-agent client:ron folders:*`. No entry, no
-  sessions; a narrower entry, fewer; forgetting the entry cuts access on the
-  next request. An agent cannot trust itself (memories it writes through the
-  gateway never count). Within that, every Claude/Codex session is visible,
-  auto-yes and bypass-permissions ones included; anything else answers 404
-  as if it did not exist. Prompts arrive stamped `[Deckhand gateway, client <id>]`.
+- **Reach — every agent session; trust is the receiving session's call:**
+  an enrolled agent reaches every Claude/Codex session (terminals never: a
+  shell would run the text). Prompts arrive stamped
+  `[Deckhand gateway, client <id>] [via Mimir, request R12]` (or
+  `message <id>`), and the session applies the fleet trust rule: it acts only
+  for agents with the user's trust entry in fleet memory (told by the user,
+  not written through the gateway, tagged `trusted-agent client:<id>`).
+  Example: "TRUSTED AGENT: Ron, every folder", tags
+  `trusted-agent client:ron folders:*`. Memories an agent writes are forced to
+  "not told by the user", so an agent cannot trust itself.
 - **Messages to an agent:** normally sent by Mimir (any enrolled agent; task
   messages carry `taskId` / `inReplyTo`, which the agent quotes back). A
   session can also call `dh_message_agent(agent, text)`, but only for agents

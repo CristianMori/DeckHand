@@ -46,7 +46,7 @@ import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
-import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, revokeAgent, sendAgentMessage } from './gatewayAgents.js';
+import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, gatewayRequests, revokeAgent, sendAgentMessage } from './gatewayAgents.js';
 import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
@@ -284,7 +284,7 @@ app.get('/api/provenance', (req, res) => {
 // Public-gateway clients and their request logs, from the machine that runs the gateway.
 app.get('/api/gateway/agents', (req, res) => {
   if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
-  res.json({ machine: discovery.selfName, present: gatewayPresent(), agents: gatewayPresent() ? gatewayAgents() : [] });
+  res.json({ machine: discovery.selfName, present: gatewayPresent(), agents: gatewayPresent() ? gatewayAgents() : [], requests: gatewayPresent() ? gatewayRequests() : [] });
 });
 app.get('/api/gateway/agents/:id/log', (req, res) => {
   if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;

@@ -387,7 +387,8 @@ async function agentMessage(cfg, clientId, body, requestId) {
   if (!text) throw new HttpError(400, 'text is required');
   if (text.length > MESSAGE_MAX) throw new HttpError(400, `text is over ${MESSAGE_MAX} characters`);
   const m = { messageId: requestId, agent: clientId, at: new Date().toISOString(), text };
-  for (const k of ['taskId', 'inReplyTo']) if (typeof body[k] === 'string' && body[k]) m[k] = body[k].slice(0, 200);
+  // to: a session (any id form the hub accepts) — Mimir prompts that one; without it, every live agent session
+  for (const k of ['taskId', 'inReplyTo', 'to']) if (typeof body[k] === 'string' && body[k]) m[k] = body[k].slice(0, 200);
   const stored = await toMimirInbound(cfg, m);
   if (stored) return [200, { status: 'delivered', messageId: m.messageId, disposition: stored.disposition ?? null }];
   writePrivate(MIMIR_OUTBOX, JSON.stringify([...readJson(MIMIR_OUTBOX, []), { message: m, queuedAt: m.at, attempts: 0, nextAttemptAt: Date.now() + 30_000 }], null, 2));
