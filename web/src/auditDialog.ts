@@ -84,7 +84,14 @@ export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) 
       <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${chip}</div>
       <div class="resume-snippet">last interaction: ${esc(fmtWhen(a.lastSeen))}</div>
       <div class="resume-snippet">${esc(a.requests)} request${a.requests === 1 ? "" : "s"}${a.denied ? ` · ${esc(a.denied)} refused` : ''}${a.lastRequest ? ` · last ${esc(a.lastRequest)}` : ''}</div>
-      <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : a.tokenExpiresAt ? `token expires ${esc(fmtTime(a.tokenExpiresAt))}` : ''}</div>`;
+      <div class="resume-snippet">${a.enrolledAt ? `enrolled ${esc(fmtTime(a.enrolledAt))}` : a.tokenExpiresAt ? `token expires ${esc(fmtTime(a.tokenExpiresAt))}` : ''}</div>
+      ${
+        a.status === 'enrolled'
+          ? `<div class="resume-snippet">messages: ${a.webhook ? 'webhook set' : 'no webhook (inbox only)'}${a.inbox ? ` · <b>${esc(a.inbox)} waiting in inbox</b>` : ''}${
+              a.lastMessage ? ` · last ${a.lastMessage.delivered === 'webhook' ? 'pushed' : 'queued'} ${esc(fmtWhen(a.lastMessage.at))}${a.lastMessage.webhookError ? ` (push failed: ${esc(a.lastMessage.webhookError)})` : ''}` : ''
+            }</div>`
+          : ''
+      }`;
     row.title = "show this agent's requests in AUDIT";
     row.onclick = () => onPick(a.id);
     el.appendChild(row);

@@ -413,6 +413,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'dh_message_agent',
+    description: 'Send a message to an outside agent that reaches the fleet through the Deckhand gateway (e.g. "ron"). It is pushed to the agent\'s webhook, or waits in its inbox when the push fails. Only agents with a trust entry in fleet memory can be messaged; the agent sees who sent it (this session).',
+    schema: { agent: S('gateway client id, e.g. ron'), text: S('the message (max 20000 characters)') },
+    required: ['agent', 'text'],
+    run: async ({ agent, text }) => {
+      const r = await post(`/api/gateway/agents/${q(String(agent).toLowerCase())}/messages`, { text });
+      return r.delivered === 'webhook'
+        ? `Delivered to ${agent} (pushed to its webhook, message ${r.id.slice(0, 8)}).`
+        : `Queued in ${agent}'s inbox (message ${r.id.slice(0, 8)})${r.webhookError ? `: the webhook push failed (${r.webhookError})` : ': it has no webhook'}. It collects the inbox when it checks in.`;
+    },
+  },
+  {
     name: 'dh_fleet_resume',
     description: 'Resume a conversation on any machine, syncing the folder there first. Provide folder + claudeSessionId (from dh_list_fleet_folders); optional agentType, sourceMachine, machine (target). Returns a jobId to poll.',
     schema: { folder: S('project folder name'), claudeSessionId: S('conversation id'), agentType: S('claude | codex (default claude)'), sourceMachine: S('machine that has the conversation'), machine: S('machine to run it on') },

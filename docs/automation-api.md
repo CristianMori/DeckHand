@@ -239,6 +239,8 @@ each tagged with `machine`).
 | `GET /api/provenance?machine=&q=&id=&limit=` | – | one machine's provenance log, newest first: every change and every agent/gateway read, with caller, hops (`via`), target session and what was asked; `id` follows one request across hubs |
 | `GET /api/gateway/agents` | – | public-gateway clients: current ones only (token pending or enrolled; revoked clients drop off), live (a request in the last 5 min), last interaction, request counts (answered by the gateway machine) |
 | `GET /api/gateway/agents/:id/log?limit=` | – | every gateway audit line for that client, newest first |
+| `POST /api/gateway/agents/:id/messages` | `text` | message a gateway agent: pushed to its webhook, else queued in its inbox → `{id, delivered: webhook\|inbox, webhookError?}`; 403 without a trust entry for that agent (MCP: `dh_message_agent`) |
+| `POST /api/gateway/requests/:id/accept\|reject` | – | decide an agent's access request (accepting lets it mint a token for one minute; it grants no access) |
 
 Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `session:<hubId>/<conversation>@<machine>`, the gateway `gateway:<client>`); `X-Deckhand-Request` and `X-Deckhand-Via` carry the request id and the hubs it passed through, and every answer echoes `X-Deckhand-Request`.
 | `POST /api/memories` | `fact`, `scope` (global\|machine\|project), `machine`, `project`, `tags`, `instructed`, `originSession`, `originFolder` | remember a fact fleet-wide; `queued:true` when the store machine is unreachable |

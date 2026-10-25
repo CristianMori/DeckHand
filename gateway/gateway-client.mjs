@@ -17,6 +17,7 @@ import {
   privateFromJwk,
   privateToJwk,
   publicFromRaw,
+  pushCanonical,
   rawPublic,
   requestCanonical,
   responseCanonical,
@@ -105,6 +106,32 @@ export async function call(id, method, path, bodyObj, over = {}) {
   const plain = open(text, xPriv, xPub, { direction: 'response', methodOrStatus: String(res.status), nonce });
   return { status: res.status, sealed: true, verified, data: safeJson(plain), headers, rawBody: body };
 }
+
+/**
+ * Your webhook received a push: check it is the gateway's (signature, fresh
+ * timestamp) and open it. headers: X-DH-Message, X-DH-Timestamp,
+ * X-DH-Signature (any case); body: the raw request body string.
+ * Returns {id, at, from, text}; throws when anything is off. Answer 2xx only
+ * after this succeeds, or the gateway keeps the message in your inbox.
+ */
+export function openPush(id, headers, body, maxSkewS = 300) {
+  const h = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), Array.isArray(v) ? v[0] : v]));
+  const msgId = String(h['x-dh-message'] ?? '');
+  const ts = String(h['x-dh-timestamp'] ?? '');
+  if (!msgId || !/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > maxSkewS) throw new Error('push: missing or stale headers');
+  if (!verifyText(publicFromRaw(id.gateway.ed25519, 'Ed25519'), pushCanonical(msgId, ts, body), String(h['x-dh-signature'] ?? ''))) {
+    throw new Error('push: signature does not verify');
+  }
+  const plain = open(body, privateFromJwk(id.x25519), publicFromRaw(id.x25519.x, 'X25519'), { direction: 'push', methodOrStatus: 'MSG', nonce: msgId });
+  const msg = JSON.parse(plain);
+  if (msg.id !== msgId) throw new Error('push: message id mismatch');
+  return msg;
+}
+
+/** Messages that waited for you (webhook down, or none set); ack them once handled. */
+export const inbox = (id) => call(id, 'GET', '/v1/inbox');
+export const ackInbox = (id, ids) => call(id, 'POST', '/v1/inbox/ack', { ids });
+export const setWebhook = (id, url) => call(id, 'POST', '/v1/webhook', { url });
 
 const safeJson = (t) => {
   try {

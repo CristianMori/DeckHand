@@ -35,6 +35,10 @@ export interface GatewayAgent {
   requests: number;
   denied: number;
   lastRequest?: string;
+  /** messages to this agent: its webhook, how many wait in its inbox, how the last one went */
+  webhook?: string;
+  inbox: number;
+  lastMessage?: { at: string; delivered: string; webhookError?: string };
 }
 
 export interface GatewayLogLine {
@@ -97,13 +101,20 @@ export function gatewayAgents(): GatewayAgent[] {
   const lines = logLines();
   const agents = new Map<string, GatewayAgent>();
   const ensure = (id: string, status: GatewayAgent['status']) => {
-    if (!agents.has(id)) agents.set(id, { id, status, live: false, requests: 0, denied: 0 });
+    if (!agents.has(id)) agents.set(id, { id, status, live: false, requests: 0, denied: 0, inbox: 0 });
     return agents.get(id)!;
   };
   // only current holders: enrolled clients and unused tokens (revoked ones drop off; their log stays)
   // a token that expired unused is no longer valid: it does not list
   for (const p of pending.filter((x) => x.expiresAt > Date.now())) Object.assign(ensure(p.id, 'pending'), { status: 'pending', tokenExpiresAt: new Date(p.expiresAt).toISOString() });
-  for (const c of clients) Object.assign(ensure(c.id, 'enrolled'), { status: 'enrolled', enrolledAt: c.enrolledAt });
+  for (const c of clients as { id: string; enrolledAt?: string; webhook?: string }[]) {
+    Object.assign(ensure(c.id, 'enrolled'), {
+      status: 'enrolled',
+      enrolledAt: c.enrolledAt,
+      webhook: c.webhook,
+      inbox: readJson<unknown[]>(join(GATEWAY_DIR, 'inbox', `${c.id}.json`), []).length,
+    });
+  }
   // open access requests wait for the user's ACCEPT / REJECT
   const reqs = readJson<{ id: string; clientId: string; name: string; reason: string; ip: string; createdAt: string; status: string; mintUntil?: number }[]>(
     join(GATEWAY_DIR, 'requests.json'),
@@ -116,7 +127,11 @@ export function gatewayAgents(): GatewayAgent[] {
       request: { id: r.id, name: r.name, reason: r.reason, ip: r.ip, createdAt: r.createdAt, ...(r.mintUntil ? { mintUntil: new Date(r.mintUntil).toISOString() } : {}) },
     });
   }
-  for (const l of lines) {
+  for (const l of lines as (GatewayLogLine & { delivered?: string; webhookError?: string })[]) {
+    if (l.event === 'message' && l.client && agents.has(l.client)) {
+      agents.get(l.client)!.lastMessage = { at: l.at, delivered: l.delivered ?? '?', ...(l.webhookError ? { webhookError: l.webhookError } : {}) };
+      continue;
+    }
     if (!l.client || !agents.has(l.client) || l.event) continue;
     const a = agents.get(l.client)!;
     if (l.status === 401) {
@@ -158,5 +173,25 @@ export function decideRequest(requestId: string, decision: 'accept' | 'reject'):
         }
       },
     );
+  });
+}
+
+/** Hand a message to the gateway: pushed to the agent's webhook, or left in its inbox. */
+export function sendAgentMessage(clientId: string, from: string, text: string): Promise<{ id: string; delivered: 'webhook' | 'inbox'; webhookError?: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      [join(HUB_ROOT, 'gateway', 'deckhand-gateway.mjs'), 'message', clientId],
+      { env: { ...process.env, DECKHAND_GATEWAY_DIR: GATEWAY_DIR, DECKHAND_GATEWAY_LOG: GATEWAY_LOG }, timeout: 30_000 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message).trim()));
+        try {
+          resolve(JSON.parse(String(stdout).trim().split('\n').pop() ?? ''));
+        } catch {
+          reject(new Error('gateway gave no answer'));
+        }
+      },
+    );
+    child.stdin?.end(JSON.stringify({ from, text }));
   });
 }

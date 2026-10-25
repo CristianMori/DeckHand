@@ -11,7 +11,7 @@
 //   {"v":2,"epk":"<sender's ephemeral X25519 public>","iv":"<12 bytes>","ct":"<ciphertext || 16-byte Poly1305 tag>"}
 //   shared = X25519(ephemeral private, recipient's static X25519 public)
 //   key    = HKDF-SHA256(ikm = shared, salt = epk raw || recipient public raw, info = "deckhand-gateway/2 " DIRECTION " " NONCE, 32 bytes)
-//            DIRECTION = "request" | "response"
+//            DIRECTION = "request" | "response" | "push"
 //   AEAD   = ChaCha20-Poly1305, AAD = "DH2 " DIRECTION "\n" METHOD-or-STATUS "\n" PATH-or-"" "\n" NONCE
 //   plaintext = the JSON body (UTF-8).
 
@@ -55,6 +55,16 @@ export function requestCanonical(method, pathWithQuery, timestamp, nonce, body) 
 
 export function responseCanonical(status, nonce, body) {
   return ['DH2-RESP', String(status), nonce, sha256hex(body ?? '')].join('\n');
+}
+
+/**
+ * A message pushed to a client's webhook (gateway → client), header X-DH-Signature:
+ *   canonical = "DH2-PUSH\n" MESSAGE_ID "\n" TIMESTAMP "\n" hex(sha256(body bytes as sent))
+ * The body is an envelope sealed to the client's X25519 key with
+ * DIRECTION = "push", METHOD-or-STATUS = "MSG", path "", NONCE = the message id.
+ */
+export function pushCanonical(messageId, timestamp, body) {
+  return ['DH2-PUSH', messageId, String(timestamp), sha256hex(body ?? '')].join('\n');
 }
 
 export const signText = (privateKey, text) => b64u(sign(null, Buffer.from(text), privateKey));

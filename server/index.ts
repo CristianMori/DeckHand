@@ -46,7 +46,7 @@ import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
-import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent } from './gatewayAgents.js';
+import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent, sendAgentMessage } from './gatewayAgents.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
@@ -305,6 +305,33 @@ app.post('/api/gateway/requests/:id/:decision', async (req, res) => {
   }
   try {
     res.json(await decideRequest(id, decision));
+  } catch (err) {
+    res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// A message from a session (or the dashboard) to a gateway agent: pushed to its
+// webhook, or left in its inbox. Only to agents the user trusts in fleet memory.
+app.post('/api/gateway/agents/:id/messages', express.json({ type: () => true, limit: '64kb' }), async (req, res) => {
+  const clientId = String(req.params.id).toLowerCase();
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(clientId) || !text) return res.status(400).json({ error: 'POST /api/gateway/agents/<client>/messages {"text": "..."}' });
+  if (!gatewayPresent()) {
+    const peer = federation.peerByMachine(STORE_MACHINE);
+    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
+    const out = await federation.forward(peer, req.path, { method: 'POST', body: { text } }).catch(() => null);
+    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
+  }
+  // the trust rule, outward: nothing leaves for an agent without the user's trust entry
+  const trusted = (await recall('trusted-agent', 200).catch(() => [])).some((m) => {
+    const tags = m.tags.toLowerCase().split(/[\s,]+/);
+    return m.instructed && !m.deleted && !m.originMachine.startsWith('gateway:') && !m.originSession.startsWith('gateway:') &&
+      tags.includes('trusted-agent') && (tags.includes(`client:${clientId}`) || tags.includes('client:*'));
+  });
+  if (!trusted) return res.status(403).json({ error: `${clientId} has no trust entry in fleet memory: not sending` });
+  const from = String(req.headers['x-deckhand-caller'] ?? '') || (/mozilla/i.test(String(req.headers['user-agent'] ?? '')) ? 'dashboard' : 'api');
+  try {
+    res.json(await sendAgentMessage(clientId, from, text));
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
   }

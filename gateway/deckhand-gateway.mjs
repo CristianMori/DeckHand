@@ -21,6 +21,13 @@
 //   node deckhand-gateway.mjs requests          access requests, as JSON (the hub's admin view reads this)
 //   node deckhand-gateway.mjs accept <request>  the requester then has one minute to mint its token
 //   node deckhand-gateway.mjs reject <request>
+//   node deckhand-gateway.mjs message <client>  (JSON {from, text} on stdin) the hub uses this
+//
+// Messages TO a client: pushed to the webhook it registered (POST /v1/webhook),
+// signed by the gateway and sealed to the client's key; when the push fails, or
+// there is no webhook, the message waits in the client's inbox (GET /v1/inbox,
+// POST /v1/inbox/ack). Clients collect the inbox when they come online and
+// periodically.
 //
 // An agent without a token can ASK: POST /access-requests (plain JSON) files a
 // request that the user accepts or rejects in the Deckhand admin view. The
@@ -34,6 +41,7 @@
 //   bootstrap.json     pending tokens: [{id, tokenSha256, expiresAt}]
 //   bootstrap-<id>.txt the token for the user to hand over (delete once handed over)
 //   requests.json      access requests: [{id, clientId, name, reason, ip, status, ...}]
+//   inbox/<client>.json messages waiting for that client (push failed or no webhook)
 //   config.json        {port, hubUrl, publicUrl, limits...}
 // Which sessions a client reaches is not configured here: it comes from the
 // user's trust entries in fleet memory (see trustFor).
@@ -44,7 +52,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lookup as dnsLookup } from 'node:dns';
+import { isIP } from 'node:net';
 import { createServer } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { dirname, join } from 'node:path';
 import {
   b64u,
@@ -53,6 +64,7 @@ import {
   privateFromJwk,
   privateToJwk,
   publicFromRaw,
+  pushCanonical,
   rawPublic,
   requestCanonical,
   responseCanonical,
@@ -76,6 +88,11 @@ const MAX_OPEN_REQUESTS = 20;
 const REQUESTS_PER_IP_PER_HOUR = 3;
 /** decided requests are kept this long, then dropped */
 const REQUEST_KEEP_MS = 30 * 24 * 3600_000;
+const INBOX_DIR = join(DIR, 'inbox');
+/** messages kept per client inbox; the oldest go first */
+const INBOX_MAX = 500;
+const MESSAGE_MAX = 20_000;
+const WEBHOOK_TIMEOUT_MS = 10_000;
 
 const DEFAULTS = {
   port: 5990,
@@ -164,6 +181,111 @@ function bootstrap(id) {
   );
   console.log(`bootstrap token for ${id} written to ${handoff} (root only), expires ${new Date(expiresAt).toISOString()}.`);
   if (revokedPrevious) console.log(`${id}'s previous key is revoked.`);
+}
+
+// ------------------------------------------------------------- messages out
+
+const inboxFile = (clientId) => join(INBOX_DIR, `${clientId}.json`);
+const readInbox = (clientId) => readJson(inboxFile(clientId), []);
+const writeInbox = (clientId, list) => writePrivate(inboxFile(clientId), JSON.stringify(list.slice(-INBOX_MAX), null, 2));
+
+/** Loopback, private, link-local, CGNAT/tailnet and unique-local addresses: never a webhook target. */
+function privateAddress(a) {
+  const v = a.toLowerCase().replace(/^::ffff:/, '');
+  return (
+    /^(0|10|127)\./.test(v) ||
+    /^169\.254\./.test(v) ||
+    /^192\.168\./.test(v) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(v) ||
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v) ||
+    v === '::' ||
+    v === '::1' ||
+    /^f[cd]/.test(v) ||
+    /^fe[89ab]/.test(v)
+  );
+}
+
+/** A webhook URL the gateway may call: https, no credentials. */
+function checkWebhookUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw));
+  } catch {
+    throw new HttpError(400, 'webhook: not a URL');
+  }
+  if (u.protocol !== 'https:') throw new HttpError(400, 'webhook: https only');
+  if (u.username || u.password) throw new HttpError(400, 'webhook: no credentials in the URL');
+  if (String(raw).length > 500) throw new HttpError(400, 'webhook: URL too long');
+  return u.toString();
+}
+
+/** POST to a webhook, refusing any host that resolves to a private address (checked at connect time). */
+function postWebhook(url, body, headers) {
+  return new Promise((resolve, reject) => {
+    // an IP-literal host never goes through `lookup` below: check it here
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    if (isIP(host) && !process.env.DECKHAND_GATEWAY_TEST_PRIVATE_WEBHOOKS && privateAddress(host)) {
+      return reject(new Error('webhook host is a private address'));
+    }
+    const req = httpsRequest(
+      url,
+      {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: WEBHOOK_TIMEOUT_MS,
+        lookup: (host, opts, cb) =>
+          dnsLookup(host, { all: true }, (err, addrs) => {
+            if (err) return cb(err);
+            // DECKHAND_GATEWAY_TEST_PRIVATE_WEBHOOKS=1: tests only (a local receiver is always private)
+            const blocked = !process.env.DECKHAND_GATEWAY_TEST_PRIVATE_WEBHOOKS && addrs.some((x) => privateAddress(x.address));
+            if (!addrs.length || blocked) return cb(new Error('webhook host resolves to a private address'));
+            return opts?.all ? cb(null, addrs) : cb(null, addrs[0].address, addrs[0].family);
+          }),
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => (res.statusCode >= 200 && res.statusCode < 300 ? resolve(res.statusCode) : reject(new Error(`webhook answered ${res.statusCode}`))));
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('webhook timed out')));
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+/** Push one message: sealed to the client's key, signed by the gateway's. */
+async function pushMessage(client, msg, keys) {
+  const body = seal(JSON.stringify(msg), publicFromRaw(client.x25519, 'X25519'), { direction: 'push', methodOrStatus: 'MSG', nonce: msg.id });
+  const ts = String(Math.floor(Date.now() / 1000));
+  await postWebhook(client.webhook, body, {
+    'X-DH-Message': msg.id,
+    'X-DH-Timestamp': ts,
+    'X-DH-Signature': signText(keys.edPriv, pushCanonical(msg.id, ts, body)),
+  });
+}
+
+/** CLI `message <client>`: push, or leave in the inbox when the push fails. Prints the outcome as JSON. */
+async function message(clientId) {
+  const input = JSON.parse(readFileSync(0, 'utf8'));
+  const client = clients().find((c) => c.id === clientId);
+  if (!client) throw new Error(`${clientId} is not an enrolled gateway client`);
+  const text = String(input.text ?? '').trim();
+  if (!text) throw new Error('message text is empty');
+  if (text.length > MESSAGE_MAX) throw new Error(`message is over ${MESSAGE_MAX} characters`);
+  const msg = { id: randomUUID(), at: new Date().toISOString(), from: String(input.from ?? 'unknown').slice(0, 200), text };
+  let delivered = 'inbox';
+  let webhookError;
+  if (client.webhook) {
+    try {
+      await pushMessage(client, msg, serverKeys());
+      delivered = 'webhook';
+    } catch (err) {
+      webhookError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  if (delivered === 'inbox') writeInbox(clientId, [...readInbox(clientId), { ...msg, ...(webhookError ? { webhookError } : {}) }]);
+  audit({ event: 'message', client: clientId, message: msg.id, from: msg.from, delivered, ...(webhookError ? { webhookError } : {}) });
+  console.log(JSON.stringify({ id: msg.id, delivered, ...(webhookError ? { webhookError } : {}) }));
 }
 
 // ------------------------------------------------------------ access requests
@@ -442,6 +564,41 @@ const intParam = (v, def, min, max) => {
   return Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), min), max) : def;
 };
 
+/** The client's own mailbox: no trust entry needed. */
+const MAILBOX_ROUTES = [
+  ['GET', /^\/v1\/webhook$/, async (_cfg, _m, _url, _body, clientId) => ({ url: clients().find((c) => c.id === clientId)?.webhook ?? null })],
+  ['POST', /^\/v1\/webhook$/, async (_cfg, _m, _url, body, clientId) => {
+    const all = clients();
+    const me = all.find((c) => c.id === clientId);
+    if (!me) throw new HttpError(404, 'unknown client');
+    if (body.url === null || body.url === '') {
+      delete me.webhook;
+      writePrivate(CLIENTS, JSON.stringify(all, null, 2));
+      audit({ event: 'webhook', client: clientId, url: null });
+      return { url: null };
+    }
+    me.webhook = checkWebhookUrl(body.url);
+    writePrivate(CLIENTS, JSON.stringify(all, null, 2));
+    audit({ event: 'webhook', client: clientId, url: me.webhook });
+    // a test push, so the client knows at once whether it works
+    const test = { id: randomUUID(), at: new Date().toISOString(), from: 'gateway', text: 'webhook test: pushes from the Deckhand fleet arrive here' };
+    try {
+      await pushMessage(me, test, serverKeys());
+      return { url: me.webhook, test: 'delivered' };
+    } catch (err) {
+      return { url: me.webhook, test: `failed: ${err instanceof Error ? err.message : err} (messages will wait in the inbox)` };
+    }
+  }],
+  ['GET', /^\/v1\/inbox$/, async (_cfg, _m, _url, _body, clientId) => readInbox(clientId)],
+  ['POST', /^\/v1\/inbox\/ack$/, async (_cfg, _m, _url, body, clientId) => {
+    const ids = new Set(Array.isArray(body.ids) ? body.ids.map(String) : []);
+    const before = readInbox(clientId);
+    const after = before.filter((m) => !ids.has(m.id));
+    writeInbox(clientId, after);
+    return { removed: before.length - after.length, remaining: after.length };
+  }],
+];
+
 /** The allowlist: [method, pattern, handler]. Anything else is 404. */
 const ROUTES = [
   ['GET', /^\/v1\/sessions$/, async (cfg) => {
@@ -633,7 +790,7 @@ async function handle(req, res, keys) {
   rate.set(client.id, window);
 
   const url = new URL(req.url ?? '/', 'http://gateway');
-  const route = ROUTES.find(([method, re]) => method === req.method && re.test(url.pathname));
+  const route = [...ROUTES, ...MAILBOX_ROUTES].find(([method, re]) => method === req.method && re.test(url.pathname));
   if (!route) return reply(404, { error: 'no such route' });
 
   let body = {};
@@ -678,7 +835,11 @@ try {
   else if (cmd === 'requests') console.log(JSON.stringify(requests().map(publicRequest)));
   else if (cmd === 'accept') decide(arg, 'accepted');
   else if (cmd === 'reject') decide(arg, 'rejected');
-  else console.log('usage: deckhand-gateway.mjs serve | bootstrap <id> | revoke <id> | list | requests | accept <request> | reject <request>');
+  else if (cmd === 'message') message(arg).catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+  else console.log('usage: deckhand-gateway.mjs serve | bootstrap <id> | revoke <id> | list | requests | accept <request> | reject <request> | message <client>');
 } catch (err) {
   console.error(err.message);
   process.exit(1);

@@ -543,6 +543,18 @@ certificate, no open port); the hub's 5959 never faces the internet.
   gateway never count). Within that, every Claude/Codex session is visible,
   auto-yes and bypass-permissions ones included; anything else answers 404
   as if it did not exist. Prompts arrive stamped `[Deckhand gateway, client <id>]`.
+- **Messages to an agent:** a session calls `dh_message_agent(agent, text)`.
+  Only agents with the user's trust entry can be messaged. The gateway pushes
+  the message to the webhook the agent registered (`POST /v1/webhook {url}`,
+  https only, never a private/tailnet address; a test push answers at once),
+  sealed to the agent's key and signed by the gateway's
+  (`X-DH-Message`, `X-DH-Timestamp`, `X-DH-Signature` over
+  `DH2-PUSH\nID\nTIMESTAMP\nhex(sha256(body))`; `openPush()` in the reference
+  client checks and opens it). When the push fails, or there is no webhook,
+  the message waits in the agent's inbox: `GET /v1/inbox`, then
+  `POST /v1/inbox/ack {ids}`. Agents should collect the inbox when they come
+  online and periodically. ADMIN shows each agent's webhook, inbox count and
+  last delivery.
 - **Limits:** 64 KB bodies, 60 requests/minute per client, 10 bad-auth
   attempts in 10 minutes lock the caller out for 15. Every request is a JSON
   line in `/var/log/deckhand-gateway/audit.log` (no secrets).

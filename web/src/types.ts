@@ -130,6 +130,9 @@ export interface GatewayAgent {
   requests: number;
   denied: number;
   lastRequest?: string;
+  webhook?: string;
+  inbox: number;
+  lastMessage?: { at: string; delivered: string; webhookError?: string };
 }
 
 export interface GatewayAgentsInfo {
