@@ -33,6 +33,37 @@ export function newIdentity(url) {
 
 export const identityPublic = (id) => ({ ed25519: id.ed25519.x, x25519: id.x25519.x });
 
+/**
+ * No token yet: ask for one. The user accepts or rejects in Deckhand's admin
+ * view; keep the returned secret, it is the only handle on the request.
+ */
+export async function requestAccess(url, { clientId, name, reason }) {
+  const res = await fetch(`${url.replace(/\/+$/, '')}/access-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId, name, reason }),
+  });
+  const data = await res.json();
+  if (res.status !== 202) throw new Error(`request: ${res.status} ${data.error}`);
+  return data; // {requestId, clientId, secret, status, poll, mint}
+}
+
+/** pending | accepted (mint before mintUntil) | rejected | expired | minted */
+export async function requestStatus(url, requestId, secret) {
+  const res = await fetch(`${url.replace(/\/+$/, '')}/access-requests/${requestId}`, { headers: { Authorization: `Request ${secret}` } });
+  const data = await res.json();
+  if (res.status !== 200) throw new Error(`status: ${res.status} ${data.error}`);
+  return data;
+}
+
+/** Within a minute of acceptance: a one-time bootstrap token for enroll(). */
+export async function mintFromRequest(url, requestId, secret) {
+  const res = await fetch(`${url.replace(/\/+$/, '')}/access-requests/${requestId}/mint`, { method: 'POST', headers: { Authorization: `Request ${secret}` } });
+  const data = await res.json();
+  if (res.status !== 200) throw new Error(`mint: ${res.status} ${data.error}`);
+  return data; // {clientId, token, expiresAt, gateway: {ed25519, x25519}}
+}
+
 /** Trade the one-time token for enrollment; pins the gateway's keys into the identity. */
 export async function enroll(id, bootstrapToken, expectGateway) {
   const res = await fetch(`${id.url}/enroll`, {

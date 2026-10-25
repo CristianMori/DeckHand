@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { existsSync, openSync, readSync, closeSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { HUB_ROOT } from './config.js';
 
 /**
  * The public gateway's clients, as the admin view shows them: who was given
@@ -18,8 +20,14 @@ const TAIL_BYTES = 8 * 1024 * 1024;
 
 export interface GatewayAgent {
   id: string;
-  /** enrolled = holds keys; pending = token minted, not used yet */
-  status: 'enrolled' | 'pending';
+  /**
+   * enrolled = holds keys; pending = token minted, not used yet;
+   * requested = asked for access, waiting for the user; accepted = the user
+   * said yes, the agent has until mintUntil to mint its token
+   */
+  status: 'enrolled' | 'pending' | 'requested' | 'accepted';
+  /** an access request behind this row */
+  request?: { id: string; name: string; reason: string; ip: string; createdAt: string; mintUntil?: string };
   enrolledAt?: string;
   tokenExpiresAt?: string;
   lastSeen?: string;
@@ -96,6 +104,18 @@ export function gatewayAgents(): GatewayAgent[] {
   // a token that expired unused is no longer valid: it does not list
   for (const p of pending.filter((x) => x.expiresAt > Date.now())) Object.assign(ensure(p.id, 'pending'), { status: 'pending', tokenExpiresAt: new Date(p.expiresAt).toISOString() });
   for (const c of clients) Object.assign(ensure(c.id, 'enrolled'), { status: 'enrolled', enrolledAt: c.enrolledAt });
+  // open access requests wait for the user's ACCEPT / REJECT
+  const reqs = readJson<{ id: string; clientId: string; name: string; reason: string; ip: string; createdAt: string; status: string; mintUntil?: number }[]>(
+    join(GATEWAY_DIR, 'requests.json'),
+    [],
+  );
+  for (const r of reqs) {
+    const open = r.status === 'pending' || (r.status === 'accepted' && (r.mintUntil ?? 0) > Date.now());
+    if (!open || agents.has(r.clientId)) continue;
+    Object.assign(ensure(r.clientId, r.status === 'pending' ? 'requested' : 'accepted'), {
+      request: { id: r.id, name: r.name, reason: r.reason, ip: r.ip, createdAt: r.createdAt, ...(r.mintUntil ? { mintUntil: new Date(r.mintUntil).toISOString() } : {}) },
+    });
+  }
   for (const l of lines) {
     if (!l.client || !agents.has(l.client) || l.event) continue;
     const a = agents.get(l.client)!;
@@ -109,7 +129,9 @@ export function gatewayAgents(): GatewayAgent[] {
   }
   const now = Date.now();
   for (const a of agents.values()) a.live = a.status === 'enrolled' && !!a.lastSeen && now - Date.parse(a.lastSeen) < LIVE_MS;
-  return [...agents.values()].sort((x, y) => (y.lastSeen ?? '').localeCompare(x.lastSeen ?? '') || x.id.localeCompare(y.id));
+  // requests waiting for a decision first, then by last interaction
+  const rank = (a: GatewayAgent) => (a.status === 'requested' ? 0 : a.status === 'accepted' ? 1 : 2);
+  return [...agents.values()].sort((x, y) => rank(x) - rank(y) || (y.lastSeen ?? '').localeCompare(x.lastSeen ?? '') || x.id.localeCompare(y.id));
 }
 
 /** Every logged line about one client, newest first. */
@@ -118,4 +140,23 @@ export function gatewayAgentLog(id: string, limit: number): GatewayLogLine[] {
     .filter((l) => l.client === id)
     .reverse()
     .slice(0, limit);
+}
+
+/** Accept or reject an access request through the gateway's own CLI (it owns its files). */
+export function decideRequest(requestId: string, decision: 'accept' | 'reject'): Promise<{ id: string; clientId: string; name: string; reason: string; status: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [join(HUB_ROOT, 'gateway', 'deckhand-gateway.mjs'), decision, requestId],
+      { env: { ...process.env, DECKHAND_GATEWAY_DIR: GATEWAY_DIR, DECKHAND_GATEWAY_LOG: GATEWAY_LOG }, timeout: 15_000 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message).trim()));
+        try {
+          resolve(JSON.parse(String(stdout).trim().split('\n').pop() ?? ''));
+        } catch {
+          reject(new Error('gateway gave no answer'));
+        }
+      },
+    );
+  });
 }

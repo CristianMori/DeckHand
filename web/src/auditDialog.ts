@@ -41,6 +41,40 @@ export async function renderGatewayAgents(el: HTMLElement, onPick: (id: string) 
   for (const a of info.agents) {
     const row = document.createElement('div');
     row.className = 'resume-row admin-row';
+    if (a.request && (a.status === 'requested' || a.status === 'accepted')) {
+      // an access request: the user decides. Accepting only lets the agent enroll;
+      // what it may reach still comes from the user's trust entries in fleet memory.
+      const r = a.request;
+      row.innerHTML = `
+        <div class="resume-row-top"><span class="resume-proj">${esc(a.id)}</span>${
+          a.status === 'requested' ? '<span class="chip waiting">PENDING ACCEPTANCE</span>' : '<span class="chip idle">ACCEPTED</span>'
+        }</div>
+        <div class="resume-snippet">${esc(r.name)} — “${esc(r.reason)}”</div>
+        <div class="resume-snippet">asked ${esc(fmtWhen(r.createdAt))} from ${esc(r.ip)}</div>
+        <div class="resume-snippet">${
+          a.status === 'accepted'
+            ? `may mint its token until ${esc(new Date(r.mintUntil ?? '').toLocaleTimeString())}`
+            : 'accepting lets it enroll only: access comes from your trust entries in fleet memory'
+        }</div>
+        <div class="card-actions"></div>`;
+      const actions = row.querySelector('.card-actions') as HTMLElement;
+      const button = (label: string, cls: string, decision: 'accept' | 'reject') => {
+        const b = document.createElement('button');
+        b.className = cls;
+        b.textContent = label;
+        b.onclick = async (ev) => {
+          ev.stopPropagation();
+          b.disabled = true;
+          await api.gatewayDecide(r.id, decision).catch((err) => alert(`${label} failed: ${err instanceof Error ? err.message : err}`));
+          void renderGatewayAgents(el, onPick);
+        };
+        actions.appendChild(b);
+      };
+      if (a.status === 'requested') button('ACCEPT', 'primary-btn', 'accept');
+      button('REJECT', 'ghost-btn danger', 'reject');
+      el.appendChild(row);
+      continue;
+    }
     const chip = a.live
       ? '<span class="chip working">LIVE</span>'
       : a.status === 'enrolled'

@@ -120,7 +120,9 @@ export interface UpdateAllResult {
 
 export interface GatewayAgent {
   id: string;
-  status: 'enrolled' | 'pending';
+  /** requested = asked for access, waiting for the user; accepted = may mint its token until request.mintUntil */
+  status: 'enrolled' | 'pending' | 'requested' | 'accepted';
+  request?: { id: string; name: string; reason: string; ip: string; createdAt: string; mintUntil?: string };
   enrolledAt?: string;
   tokenExpiresAt?: string;
   lastSeen?: string;

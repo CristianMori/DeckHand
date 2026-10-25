@@ -146,6 +146,8 @@ export const api = {
   adminRestart: (machine?: string) =>
     fetch(`/api/admin/restart${mq(machine)}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   gatewayAgents: () => fetch('/api/gateway/agents').then((r) => json<GatewayAgentsInfo>(r)),
+  gatewayDecide: (requestId: string, decision: 'accept' | 'reject') =>
+    fetch(`/api/gateway/requests/${encodeURIComponent(requestId)}/${decision}`, { method: 'POST' }).then((r) => json<unknown>(r)),
   gatewayAgentLog: (id: string, limit = 300) =>
     fetch(`/api/gateway/agents/${encodeURIComponent(id)}/log?limit=${limit}`).then((r) => json<GatewayLogLine[]>(r)),
   provenance: (machine: string, opts: { q?: string; id?: string; limit?: number } = {}) => {

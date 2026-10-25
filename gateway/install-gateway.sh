@@ -5,7 +5,8 @@
 #
 #   sudo bash gateway/install-gateway.sh            install / refresh the unit, start it, enable Funnel
 #   sudo node gateway/deckhand-gateway.mjs bootstrap <id>   one-time enrollment token for a client
-#   edit /etc/deckhand-gateway/config.json  ->  {"allowFolders": ["FolderA", ...]}  or ["*"] for every folder
+#   access: a trust entry in fleet memory (told by the user) tagged
+#           "trusted-agent client:<id> folders:*" (or folders:A,B; client:* for every client)
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 
@@ -15,7 +16,7 @@ DIR=/etc/deckhand-gateway
 PORT=5990
 
 install -d -m 700 "$DIR" /var/log/deckhand-gateway
-[ -f "$DIR/config.json" ] || { echo '{"allowFolders": []}' > "$DIR/config.json"; chmod 600 "$DIR/config.json"; }
+[ -f "$DIR/config.json" ] || { echo '{}' > "$DIR/config.json"; chmod 600 "$DIR/config.json"; }
 
 cat > /etc/systemd/system/deckhand-gateway.service <<EOF
 [Unit]

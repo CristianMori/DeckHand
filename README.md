@@ -512,6 +512,14 @@ certificate, no open port); the hub's 5959 never faces the internet.
   The client generates its own Ed25519 + X25519 key pairs and enrolls only
   the public halves; the token burns and the file is deleted. No private key
   ever crosses the wire.
+- **Asking for access:** an agent without a token files
+  `POST /access-requests {clientId, name, reason}` (plain JSON; 3 per address
+  an hour, 20 open at most) and gets a request id and secret back. The request
+  shows in ADMIN as PENDING ACCEPTANCE with ACCEPT / REJECT. The agent polls
+  `GET /access-requests/<id>` (`Authorization: Request <secret>`); once
+  accepted it has one minute to `POST /access-requests/<id>/mint`, which
+  returns a bootstrap token for `/enroll`. **Accepting is not trusting:** it
+  only lets the agent prove who it is.
 - **Every request:** Ed25519 signature (`X-DH-Signature`) over
   `DH2\nMETHOD\nPATH?QUERY\nX-DH-Timestamp\nX-DH-Nonce\nhex(sha256(body))`,
   `X-DH-Client` naming the client; timestamps older than 5 minutes and reused
@@ -525,10 +533,16 @@ certificate, no open port); the hub's 5959 never faces the internet.
   `/v1/sessions/:id/screen`, `/v1/sessions/:id/wait?timeoutMs=&until=`,
   `POST /v1/sessions/:id/prompt {text, queue, waitMs}`, `GET /v1/memories?q=`,
   `POST /v1/memories {fact, tags, scope}`. Nothing else exists.
-- **Reach:** only Claude/Codex sessions whose folder is in `allowFolders`
-  (`/etc/deckhand-gateway/config.json`; `["*"]` = every folder) and that are not on auto-yes or
-  bypass-permissions; any other session answers 404 as if it did not exist.
-  Prompts arrive stamped `[Deckhand gateway, client <id>]`.
+- **Reach — decided by fleet memory, nothing hardcoded:** on every request
+  the gateway reads the user's trust entries: memories marked *told by the
+  user*, not written through the gateway, tagged `trusted-agent` plus
+  `client:<id>` and `folders:*` or `folders:A,B`. Example: "TRUSTED AGENT:
+  Ron, every folder", tags `trusted-agent client:ron folders:*`. No entry, no
+  sessions; a narrower entry, fewer; forgetting the entry cuts access on the
+  next request. An agent cannot trust itself (memories it writes through the
+  gateway never count). Within that, every Claude/Codex session is visible,
+  auto-yes and bypass-permissions ones included; anything else answers 404
+  as if it did not exist. Prompts arrive stamped `[Deckhand gateway, client <id>]`.
 - **Limits:** 64 KB bodies, 60 requests/minute per client, 10 bad-auth
   attempts in 10 minutes lock the caller out for 15. Every request is a JSON
   line in `/var/log/deckhand-gateway/audit.log` (no secrets).

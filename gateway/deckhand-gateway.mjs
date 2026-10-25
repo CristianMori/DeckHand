@@ -11,19 +11,32 @@
 // key ever crosses the wire. From then on every request is Ed25519-signed
 // (replays refused) and every body travels sealed to the other side's X25519
 // key (see wire.mjs). Only the routes below exist, and they reach only
-// sessions in opted-in folders that are Claude/Codex agents without auto-yes.
+// Claude/Codex sessions without auto-yes, in folders the user's trust entries
+// in fleet memory grant that client.
 //
 //   node deckhand-gateway.mjs serve
 //   node deckhand-gateway.mjs bootstrap <id>   one-time enrollment token (revokes <id>'s current key)
 //   node deckhand-gateway.mjs revoke <id>      delete <id>'s enrolled key: locked out on the next request
 //   node deckhand-gateway.mjs list
+//   node deckhand-gateway.mjs requests          access requests, as JSON (the hub's admin view reads this)
+//   node deckhand-gateway.mjs accept <request>  the requester then has one minute to mint its token
+//   node deckhand-gateway.mjs reject <request>
+//
+// An agent without a token can ASK: POST /access-requests (plain JSON) files a
+// request that the user accepts or rejects in the Deckhand admin view. The
+// requester polls GET /access-requests/<id> with the secret it got back; once
+// accepted it has one minute to POST /access-requests/<id>/mint, which hands it
+// a bootstrap token (single use, one minute) for /enroll.
 //
 // Files (directory from DECKHAND_GATEWAY_DIR, default /etc/deckhand-gateway), all 0600:
 //   server-keys.json   the gateway's static Ed25519 + X25519 private keys
 //   clients.json       enrolled clients: [{id, ed25519, x25519, enrolledAt}] (public keys)
 //   bootstrap.json     pending tokens: [{id, tokenSha256, expiresAt}]
 //   bootstrap-<id>.txt the token for the user to hand over (delete once handed over)
-//   config.json        {allowFolders: [...], port, hubUrl, ...}
+//   requests.json      access requests: [{id, clientId, name, reason, ip, status, ...}]
+//   config.json        {port, hubUrl, publicUrl, limits...}
+// Which sessions a client reaches is not configured here: it comes from the
+// user's trust entries in fleet memory (see trustFor).
 // Audit log: one JSON line per request in DECKHAND_GATEWAY_LOG (default /var/log/deckhand-gateway/audit.log).
 //
 // No dependencies.
@@ -56,14 +69,19 @@ const CONFIG_FILE = join(DIR, 'config.json');
 const LOG_FILE = process.env.DECKHAND_GATEWAY_LOG || '/var/log/deckhand-gateway/audit.log';
 /** a bootstrap token is good for one minute after it is minted */
 const BOOTSTRAP_TTL_MS = 60_000;
+const REQUESTS = join(DIR, 'requests.json');
+/** after the user accepts, how long the requester has to mint its token */
+const MINT_WINDOW_MS = 60_000;
+const MAX_OPEN_REQUESTS = 20;
+const REQUESTS_PER_IP_PER_HOUR = 3;
+/** decided requests are kept this long, then dropped */
+const REQUEST_KEEP_MS = 30 * 24 * 3600_000;
 
 const DEFAULTS = {
   port: 5990,
   hubUrl: 'http://127.0.0.1:5959',
   /** public base URL, written into the bootstrap file for the client */
   publicUrl: '',
-  /** project folder names whose sessions the gateway may see and prompt */
-  allowFolders: [],
   maxBodyBytes: 64 * 1024,
   /** requests per client per minute */
   ratePerMinute: 60,
@@ -111,17 +129,25 @@ function serverKeys() {
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-function bootstrap(id) {
+/** A one-time enrollment token for `id` (single use, one minute). Re-minting locks `id`'s current key out. */
+function mintToken(id, via) {
   if (!ID_RE.test(id ?? '')) throw new Error('client id: lowercase letters, digits and dashes, up to 32');
-  const keys = serverKeys();
   // re-bootstrapping locks the current key out now, not after enrollment
   const enrolled = clients();
-  if (enrolled.some((c) => c.id === id)) writePrivate(CLIENTS, JSON.stringify(enrolled.filter((c) => c.id !== id), null, 2));
+  const revokedPrevious = enrolled.some((c) => c.id === id);
+  if (revokedPrevious) writePrivate(CLIENTS, JSON.stringify(enrolled.filter((c) => c.id !== id), null, 2));
   const token = randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + BOOTSTRAP_TTL_MS;
   const pending = readJson(BOOTSTRAP, []).filter((b) => b.id !== id && b.expiresAt > Date.now());
   pending.push({ id, tokenSha256: sha256(token), expiresAt });
   writePrivate(BOOTSTRAP, JSON.stringify(pending, null, 2));
+  audit({ event: 'bootstrap', client: id, via, expiresAt: new Date(expiresAt).toISOString(), revokedPrevious });
+  return { token, expiresAt, revokedPrevious };
+}
+
+function bootstrap(id) {
+  const keys = serverKeys();
+  const { token, expiresAt, revokedPrevious } = mintToken(id, 'cli');
   const handoff = join(DIR, `bootstrap-${id}.txt`);
   const cfg = config();
   writePrivate(
@@ -136,9 +162,90 @@ function bootstrap(id) {
       '',
     ].join('\n'),
   );
-  audit({ event: 'bootstrap', client: id, expiresAt: new Date(expiresAt).toISOString(), revokedPrevious: enrolled.some((c) => c.id === id) });
   console.log(`bootstrap token for ${id} written to ${handoff} (root only), expires ${new Date(expiresAt).toISOString()}.`);
-  if (enrolled.some((c) => c.id === id)) console.log(`${id}'s previous key is revoked.`);
+  if (revokedPrevious) console.log(`${id}'s previous key is revoked.`);
+}
+
+// ------------------------------------------------------------ access requests
+
+/** Requests, with accepted ones whose mint window passed marked expired. */
+function requests() {
+  const now = Date.now();
+  const all = readJson(REQUESTS, []);
+  let changed = false;
+  for (const r of all) {
+    if (r.status === 'accepted' && r.mintUntil < now) {
+      r.status = 'expired';
+      changed = true;
+    }
+  }
+  const kept = all.filter((r) => ['pending', 'accepted'].includes(r.status) || now - Date.parse(r.decidedAt ?? r.createdAt) < REQUEST_KEEP_MS);
+  if (changed || kept.length !== all.length) writePrivate(REQUESTS, JSON.stringify(kept, null, 2));
+  return kept;
+}
+
+const saveRequests = (all) => writePrivate(REQUESTS, JSON.stringify(all, null, 2));
+const publicRequest = ({ secretSha256, ...r }) => r;
+
+function decide(requestId, status) {
+  const all = requests();
+  const r = all.find((x) => x.id === requestId);
+  if (!r) throw new Error(`no request ${requestId}`);
+  if (status === 'accepted' && r.status !== 'pending') throw new Error(`request ${requestId} is ${r.status}, not pending`);
+  if (status === 'rejected' && !['pending', 'accepted'].includes(r.status)) throw new Error(`request ${requestId} is already ${r.status}`);
+  r.status = status;
+  r.decidedAt = new Date().toISOString();
+  if (status === 'accepted') r.mintUntil = Date.now() + MINT_WINDOW_MS;
+  saveRequests(all);
+  audit({ event: status === 'accepted' ? 'accept' : 'reject', client: r.clientId, request: r.id });
+  console.log(JSON.stringify(publicRequest(r)));
+}
+
+/** POST /access-requests: anyone may ask; the user decides. */
+function fileRequest(raw, addr) {
+  let b;
+  try {
+    b = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new HttpError(400, 'body: {"clientId": "...", "name": "...", "reason": "..."}');
+  }
+  const clientId = String(b.clientId ?? '').toLowerCase();
+  if (!ID_RE.test(clientId)) throw new HttpError(400, 'clientId: lowercase letters, digits and dashes, up to 32');
+  const name = String(b.name ?? '').trim().slice(0, 80);
+  const reason = String(b.reason ?? '').trim().slice(0, 500);
+  if (!name || !reason) throw new HttpError(400, 'name and reason are required');
+  if (clients().some((c) => c.id === clientId)) throw new HttpError(409, `${clientId} is already enrolled`);
+  const all = requests();
+  const open = all.filter((r) => ['pending', 'accepted'].includes(r.status));
+  if (open.some((r) => r.clientId === clientId)) throw new HttpError(409, `a request for ${clientId} is already open`);
+  if (open.length >= MAX_OPEN_REQUESTS) throw new HttpError(429, 'too many open requests; try later');
+  if (all.filter((r) => r.ip === addr && Date.now() - Date.parse(r.createdAt) < 3600_000).length >= REQUESTS_PER_IP_PER_HOUR) {
+    throw new HttpError(429, 'too many requests from this address; try later');
+  }
+  const secret = randomBytes(32).toString('base64url');
+  const r = { id: randomUUID(), clientId, name, reason, ip: addr, createdAt: new Date().toISOString(), status: 'pending', secretSha256: sha256(secret) };
+  saveRequests([...all, r]);
+  return { requestId: r.id, clientId, secret, status: 'pending', poll: `/access-requests/${r.id}`, mint: `/access-requests/${r.id}/mint` };
+}
+
+/** The request this secret belongs to, or an auth error. */
+function ownRequest(req, requestId) {
+  const secret = /^Request (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? '';
+  const all = requests();
+  const r = all.find((x) => x.id === requestId);
+  if (!r || !secret || !safeEqual(sha256(secret), r.secretSha256)) throw new AuthError('bad request secret');
+  return { r, all };
+}
+
+/** POST /access-requests/<id>/mint: inside the minute after acceptance, a bootstrap token. */
+function mintForRequest(req, requestId, keys) {
+  const { r, all } = ownRequest(req, requestId);
+  if (r.status !== 'accepted') throw new HttpError(409, `request is ${r.status}`);
+  const { token, expiresAt } = mintToken(r.clientId, `request ${r.id}`);
+  r.status = 'minted';
+  r.mintedAt = new Date().toISOString();
+  saveRequests(all);
+  return { requestId: r.id, clientId: r.clientId, token, expiresAt: new Date(expiresAt).toISOString(), enroll: '/enroll', gateway: { ed25519: keys.edRaw, x25519: keys.xRaw } };
 }
 
 function revoke(id) {
@@ -157,7 +264,7 @@ function list() {
   console.log(`gateway ed25519 ${keys.edRaw}\ngateway x25519  ${keys.xRaw}`);
   for (const c of clients()) console.log(`client ${c.id}\tenrolled ${c.enrolledAt}`);
   for (const b of readJson(BOOTSTRAP, [])) console.log(`pending ${b.id}\texpires ${new Date(b.expiresAt).toISOString()}${b.expiresAt < Date.now() ? ' (expired)' : ''}`);
-  console.log(`allowFolders: ${JSON.stringify(config().allowFolders)}`);
+  console.log('access: from trust entries in fleet memory (tags trusted-agent, client:<id>|client:*, folders:*|folders:A,B)');
 }
 
 // ------------------------------------------------------------------- serving
@@ -266,16 +373,40 @@ async function hub(cfg, method, path, body, timeoutMs = 30_000) {
 
 const folderOf = (cwd) => String(cwd ?? '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
 
-/** May the gateway touch this session? */
-function allowed(s, cfg) {
-  const folders = new Set(cfg.allowFolders.map((f) => String(f).toLowerCase()));
+/**
+ * What a client may reach, read from fleet memory on every request: the trust
+ * entries the user made (instructed, never written by a gateway client),
+ * tagged `trusted-agent`, naming the client (`client:<id>`, or `client:*` for
+ * every gateway client) and the folders (`folders:*`, or `folders:A,B`; none
+ * given = every folder). No entry, no access; forgetting it revokes.
+ */
+async function trustFor(cfg, clientId) {
+  const found = await hub(cfg, 'GET', `/api/memories?q=${encodeURIComponent('trusted-agent')}&limit=200`);
+  const access = { all: false, folders: new Set(), entries: [] };
+  for (const m of Array.isArray(found) ? found : []) {
+    const tags = String(m.tags ?? '').toLowerCase().split(/[\s,]+/).filter(Boolean);
+    const byGateway = String(m.originMachine ?? '').startsWith('gateway:') || String(m.originSession ?? '').startsWith('gateway:');
+    if (!m.instructed || m.deleted || byGateway || !tags.includes('trusted-agent')) continue;
+    if (!tags.includes(`client:${clientId.toLowerCase()}`) && !tags.includes('client:*')) continue;
+    access.entries.push(m.id);
+    // folder lists may span several tags: folders:A,B arrives split into "folders:a" and "b"
+    const raw = String(m.tags ?? '').match(/folders:([^\s]+)/i)?.[1];
+    if (!raw || raw === '*') access.all = true;
+    else for (const f of raw.split(',').filter(Boolean)) access.folders.add(f.toLowerCase());
+  }
+  return access;
+}
+
+/** May the gateway touch this session, for the client being served? */
+function allowed(s) {
+  const access = trace.getStore()?.access;
   return (
     !!s &&
-    // "*" opens every folder (the user's choice: token holders see everything)
-    (folders.has('*') || folders.has(folderOf(s.cwd).toLowerCase())) &&
-    (s.agentType === 'claude' || s.agentType === 'codex') &&
-    !s.autoYes &&
-    s.permissionMode !== 'bypassPermissions'
+    !!access &&
+    (access.all || access.folders.has(folderOf(s.cwd).toLowerCase())) &&
+    // agent sessions only (a terminal would run the text as a command); auto-yes
+    // and bypass-permissions sessions are visible too: the user's choice
+    (s.agentType === 'claude' || s.agentType === 'codex')
   );
 }
 
@@ -289,8 +420,8 @@ async function allowedSession(cfg, id) {
     if (err instanceof HttpError && err.status === 404) throw new HttpError(404, 'unknown session');
     throw err;
   }
-  // a session outside the opt-in list looks exactly like one that does not exist
-  if (!allowed(s, cfg)) throw new HttpError(404, 'unknown session');
+  // a session outside the client's trust looks exactly like one that does not exist
+  if (!allowed(s)) throw new HttpError(404, 'unknown session');
   return s;
 }
 
@@ -315,7 +446,7 @@ const intParam = (v, def, min, max) => {
 const ROUTES = [
   ['GET', /^\/v1\/sessions$/, async (cfg) => {
     const all = await hub(cfg, 'GET', '/api/sessions');
-    return (Array.isArray(all) ? all : []).filter((s) => allowed(s, cfg)).map(pick);
+    return (Array.isArray(all) ? all : []).filter((s) => allowed(s)).map(pick);
   }],
   ['GET', /^\/v1\/fleet$/, async (cfg) => {
     const ms = await hub(cfg, 'GET', '/api/fleet');
@@ -323,10 +454,9 @@ const ROUTES = [
   }],
   ['GET', /^\/v1\/agents$/, async (cfg) => hub(cfg, 'GET', '/api/agents')],
   ['GET', /^\/v1\/projects$/, async (cfg) => {
-    if (!cfg.allowFolders.includes('*')) return cfg.allowFolders;
-    // every folder: the ones with a session the gateway can reach
+    // the folders this client's trust reaches that have a session in them
     const all = await hub(cfg, 'GET', '/api/sessions');
-    return [...new Set((Array.isArray(all) ? all : []).filter((s) => allowed(s, cfg)).map((s) => folderOf(s.cwd)))].sort();
+    return [...new Set((Array.isArray(all) ? all : []).filter((s) => allowed(s)).map((s) => folderOf(s.cwd)))].sort();
   }],
   ['GET', /^\/v1\/sessions\/([^/]+)$/, async (cfg, m) => pick(await allowedSession(cfg, m[1]))],
   ['GET', /^\/v1\/sessions\/([^/]+)\/exchanges$/, async (cfg, m, url) => {
@@ -367,8 +497,9 @@ const ROUTES = [
     if (!fact) throw new HttpError(400, 'fact is required');
     const scope = body.scope === 'project' ? 'project' : 'global';
     const project = scope === 'project' ? String(body.project ?? '') : undefined;
-    if (scope === 'project' && !cfg.allowFolders.some((f) => f === '*' || f.toLowerCase() === project.toLowerCase())) {
-      throw new HttpError(400, 'project must be one of the opted-in folders');
+    const access = trace.getStore()?.access;
+    if (scope === 'project' && !(access?.all || access?.folders.has(project.toLowerCase()))) {
+      throw new HttpError(400, 'project must be a folder this client is trusted with');
     }
     return hub(cfg, 'POST', '/api/memories', {
       fact,
@@ -440,6 +571,33 @@ async function handle(req, res, keys) {
   }
   const raw = Buffer.concat(chunks);
 
+  // access requests: unauthenticated by nature, answered in plain JSON
+  const ar = /^\/access-requests(?:\/([0-9a-f-]{36})(\/mint)?)?$/.exec(req.url ?? '');
+  if (ar) {
+    try {
+      let status = 200;
+      let out;
+      if (req.method === 'POST' && !ar[1]) {
+        out = fileRequest(raw, addr);
+        status = 202;
+      } else if (req.method === 'GET' && ar[1] && !ar[2]) {
+        const { r } = ownRequest(req, ar[1]);
+        out = { requestId: r.id, clientId: r.clientId, status: r.status, ...(r.mintUntil ? { mintUntil: new Date(r.mintUntil).toISOString() } : {}) };
+      } else if (req.method === 'POST' && ar[1] && ar[2]) {
+        out = mintForRequest(req, ar[1], keys);
+      } else {
+        throw new HttpError(404, 'no such route');
+      }
+      sendPlain(res, status, out);
+      return done(status, { event: 'access-request', client: out.clientId, request: out.requestId });
+    } catch (err) {
+      if (err instanceof AuthError) noteFailure(addr, cfg);
+      const status = err instanceof HttpError ? err.status : 401;
+      sendPlain(res, status, { error: status === 401 ? 'unauthorized' : err.message });
+      return done(status, { event: 'access-request', request: ar[1], authError: err.message });
+    }
+  }
+
   if (req.method === 'POST' && req.url === '/enroll') {
     try {
       const out = enroll(req, raw, keys);
@@ -487,7 +645,9 @@ async function handle(req, res, keys) {
     }
   }
   try {
-    const data = await trace.run({ req: log.req, client: client.id }, () => route[2](cfg, url.pathname.match(route[1]), url, body ?? {}, client.id));
+    // trust is looked up fresh for every request: a forgotten trust entry locks the client out at once
+    const access = await trustFor(cfg, client.id);
+    const data = await trace.run({ req: log.req, client: client.id, access }, () => route[2](cfg, url.pathname.match(route[1]), url, body ?? {}, client.id));
     reply(200, data, req.method === 'POST' ? { text: String(body.text ?? body.fact ?? '').slice(0, 200) } : {});
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 502;
@@ -506,7 +666,7 @@ function serve() {
     });
   });
   server.requestTimeout = cfg.maxWaitMs + 60_000;
-  server.listen(cfg.port, '127.0.0.1', () => console.log(`[gateway] listening on 127.0.0.1:${cfg.port}, hub ${cfg.hubUrl}, folders ${JSON.stringify(cfg.allowFolders)}`));
+  server.listen(cfg.port, '127.0.0.1', () => console.log(`[gateway] listening on 127.0.0.1:${cfg.port}, hub ${cfg.hubUrl}; access from fleet-memory trust entries`));
 }
 
 const [cmd, arg] = process.argv.slice(2);
@@ -515,7 +675,10 @@ try {
   else if (cmd === 'bootstrap') bootstrap(arg);
   else if (cmd === 'revoke') revoke(arg);
   else if (cmd === 'list') list();
-  else console.log('usage: deckhand-gateway.mjs serve | bootstrap <id> | revoke <id> | list');
+  else if (cmd === 'requests') console.log(JSON.stringify(requests().map(publicRequest)));
+  else if (cmd === 'accept') decide(arg, 'accepted');
+  else if (cmd === 'reject') decide(arg, 'rejected');
+  else console.log('usage: deckhand-gateway.mjs serve | bootstrap <id> | revoke <id> | list | requests | accept <request> | reject <request>');
 } catch (err) {
   console.error(err.message);
   process.exit(1);

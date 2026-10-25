@@ -46,7 +46,7 @@ import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, type MemoryOp } from './fleetMemory.js';
 import { initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
-import { gatewayAgentLog, gatewayAgents, gatewayPresent } from './gatewayAgents.js';
+import { decideRequest, gatewayAgentLog, gatewayAgents, gatewayPresent } from './gatewayAgents.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import {
   KEYS,
@@ -288,6 +288,26 @@ app.get('/api/gateway/agents', (req, res) => {
 app.get('/api/gateway/agents/:id/log', (req, res) => {
   if (!gatewayPresent() && forwardGetWithQuery(req, res, STORE_MACHINE)) return;
   res.json(gatewayAgentLog(String(req.params.id), Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000)));
+});
+
+// ACCEPT / REJECT an agent's access request. Accepting only lets it mint a
+// token and enroll (prove who it is); what it may reach is decided by the
+// user's own trust entries in fleet memory, never by accepting.
+app.post('/api/gateway/requests/:id/:decision', async (req, res) => {
+  const decision = String(req.params.decision);
+  const id = String(req.params.id);
+  if ((decision !== 'accept' && decision !== 'reject') || !/^[0-9a-f-]{36}$/.test(id)) return res.status(400).json({ error: 'POST /api/gateway/requests/<request id>/accept|reject' });
+  if (!gatewayPresent()) {
+    const peer = federation.peerByMachine(STORE_MACHINE);
+    if (!peer) return res.status(502).json({ error: `${STORE_MACHINE} is not connected` });
+    const out = await federation.forward(peer, req.path, { method: 'POST' }).catch(() => null);
+    return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${STORE_MACHINE} failed` });
+  }
+  try {
+    res.json(await decideRequest(id, decision));
+  } catch (err) {
+    res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // Fleet identity — what sibling hubs probe for during discovery.
