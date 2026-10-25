@@ -545,8 +545,10 @@ certificate, no open port); the hub's 5959 never faces the internet.
   as if it did not exist. Prompts arrive stamped `[Deckhand gateway, client <id>]`.
 - **Messages to an agent:** a session calls `dh_message_agent(agent, text)`.
   Only agents with the user's trust entry can be messaged. The gateway pushes
-  the message to the webhook the agent registered (`POST /v1/webhook {url}`,
-  https only, never a private/tailnet address; a test push answers at once),
+  the message to the webhook the agent registered (`POST /v1/webhook {url,
+  authorization?}`, https only, never a private/tailnet address; a test push
+  answers at once; `authorization` is the receiver's own Authorization header
+  value, sent with every push, stored root-only, never shown back or logged),
   sealed to the agent's key and signed by the gateway's
   (`X-DH-Message`, `X-DH-Timestamp`, `X-DH-Signature` over
   `DH2-PUSH\nID\nTIMESTAMP\nhex(sha256(body))`; `openPush()` in the reference

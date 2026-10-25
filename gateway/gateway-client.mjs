@@ -131,7 +131,8 @@ export function openPush(id, headers, body, maxSkewS = 300) {
 /** Messages that waited for you (webhook down, or none set); ack them once handled. */
 export const inbox = (id) => call(id, 'GET', '/v1/inbox');
 export const ackInbox = (id, ids) => call(id, 'POST', '/v1/inbox/ack', { ids });
-export const setWebhook = (id, url) => call(id, 'POST', '/v1/webhook', { url });
+/** authorization: the receiver's own Authorization header value (optional; omitted = keep, null = drop) */
+export const setWebhook = (id, url, authorization) => call(id, 'POST', '/v1/webhook', authorization === undefined ? { url } : { url, authorization });
 
 const safeJson = (t) => {
   try {

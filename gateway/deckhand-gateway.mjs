@@ -261,6 +261,8 @@ async function pushMessage(client, msg, keys) {
     'X-DH-Message': msg.id,
     'X-DH-Timestamp': ts,
     'X-DH-Signature': signText(keys.edPriv, pushCanonical(msg.id, ts, body)),
+    // the receiver's own secret, when it wants one (set by the client, never shown back)
+    ...(client.webhookAuthorization ? { Authorization: client.webhookAuthorization } : {}),
   });
 }
 
@@ -566,27 +568,41 @@ const intParam = (v, def, min, max) => {
 
 /** The client's own mailbox: no trust entry needed. */
 const MAILBOX_ROUTES = [
-  ['GET', /^\/v1\/webhook$/, async (_cfg, _m, _url, _body, clientId) => ({ url: clients().find((c) => c.id === clientId)?.webhook ?? null })],
+  ['GET', /^\/v1\/webhook$/, async (_cfg, _m, _url, _body, clientId) => {
+    const me = clients().find((c) => c.id === clientId);
+    // the Authorization secret is never shown back, only whether one is set
+    return { url: me?.webhook ?? null, authorization: me?.webhookAuthorization ? 'set' : null };
+  }],
   ['POST', /^\/v1\/webhook$/, async (_cfg, _m, _url, body, clientId) => {
     const all = clients();
     const me = all.find((c) => c.id === clientId);
     if (!me) throw new HttpError(404, 'unknown client');
     if (body.url === null || body.url === '') {
       delete me.webhook;
+      delete me.webhookAuthorization;
       writePrivate(CLIENTS, JSON.stringify(all, null, 2));
       audit({ event: 'webhook', client: clientId, url: null });
-      return { url: null };
+      return { url: null, authorization: null };
     }
     me.webhook = checkWebhookUrl(body.url);
+    // optional: the receiver's own Authorization header value, sent with every push.
+    // Omitted = keep the current one; null or "" = drop it.
+    if (body.authorization === null || body.authorization === '') delete me.webhookAuthorization;
+    else if (body.authorization !== undefined) {
+      const auth = String(body.authorization);
+      if (auth.length > 4096 || /[\r\n]/.test(auth)) throw new HttpError(400, 'authorization: one line, up to 4096 characters');
+      me.webhookAuthorization = auth;
+    }
     writePrivate(CLIENTS, JSON.stringify(all, null, 2));
-    audit({ event: 'webhook', client: clientId, url: me.webhook });
+    audit({ event: 'webhook', client: clientId, url: me.webhook, authorization: me.webhookAuthorization ? 'set' : 'none' });
+    const shown = { url: me.webhook, authorization: me.webhookAuthorization ? 'set' : null };
     // a test push, so the client knows at once whether it works
     const test = { id: randomUUID(), at: new Date().toISOString(), from: 'gateway', text: 'webhook test: pushes from the Deckhand fleet arrive here' };
     try {
       await pushMessage(me, test, serverKeys());
-      return { url: me.webhook, test: 'delivered' };
+      return { ...shown, test: 'delivered' };
     } catch (err) {
-      return { url: me.webhook, test: `failed: ${err instanceof Error ? err.message : err} (messages will wait in the inbox)` };
+      return { ...shown, test: `failed: ${err instanceof Error ? err.message : err} (messages will wait in the inbox)` };
     }
   }],
   ['GET', /^\/v1\/inbox$/, async (_cfg, _m, _url, _body, clientId) => readInbox(clientId)],
