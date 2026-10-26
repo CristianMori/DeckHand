@@ -8,7 +8,7 @@ import type { Terminal as HeadlessTerminalType } from '@xterm/headless';
 import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import { agentFor, getAgent } from './agents/index.js';
 import { HUB_ROOT } from './config.js';
-import { fleetBriefing, identityEnv, type Identity } from './etiquette.js';
+import { fleetBriefing, identityEnv, projectFolderOf, type Identity } from './etiquette.js';
 
 // @xterm packages ship CJS without named ESM exports
 const require = createRequire(import.meta.url);
@@ -102,6 +102,7 @@ export class HubSession {
       claudeSessionId: this.claudeSessionId,
       name: this.name,
       cwd: this.cwd,
+      project: projectFolderOf(this.cwd),
       model: this.model,
       permissionMode: this.permissionMode,
       state: this.state,

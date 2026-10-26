@@ -72,16 +72,21 @@ export function grantsFor(agent: string): Grant[] {
   return allGrants().filter((g) => g.agent === a);
 }
 
-export const folderOf = (cwd: string) => cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
-
-/** The strongest access any of the agent's grants gives on this session; null = none. */
-export function accessTo(agent: string, session: { cwd?: string; claudeSessionId?: string }): Access | null {
-  // a folder grant covers that folder and everything under it (Cassandra → its vet: sessions in subfolders)
-  const segments = new Set((session.cwd ?? '').split(/[\\/]+/).filter(Boolean).map((x) => x.toLowerCase()));
+/**
+ * The strongest access any of the agent's grants gives on this session; null = none.
+ * A folder grant matches the session's project — the top folder under its
+ * hub's projects root, stamped by the owning hub — so it covers everything
+ * inside that project (Cassandra → its vet: sessions in subfolders) and never
+ * a same-named folder elsewhere. Project folder names are the fleet-wide
+ * identity (sync, resume, handoff and rename all key on them). A session
+ * outside any projects root has no project: only * or a session grant reaches it.
+ */
+export function accessTo(agent: string, session: { project?: string | null; claudeSessionId?: string }): Access | null {
+  const project = (session.project ?? '').toLowerCase();
   const conv = session.claudeSessionId ?? '';
   let best: Access | null = null;
   for (const g of grantsFor(agent)) {
-    const byFolder = g.folders === '*' || g.folders.some((f) => segments.has(f.toLowerCase()));
+    const byFolder = g.folders === '*' || (!!project && g.folders.some((f) => f.toLowerCase() === project));
     const bySession = !!conv && g.sessions.some((s) => s === conv || (s.length >= 8 && conv.startsWith(s)));
     if ((byFolder || bySession) && rank(g.access) > rank(best)) best = g.access;
   }

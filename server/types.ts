@@ -20,6 +20,8 @@ export interface SessionInfo {
   claudeSessionId: string;
   name: string;
   cwd: string;
+  /** the project folder it works in (top folder under its hub's projects root), set by the owning hub */
+  project?: string | null;
   model?: string;
   permissionMode?: string;
   state: SessionState;

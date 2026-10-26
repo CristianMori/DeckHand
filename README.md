@@ -527,8 +527,14 @@ no gateway; the seam is three calls:
   | `observe` | + exchanges, screen, wait |
   | `interact` | + prompt; read and write project memories of that folder |
 
-  Grants cover a folder and everything under it (they survive restarts, resumes, migrations and
-  renames), every folder (`*`), or one conversation. Anything else — spawn,
+  Grants cover a project folder, every folder (`*`), or one conversation. A
+  folder grant matches the session's *project* — the top folder under its
+  hub's projects root, stamped on the session by the owning hub — so it covers
+  everything inside that project and never a same-named folder elsewhere;
+  project names are the fleet-wide identity (sync, resume, handoff and rename
+  key on them). Grants survive restarts, resumes, migrations and renames.
+  Sessions outside any projects root are reached only by `*` or a session
+  grant. Anything else — spawn,
   kill, keys, files, admin, Mimir tasks, global memories — is refused to
   agents. A hub that forwards an agent's call keeps its caller, and the target
   hub checks again. Enrollment in Mimir, reachability and routing never imply
