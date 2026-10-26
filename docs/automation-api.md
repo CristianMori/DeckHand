@@ -239,6 +239,9 @@ each tagged with `machine`).
 | `GET /api/provenance?machine=&q=&id=&limit=` | – | one machine's provenance log, newest first: every change and every agent/gateway read, with caller, hops (`via`), target session and what was asked; `id` follows one request across hubs |
 | `POST /api/mimir/tasks` | `text`, `conversationId?`, `delegate?` | hand Mimir a task; the result comes back to that conversation as a `[Mimir, task T7]` prompt (MCP: `dh_mimir_task`) |
 | `GET /api/mimir/tasks/:id` | – | a Mimir task's status and result (MCP: `dh_mimir_task_status`) |
+| `GET /api/mimir/tasks/:id/events?after=` | – | the task's ordered history (questions, approvals, answers, results) |
+| `POST /api/mimir/tasks/:id/messages` | `kind` (`message`/`input`/`approval`), `text`, `approved?` | answer on the same task: input when `needs_input`, approval when `needs_approval`; 409 otherwise (MCP: `dh_mimir_task_reply`) |
+| `POST /api/mimir/tasks/:id/cancel` | – | cancel: `cancel_requested` until the agent confirms (MCP: `dh_mimir_task_cancel`) |
 | `GET /api/trust` | – | access grants for outside agents (`grants`), plus old plain-memory trust entries (`legacy`) |
 | `POST /api/trust` | `agent`, `access` (`discover`/`observe`/`interact`), `folders` (list or `"*"`) and/or `sessions` (conversation ids), `replaces?` | grant an outside agent access — the dashboard's ADMIN → TRUST; refused to sessions, agents and Mimir |
 | `DELETE /api/trust/:id` | – | revoke a grant (same callers) |

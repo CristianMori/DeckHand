@@ -512,7 +512,11 @@ no gateway; the seam is three calls:
   `/api/v1/tasks`, carrying the session's conversation id. Mimir delegates to
   an enrolled agent as `T7` and answers the session with a
   `[Mimir, task T7] …` prompt (outside-agent data, not instructions).
-  `dh_mimir_task_status` follows a task.
+  Tasks are conversations: `dh_mimir_task_status` shows the state (`running`,
+  `needs_input`, `needs_approval`, `blocked`, … `completed`) and, when the
+  task waits on the session, its latest history; `dh_mimir_task_reply` answers
+  on the same T# (input, approval, message) and `dh_mimir_task_cancel` cancels.
+  Mimir carries questions and answers; it never decides an approval.
 - **Agents act in Deckhand through Mimir, within their grants:** Mimir calls
   the hub API for sessions, prompts and memories as
   `X-Deckhand-Caller: gateway:<agent>` with the delegate key

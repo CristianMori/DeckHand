@@ -370,6 +370,26 @@ async function mimirRoute(req: express.Request, res: express.Response, method: '
 }
 app.get('/api/mimir/agents', (req, res) => void mimirRoute(req, res, 'GET', '/api/v1/agents'));
 app.get('/api/mimir/tasks/:id', (req, res) => void mimirRoute(req, res, 'GET', `/api/v1/tasks/${encodeURIComponent(String(req.params.id))}`));
+// Tasks are conversations: the task's ordered history, answers on the same T#
+// (message / input when needs_input / approval when needs_approval), and a
+// two-step cancel. Mimir carries questions and answers; it decides nothing.
+app.get('/api/mimir/tasks/:id/events', (req, res) =>
+  void mimirRoute(req, res, 'GET', `/api/v1/tasks/${encodeURIComponent(String(req.params.id))}/events?after=${Math.max(0, Number(req.query.after) || 0)}`),
+);
+app.post('/api/mimir/tasks/:id/messages', express.json({ type: () => true, limit: '64kb' }), (req, res) => {
+  const b = req.body ?? {};
+  const kind = typeof b.kind === 'string' ? b.kind : 'message';
+  if (!['message', 'input', 'approval'].includes(kind)) return res.status(400).json({ error: 'kind: message, input or approval' });
+  if (kind === 'approval' && typeof b.approved !== 'boolean') return res.status(400).json({ error: 'an approval needs approved: true or false' });
+  void mimirRoute(req, res, 'POST', `/api/v1/tasks/${encodeURIComponent(String(req.params.id))}/messages`, {
+    kind,
+    text: typeof b.text === 'string' ? b.text : '',
+    ...(kind === 'approval' ? { approved: b.approved } : {}),
+  });
+});
+app.post('/api/mimir/tasks/:id/cancel', (req, res) =>
+  void mimirRoute(req, res, 'POST', `/api/v1/tasks/${encodeURIComponent(String(req.params.id))}/cancel`, {}),
+);
 app.post('/api/mimir/tasks', express.json({ type: () => true, limit: '64kb' }), (req, res) => {
   const b = req.body ?? {};
   const text = typeof b.text === 'string' ? b.text.trim() : '';
