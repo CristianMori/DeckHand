@@ -1,8 +1,31 @@
 # Deckhand
 
-![license](https://img.shields.io/badge/license-Apache--2.0-blue) ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![node](https://img.shields.io/badge/node-%3E%3D20-339933) ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
 ![Deckhand dashboard](docs/screenshot.jpg)
+
+<!-- TODO: add a 20–30s GIF (two machines, a session going WAITING, the chime, answering from a phone) beside or instead of docs/screenshot.jpg. -->
+
+<!-- TODO: set GitHub About topics and a homepage. Both are unset; there is no GitHub Release, and package.json is private, so there is no npm or release badge. -->
+
+> **TL;DR** — Run Claude Code and Codex sessions on any of your computers, see them all in one dashboard
+> (or your phone), and get a chime the moment any session is waiting on you. Self-hosted, no cloud, no accounts.
+
+## Quickstart (one machine, ~5 min)
+
+**Prerequisites:** [Node.js](https://nodejs.org) 20+ and [Claude Code](https://claude.com/claude-code). [Codex CLI](https://developers.openai.com/codex) is optional (`npm i -g @openai/codex`).
+
+```
+git clone https://github.com/CristianMori/DeckHand.git
+cd DeckHand
+npm install
+npm run build
+npm start
+```
+
+Open <http://127.0.0.1:5959>. `npm start` serves `server/public`, which a clone does not include until `npm run build`. For a live reload UI instead, `npm run dev` serves it at <http://127.0.0.1:5960> (the hub stays on 5959).
+
+**Add a second machine:** install [Tailscale](https://tailscale.com) on both, then repeat the clone, install, build, and start. Hubs discover each other on the tailnet; every dashboard shows the whole fleet. The always-on installer, projects root, and firewall rules are in [Install (each machine)](#install-each-machine).
 
 A self-hosted **fleet controller for coding-agent sessions** — Claude Code and
 OpenAI Codex, side by side. Run agent sessions on any of your computers, watch
@@ -726,3 +749,9 @@ Layout:
 ## License
 
 Apache License 2.0 — Copyright 2026 Cristian Mori. See [LICENSE](LICENSE).
+
+## Related projects
+
+Part of a family of open-source libraries by [@CristianMori](https://github.com/CristianMori).
+
+- **AI agents:** [Deckhand](https://github.com/CristianMori/DeckHand) (this repository)
