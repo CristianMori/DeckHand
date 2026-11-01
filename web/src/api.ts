@@ -170,6 +170,14 @@ export const api = {
       body: JSON.stringify({ on }),
     }).then((r) => json<{ ok: boolean; autoYes: boolean }>(r)),
   kill: (hubId: string) => fetch(`/api/sessions/${hubId}/kill`, { method: 'POST' }),
+  /** onlyIdle: refuse if the session is no longer idle when the hub gets to it */
+  restart: (hubId: string, onlyIdle = false) =>
+    fetch(`/api/sessions/${hubId}/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ onlyIdle }),
+    }).then((r) => json<SessionInfo>(r)),
+  hubInfo: () => fetch('/api/hub-info').then((r) => json<{ machine: string }>(r)),
   resumeForce: (hubId: string, force: boolean) =>
     fetch(`/api/sessions/${hubId}/resume`, {
       method: 'POST',

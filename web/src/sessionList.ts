@@ -62,7 +62,10 @@ export function renderSessionList(
     onRename: (s: SessionInfo) => void;
     onHandoff: (s: SessionInfo) => void;
     onFiles: (s: SessionInfo) => void;
+    onRestart: (s: SessionInfo) => void;
+    onDismissRestartError: (s: SessionInfo) => void;
   },
+  restart: { running: Set<string>; failed: Map<string, string> },
 ) {
   root.innerHTML = '';
   if (sessions.length === 0) {
@@ -77,7 +80,7 @@ export function renderSessionList(
     const chip = s.unreachable ? { cls: 'exited', label: 'UNREACHABLE' } : CHIP[s.state];
     const card = document.createElement('div');
     const waiting = !s.unreachable && (s.state === 'WAITING_QUESTION' || s.state === 'WAITING_PERMISSION');
-    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}`;
+    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}${restart.failed.has(s.hubId) ? ' restart-failed' : ''}`;
     card.dataset.hubId = s.hubId;
 
     const stateWord = waiting ? 'waiting' : s.state === 'WORKING' ? 'working' : s.state.toLowerCase();
@@ -97,6 +100,7 @@ export function renderSessionList(
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
+      ${restart.failed.has(s.hubId) ? '<div class="card-restart-fail"><span></span><button class="ghost-btn" title="Dismiss">✕</button></div>' : ''}
       <div class="card-foot">
         ${s.model?.startsWith('local/') ? '<span class="tag model"></span>' : ''}
         <button class="ghost-btn card-files" title="Browse this session's folder on its machine">FILES</button>
@@ -107,6 +111,28 @@ export function renderSessionList(
       e.stopPropagation();
       handlers.onFiles(s);
     };
+    const restartError = restart.failed.get(s.hubId);
+    if (restartError) {
+      const fail = card.querySelector('.card-restart-fail') as HTMLElement;
+      (fail.querySelector('span') as HTMLElement).textContent = `RESTART FAILED: ${restartError}`;
+      (fail.querySelector('button') as HTMLButtonElement).onclick = (e) => {
+        e.stopPropagation();
+        handlers.onDismissRestartError(s);
+      };
+    }
+    if (!s.unreachable && (s.state !== 'EXITED' || restart.running.has(s.hubId))) {
+      const restartBtn = document.createElement('button');
+      restartBtn.className = 'ghost-btn card-restart';
+      const running = restart.running.has(s.hubId);
+      restartBtn.textContent = running ? 'RESTARTING…' : 'RESTART';
+      restartBtn.disabled = running;
+      restartBtn.title = 'Kill this session and start it again on the same conversation';
+      restartBtn.onclick = (e) => {
+        e.stopPropagation();
+        handlers.onRestart(s);
+      };
+      card.querySelector('.card-files')!.before(restartBtn);
+    }
     if (s.handoff) {
       (card.querySelector('.card-lineage') as HTMLElement).textContent =
         `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;

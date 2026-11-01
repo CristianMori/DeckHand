@@ -16,6 +16,7 @@ import { chime, soundEnabled, setSoundEnabled } from './sound';
 let sessions: SessionInfo[] = [];
 let selected: string | null = null;
 let tabs: string[] = []; // hubIds with an open terminal tab, in open order
+const restart = { running: new Set<string>(), failed: new Map<string, string>() };
 
 const el = {
   list: document.getElementById('session-list')!,
@@ -130,6 +131,57 @@ async function closeTab(hubId: string) {
   removeTabView(hubId);
 }
 
+/** Kill and respawn one session; a failure stays on its card in red. */
+async function restartSession(s: SessionInfo, onlyIdle = false): Promise<boolean> {
+  restart.running.add(s.hubId);
+  restart.failed.delete(s.hubId);
+  render();
+  try {
+    await api.restart(s.hubId, onlyIdle);
+    dropTerminal(s.hubId); // the old screen is gone: reattach to the new process
+    if (selected === s.hubId) showTerminal(s.hubId);
+    return true;
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err);
+    restart.failed.set(s.hubId, text.match(/"error":"((?:[^"\\]|\\.)*)"/)?.[1] ?? text);
+    return false;
+  } finally {
+    restart.running.delete(s.hubId);
+    render();
+  }
+}
+
+const RESTART_ALL_AT_ONCE = 3;
+
+/** Every idle agent session on the machine this dashboard is served from. */
+async function restartAllIdle(btn: HTMLButtonElement) {
+  const { machine } = await api.hubInfo();
+  // terminals stay out: a quiet shell reads as idle but may be running something
+  const targets = sessions.filter((s) => s.machine === machine && s.state === 'IDLE' && !s.unreachable && s.agentType !== 'shell');
+  if (!targets.length) {
+    alert(`No idle sessions on ${machine}.`);
+    return;
+  }
+  if (!confirm(`Restart ${targets.length} idle session${targets.length > 1 ? 's' : ''} on ${machine}?\n\n${targets.map((s) => s.name).join('\n')}`)) return;
+  btn.disabled = true;
+  let done = 0;
+  let failed = 0;
+  const progress = () => (btn.textContent = `RESTARTING ${done}/${targets.length}`);
+  progress();
+  const queue = [...targets];
+  await Promise.all(
+    Array.from({ length: RESTART_ALL_AT_ONCE }, async () => {
+      for (let s = queue.shift(); s; s = queue.shift()) {
+        if (!(await restartSession(s, true))) failed++;
+        done++;
+        progress();
+      }
+    }),
+  );
+  btn.disabled = false;
+  btn.textContent = failed ? `RESTART ALL · ${failed} FAILED` : 'RESTART ALL';
+}
+
 function render() {
   renderSessionList(el.list, sessions, selected, {
     onSelect: select,
@@ -139,10 +191,12 @@ function render() {
       } catch {
         return; // declined or failed — leave the card as is
       }
+      restart.failed.delete(s.hubId);
       dropTerminal(s.hubId);
       select(s);
     },
     onRemove: async (s) => {
+      restart.failed.delete(s.hubId);
       dropTerminal(s.hubId);
       tabs = tabs.filter((id) => id !== s.hubId);
       if (selected === s.hubId) deselect();
@@ -168,7 +222,21 @@ function render() {
     },
     onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
     onFiles: (s) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
-  });
+    onRestart: (s) => {
+      const warning =
+        s.agentType === 'shell'
+          ? `Restart terminal "${s.name}"?\n\nIt comes back as a fresh shell; whatever is running in it stops.`
+          : s.state !== 'IDLE'
+            ? `"${s.name}" is ${s.state}. Restart it anyway?\n\nThe conversation comes back, but what it is doing right now stops.`
+            : '';
+      if (warning && !confirm(warning)) return;
+      void restartSession(s);
+    },
+    onDismissRestartError: (s) => {
+      restart.failed.delete(s.hubId);
+      render();
+    },
+  }, restart);
 
   const waiting = waitingCount();
   document.title = waiting > 0 ? `(${waiting}) Deckhand` : 'Deckhand';
@@ -332,6 +400,8 @@ el.newBtn.onclick = () => openNewSessionDialog((s) => select(s));
     tabs = tabs.filter((id) => id !== hubId);
     if (selected === hubId) deselect();
   });
+const restartAllBtn = document.getElementById('restart-all-btn') as HTMLButtonElement;
+restartAllBtn.onclick = () => void restartAllIdle(restartAllBtn);
 
 el.killBtn.onclick = () => {
   if (selected) api.kill(selected);

@@ -975,6 +975,29 @@ app.post('/api/sessions/:id/autoyes', sessionAction((id, req, res) => {
   res.json({ ok: true, autoYes: session.autoYes });
 }));
 
+// The agent keeps its transcript outside the project folder, and its own
+// retention cleanup can remove it. A session whose transcript is gone can
+// still come back from the fleet store — fetch it first. Answers why not.
+async function restoreTranscript(session: HubSession): Promise<string | undefined> {
+  if (session.claudeSessionId.startsWith('pending-')) return undefined;
+  const ops = agentFor(session).transcript;
+  if (!ops || existsSync(ops.file(session.cwd, session.claudeSessionId))) return undefined;
+  try {
+    await ensureTranscript({
+      folder: session.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '',
+      localPath: session.cwd,
+      agentType: session.agentType,
+      claudeSessionId: session.claudeSessionId,
+      selfName: discovery.selfName,
+      federation,
+    });
+    console.log(`[resume] ${session.name}: transcript restored from the fleet store`);
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
 app.post('/api/sessions/:id/kill', sessionAction((id, _req, res) => {
   manager.kill(id);
   res.json({ ok: true });
@@ -989,29 +1012,32 @@ app.post('/api/sessions/:id/resume', sessionAction(async (id, req, res) => {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
   }
-  // The agent keeps its transcript outside the project folder, and its own
-  // retention cleanup can remove it. A card whose transcript is gone is still
-  // resumable from the fleet store — fetch it back first.
-  if (!existing.proc && !existing.claudeSessionId.startsWith('pending-')) {
-    const ops = agentFor(existing).transcript;
-    if (ops && !existsSync(ops.file(existing.cwd, existing.claudeSessionId))) {
-      try {
-        await ensureTranscript({
-          folder: folderName,
-          localPath: existing.cwd,
-          agentType: existing.agentType,
-          claudeSessionId: existing.claudeSessionId,
-          selfName: discovery.selfName,
-          federation,
-        });
-        console.log(`[resume] ${existing.name}: transcript restored from the fleet store`);
-      } catch (err) {
-        return res.status(409).json({ error: `cannot resume: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    }
+  if (!existing.proc) {
+    const lost = await restoreTranscript(existing);
+    if (lost) return res.status(409).json({ error: `cannot resume: ${lost}` });
   }
   const session = manager.resume(id);
   if (!session) return res.status(404).json({ error: 'unknown session' });
+  res.json({ ...session.info(), machine: discovery.selfName });
+}));
+
+// Kill and respawn in place. Everything that could stop it coming back is
+// checked before the kill, so a refusal leaves the session running. No
+// "live elsewhere" check: it is already live here, a restart adds no one.
+app.post('/api/sessions/:id/restart', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  const refuse = (error: string) => res.status(409).json({ error });
+  if (!session.proc) return refuse('it is not running: resume it instead');
+  if (req.body?.onlyIdle && session.state !== 'IDLE') return refuse(`it is busy (${session.state})`);
+  if (engineMissing(res, session.agentType)) return;
+  if (!existsSync(session.cwd)) return refuse(`its folder is gone: ${session.cwd}`);
+  if (agentFor(session).transcript && session.claudeSessionId.startsWith('pending-')) {
+    return refuse('it has no conversation to come back to yet');
+  }
+  const lost = await restoreTranscript(session);
+  if (lost) return refuse(`no conversation to resume: ${lost}`);
+  const problem = await manager.restart(id);
+  if (problem) return refuse(problem);
   res.json({ ...session.info(), machine: discovery.selfName });
 }));
 

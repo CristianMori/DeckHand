@@ -103,7 +103,10 @@ when any session on any machine needs a human.
   running), `×` to end.
 - **Sessions survive everything.** Close the browser, reboot the machine,
   kill the process — the conversation is durable. EXITED cards resume with
-  full history.
+  full history. **RESTART** on a card kills a live session and brings its
+  conversation back in place; **RESTART ALL** does it for every idle agent
+  session on the machine serving the dashboard (terminals stay out), and any
+  that could not restart turn red with the reason.
 - **Work follows you.** Resume any conversation on any machine. If the
   project folder isn't there, it replicates first (through the always-on
   home machine); the transcript ships along and is re-homed for the local
@@ -491,7 +494,7 @@ GET  /api/sessions/:id/wait?until=settled&timeout=120000        → long-poll
 GET  /api/sessions/:id/screen[?scrollback=200][&format=ansi]    → the terminal as text
 GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …] oldest first
 GET  /api/sessions/:id                                          → card data
-POST /api/sessions/:id/kill | /resume | /remove | /autoyes {"on":true}
+POST /api/sessions/:id/kill | /resume | /restart | /remove | /autoyes {"on":true}
 ```
 
 Rules of the road:

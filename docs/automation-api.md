@@ -229,6 +229,7 @@ each tagged with `machine`).
 |---|---|---|
 | `POST /api/sessions/:id/kill` | – | end the process; card stays as EXITED, resumable |
 | `POST /api/sessions/:id/resume` | `{"force":false}` | relaunch the same conversation in place |
+| `POST /api/sessions/:id/restart` | `{"onlyIdle":false}` | kill a live session and relaunch the same conversation in place; answers once it is back up. 409 `{error}` with the reason when it can't: checks made before the kill leave the session running, a failure after it leaves the card EXITED. `onlyIdle` refuses a session that is no longer IDLE |
 | `POST /api/sessions/:id/remove` | – | forget an EXITED card |
 | `POST /api/sessions/:id/rename` | `name` | rename a stopped session **and its folder** on every machine that has it (conversations, memory, sync, cards follow); 409 while any session in that folder runs. Response adds `machines:[{machine,done|error}]` and `offline` |
 | `POST /api/sessions/:id/drop?name=` | raw bytes | save an attachment on that session's hub → `{path}` to paste into the prompt |

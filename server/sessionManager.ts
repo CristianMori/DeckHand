@@ -174,6 +174,10 @@ export class HubSession {
  * Owns all agent PTYs.
  * Events: 'data' (session, chunk), 'change' (session), 'exit' (session).
  */
+const RESTART_STOP_MS = 10_000; // kill() escalates to a hard kill after 3s
+const RESTART_UP_MS = 30_000;
+const RESTART_SETTLE_MS = 1_500;
+
 export class SessionManager extends EventEmitter {
   sessions = new Map<string, HubSession>();
   /** who this hub is, for the briefing every session receives (set by the hub at boot) */
@@ -221,6 +225,46 @@ export class SessionManager extends EventEmitter {
     session.command = undefined;
     this.spawnInto(session, undefined, true);
     return session;
+  }
+
+  /** Resolves true once the session meets the condition, false after timeoutMs. */
+  private until(session: HubSession, met: (s: HubSession) => boolean, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (met(session)) return resolve(true);
+      const finish = (ok: boolean) => {
+        clearTimeout(timer);
+        this.off('change', onChange);
+        resolve(ok);
+      };
+      const onChange = (s: HubSession) => {
+        if (s === session && met(session)) finish(true);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      this.on('change', onChange);
+    });
+  }
+
+  /**
+   * Kill a live session and bring its conversation back in place. Answers why
+   * it didn't work, or undefined once the new process is up and stayed up.
+   */
+  async restart(hubId: string): Promise<string | undefined> {
+    const session = this.sessions.get(hubId);
+    if (!session?.proc) return 'it is not running';
+    const stopped = this.until(session, (s) => !s.proc, RESTART_STOP_MS);
+    this.kill(hubId);
+    if (!(await stopped)) return 'the process would not stop';
+    try {
+      this.resume(hubId);
+    } catch (err) {
+      return `it stopped but could not start again: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (!(await this.until(session, (s) => s.state !== 'STARTING', RESTART_UP_MS))) {
+      return `still starting after ${RESTART_UP_MS / 1000}s`;
+    }
+    // a conversation that cannot be resumed can draw a screen before it quits
+    await new Promise((r) => setTimeout(r, RESTART_SETTLE_MS));
+    return session.proc ? undefined : `it stopped but did not come back (${session.detail ?? 'exited'})`;
   }
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean, command?: string) {

@@ -164,6 +164,16 @@ button {
 .card-detail { margin-top: 6px; font-size: 10.5px; color: var(--amber-deep); }
 .card.s-waiting .card-detail { color: var(--amber); }
 
+.card.restart-failed {
+  border-color: var(--red);
+  border-left-color: var(--red);
+  box-shadow: inset 0 0 0 1px var(--red);
+  animation: none;
+  opacity: 1;
+}
+.card-restart-fail { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 10.5px; color: var(--red); }
+.card-restart-fail button { padding: 0 5px; font-size: 9px; flex: none; }
+
 .card-actions { display: flex; gap: 6px; margin-top: 10px; }
 .card-actions button { font-size: 9px; padding: 4px 8px; }
 
@@ -277,7 +287,7 @@ button {
 .term-tab:has(.tag) { max-width: 260px; }
 /* lower right corner of every card: FILES opener, plus the model name on local sessions */
 .card-foot { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 6px; }
-.card-foot .card-files { padding: 2px 7px; font-size: 8px; letter-spacing: 0.16em; }
+.card-foot .card-files, .card-foot .card-restart { padding: 2px 7px; font-size: 8px; letter-spacing: 0.16em; }
 .card-foot .tag.model { font-size: 8px; padding: 1px 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
 /* engine tag: which CLI runs the session */
