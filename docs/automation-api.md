@@ -223,6 +223,46 @@ watch tool output.
 One session object, or the whole fleet's list (every machine's sessions,
 each tagged with `machine`).
 
+### Sessions waiting on the user
+
+A session that stopped with something for the user carries `attention` on its card (`GET /api/sessions`, and the `sessions` message on `/ws/control`) from the moment that is known. `attention.alertedAt` appears once it has waited out the delay (2 minutes; `delayMs` in `data/attention.json`). It counts: a turn that ended asking in text (`kind:"question"`), AskUserQuestion and similar (`"ask"`), a tool approval (`"permission"`, unless auto-yes will answer it). Not counted: turns whose prompt came from another session, an outside agent or Mimir, because the sender answers those.
+
+`GET /api/attention` lists them across the fleet. `/ws/control` sends one event per waiting episode, whichever hub the session is on:
+
+```jsonc
+{ "type": "attention", "episode": "1a2b3c4d-1793000000000", "hubId": "1a2b3c4d", "conversationId": "…", "name": "PlacePayer", "machine": "mac-mini",
+  "state": "IDLE", "kind": "question", "text": "Which one?", "since": 1793000000000, "alertedAt": 1793000120000 }
+{ "type": "attention-cleared", "episode": "1a2b3c4d-1793000000000", "hubId": "1a2b3c4d", "conversationId": "…", "machine": "mac-mini" }
+```
+
+Dedupe on `episode`. An app that connects late finds what it missed in the first `sessions` message: any `attention` with `alertedAt`. Discord goes through Hermod from the one hub holding a key: `data/attention.json` = `{"hermod":{"url":"http://127.0.0.1:5103","key":"hm_…","person":"cristian"}}`, re-read on every alert. No file or no key, no Discord; everything else still works.
+
+#### Push to the iOS app (APNs)
+
+| route | body | effect |
+|---|---|---|
+| `POST /api/push/devices` | `{"token":"<hex>","environment":"sandbox"\|"production","name":"optional"}` | register a device, on any hub; passed on to the others. Call it at every app launch. 400 `{error}` on a bad token or environment |
+| `DELETE /api/push/devices/:token` | – | stop pushing to it |
+| `GET /api/push/devices` | – | `{pushEnabled, devices:[{token:"…last8", environment, name, registeredAt}]}`: whether this hub pushes, and to whom |
+
+`environment` is the build's APNs environment: `sandbox` for a build run from Xcode, `production` for TestFlight and the App Store.
+
+An alert is a visible push, one per episode, with `apns-collapse-id` = `episode`:
+
+```jsonc
+{ "aps": { "alert": { "title": "PlacePayer on mac-mini", "subtitle": "has a question", "body": "Which one?" }, "sound": "default", "thread-id": "<conversationId>" },
+  "type": "attention", "conversationId": "…", "episode": "1a2b3c4d-1793000000000", "kind": "question", "name": "PlacePayer",
+  "text": "Which one?", "machine": "mac-mini", "hubId": "1a2b3c4d", "state": "IDLE" }
+```
+
+`aps.alert.body` is cut to 300 characters; `text` carries up to 600. When the episode ends, a silent background push follows (`apns-push-type: background`). The app must enable the Remote notifications background mode and remove the delivered notification whose `userInfo.episode` matches. APNs has no remove call of its own, and Apple throttles silent pushes and drops them for a force-quit app, so treat it as best effort:
+
+```jsonc
+{ "aps": { "content-available": 1 }, "type": "attention-cleared", "episode": "1a2b3c4d-1793000000000", "conversationId": "…", "hubId": "1a2b3c4d" }
+```
+
+Exactly one hub pushes: the one whose `data/attention.json` has `"apns":{"keyFile":"AuthKey_XXXXXXXXXX.p8","keyId":"XXXXXXXXXX","teamId":"XXXXXXXXXX","bundleId":"…"}` (`keyFile` absolute or relative to the data folder), read on every send. Incomplete, or no key file: no push. Tokens Apple answers as dead (410, or 400 BadDeviceToken) are dropped.
+
 ### Lifecycle
 
 | route | body | effect |

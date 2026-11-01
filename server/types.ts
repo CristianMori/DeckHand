@@ -51,6 +51,20 @@ export interface SessionInfo {
   files?: SharedFile[];
   /** the latest tool call, as one display line: what a permission prompt is about */
   tool?: { name: string; summary: string; detail: string; at: number };
+  /** this session is waiting on the user; absent otherwise (see needsYou.ts) */
+  attention?: Attention;
+}
+
+/** A session waiting on the user: one per waiting episode. */
+export interface Attention {
+  /** stable id of this waiting episode: dedupe popups on it */
+  episode: string;
+  /** question: a turn ended asking in text; ask: AskUserQuestion or the like; permission: a tool approval */
+  kind: 'question' | 'ask' | 'permission';
+  text: string;
+  since: number;
+  /** when the alert went out, once the session had waited long enough */
+  alertedAt?: number;
 }
 
 /** A file a session gave the user: a download link served by the owning hub. */

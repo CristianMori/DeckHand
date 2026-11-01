@@ -17,6 +17,8 @@ import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
+import { NeedsYou, FleetAttention, SentLedger, attentionConfig, attentionEvent, sendToDiscord } from './needsYou.js';
+import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
@@ -93,6 +95,14 @@ const pusher = new TranscriptPusher(federation, selfRef, {
 // a session that went idle or exited gets its transcript pushed right away
 manager.on('change', (session: HubSession) => {
   if (session.state === 'IDLE' || session.state === 'EXITED') pusher.nudge(session.claudeSessionId);
+});
+
+const needsYou = new NeedsYou(manager, {
+  lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
+  isProtectedPrompt: (session) => isProtectedPrompt(session),
+});
+hookBus.on('hook', (session, event) => {
+  if (event === 'UserPromptSubmit') needsYou.turnStarted(session);
 });
 
 let sync: SyncManager | null = createSyncManager();
@@ -767,6 +777,53 @@ app.get('/api/etiquette', (_req, res) => res.type('text/plain').send(FLEET_RULES
 
 app.get('/api/sessions', (_req, res) => res.json(mergedList()));
 
+// Sessions across the fleet waiting on the user, each as an attention event.
+app.get('/api/attention', (_req, res) => res.json(mergedList().flatMap((s) => attentionEvent(s) ?? [])));
+
+// Devices for APNs push. The app registers with whichever hub it reaches, and
+// that hub passes it on to the others, because only the one holding the key
+// pushes. A hub that was down misses it until the app registers again at its
+// next launch, which Apple asks apps to do anyway.
+const pushDevices = new PushDevices();
+const apns = new ApnsSender(pushDevices, () => attentionConfig().apns);
+
+function relayToHubs(req: express.Request, path: string, init: { method: string; body?: unknown }) {
+  if (req.query.relayed) return;
+  for (const peer of federation.connectedPeers()) {
+    federation.forward(peer, `${path}${path.includes('?') ? '&' : '?'}relayed=1`, init).catch((err) => {
+      console.warn(`[apns] could not tell ${peer.info.machine} about a device: ${err}`);
+    });
+  }
+}
+
+app.post('/api/push/devices', (req, res) => {
+  const { token, environment, name } = req.body ?? {};
+  if (!validDeviceToken(token)) return res.status(400).json({ error: 'token must be the device token in hex' });
+  if (environment !== 'sandbox' && environment !== 'production') {
+    return res.status(400).json({ error: 'environment must be sandbox or production' });
+  }
+  const label = typeof name === 'string' ? name.slice(0, 80) : undefined;
+  pushDevices.add(token, environment, label);
+  relayToHubs(req, '/api/push/devices', { method: 'POST', body: { token, environment, name: label } });
+  res.json({ ok: true });
+});
+
+app.delete('/api/push/devices/:token', (req, res) => {
+  const { token } = req.params;
+  if (!validDeviceToken(token)) return res.status(400).json({ error: 'token must be the device token in hex' });
+  pushDevices.remove(token);
+  relayToHubs(req, `/api/push/devices/${token}`, { method: 'DELETE' });
+  res.json({ ok: true });
+});
+
+/** For checking the setup: whether this hub pushes, and to whom (tokens shortened). */
+app.get('/api/push/devices', (_req, res) => {
+  res.json({
+    pushEnabled: apns.enabled(),
+    devices: pushDevices.list().map((d) => ({ token: `…${d.token.slice(-8)}`, environment: d.environment, name: d.name, registeredAt: d.registeredAt })),
+  });
+});
+
 // Forwarded waits ride on a peer's fetch, whose header timeout is 5 minutes —
 // every long-poll is capped below that and returns timedOut so callers loop.
 const WAIT_DEFAULT_MS = 120_000;
@@ -819,6 +876,7 @@ app.post('/api/sessions', async (req, res) => {
     if (busy.length) return activeElsewhereError(res, busy);
   }
   const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt });
+  if (initialPrompt) needsYou.promptFrom(session, currentTrace()?.caller, true);
   if (!wait) return res.json({ ...session.info(), machine: discovery.selfName });
   // automation: block until the first turn (the initial prompt, or just the
   // startup) settles, and hand back the reply with the session
@@ -1404,6 +1462,7 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   if (session.state === 'WORKING' && !req.body?.queue) {
     return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
   }
+  needsYou.promptFrom(session, currentTrace()?.caller, !!req.body?.queue);
   await typePrompt(manager, session, text);
   if (!req.body?.wait) return res.json({ ...session.info(), machine: discovery.selfName });
   const timeoutMs = clampWait(req.body.wait);
@@ -2125,7 +2184,7 @@ manager.on('data', (session: HubSession, chunk: string) => {
 
 federation.on('change', broadcastSessions);
 
-function broadcastAlert(payload: Record<string, unknown>) {
+function broadcastAlert(payload: object) {
   const msg = JSON.stringify(payload);
   for (const ws of controlClients) if (ws.readyState === WebSocket.OPEN) ws.send(msg);
 }
@@ -2147,6 +2206,27 @@ engine.on('alert', ({ session, state, detail }: { session: HubSession; state: st
 federation.on('alert', (alert: PeerAlert) => {
   broadcastAlert({ ...alert, type: 'alert' });
 });
+
+// A session still waiting on the user after the delay: one event per waiting
+// episode, from whichever hub owns it, to every dashboard and app connected
+// here, and to Discord from the hub that holds a Hermod key.
+const sentAttention = new SentLedger();
+const fleetAttention = new FleetAttention({
+  announce: (event) => {
+    broadcastAlert(event);
+    if (!sentAttention.claim(event.episode)) return;
+    void sendToDiscord(event);
+    void apns.sendAttention(event);
+  },
+  cleared: (event) => {
+    broadcastAlert(event);
+    if (sentAttention.has(event.episode)) void apns.sendCleared(event);
+  },
+});
+const scanAttention = () => fleetAttention.scan(mergedList());
+manager.on('change', scanAttention);
+federation.on('change', scanAttention);
+setInterval(scanAttention, 15_000).unref();
 
 startStatusFileWatcher(manager, engine);
 startSessionPusher();

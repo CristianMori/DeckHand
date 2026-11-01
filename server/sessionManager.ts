@@ -79,6 +79,8 @@ export class HubSession {
   files: SharedFile[] = [];
   /** latest tool call from the PreToolUse hook (shared so other hubs can describe prompts) */
   lastTool?: SessionInfo['tool'];
+  /** waiting on the user right now (set by needsYou.ts) */
+  attention?: SessionInfo['attention'];
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -117,6 +119,7 @@ export class HubSession {
       exitCode: this.exitCode,
       files: this.files.length ? this.files : undefined,
       tool: this.lastTool,
+      attention: this.attention,
     };
   }
 
