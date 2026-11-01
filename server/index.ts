@@ -19,6 +19,7 @@ import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
 import { NeedsYou, FleetAttention, SentLedger, attentionConfig, attentionEvent, sendToDiscord } from './needsYou.js';
 import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
+import { SmsReplies, sendText, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
@@ -1470,6 +1471,29 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   res.json(await turnResult(session, text, timedOut));
 }));
 
+/**
+ * Cristian's text answering a question. Decided here, on the hub that owns the
+ * session, right before typing: only that episode, only a question, only at
+ * its prompt, so a text can never land on a permission prompt. Not a route
+ * outside agents may call.
+ */
+async function answerFromText(session: HubSession, episode: unknown, text: string): Promise<string | undefined> {
+  const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));
+  const before = refusal();
+  if (before) return before;
+  needsYou.promptFrom(session, 'text-reply', false);
+  const typed = await typePrompt(manager, session, textReplyPrompt(text), () => !refusal());
+  return typed ? undefined : 'the session moved on while the text went in';
+}
+
+app.post('/api/sessions/:id/text-reply', sessionAction(async (id, req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (!text.trim()) return res.status(400).json({ error: 'text required' });
+  const refused = await answerFromText(manager.sessions.get(id)!, req.body?.episode, text);
+  if (refused) return res.status(409).json({ error: refused });
+  res.json({ ok: true });
+}));
+
 // Raw keystrokes: `keys` is a list of named keys (enter, esc, up, down, 1…)
 // or literal strings; `data` is sent verbatim. For answering prompts and menus.
 app.post('/api/sessions/:id/keys', sessionAction((id, req, res) => {
@@ -2217,6 +2241,7 @@ const fleetAttention = new FleetAttention({
     if (!sentAttention.claim(event.episode)) return;
     void sendToDiscord(event);
     void apns.sendAttention(event);
+    void sendText(event, attentionConfig().sms);
   },
   cleared: (event) => {
     broadcastAlert(event);
@@ -2224,6 +2249,29 @@ const fleetAttention = new FleetAttention({
   },
 });
 const scanAttention = () => fleetAttention.scan(mergedList());
+const smsReplies = new SmsReplies({
+  config: () => attentionConfig().sms,
+  sessions: mergedList,
+  deliver: async (card: SessionInfo, reply: GatewayReply): Promise<DeliverResult> => {
+    const body = { episode: reply.session, text: reply.text ?? '' };
+    const local = manager.sessions.get(card.hubId);
+    if (local) {
+      const refused = await answerFromText(local, body.episode, body.text);
+      return refused ? { refused } : { delivered: true };
+    }
+    const peer = federation.peerBySession(card.hubId);
+    if (!peer) return { retry: `no link to ${card.machine ?? 'its hub'}` };
+    try {
+      const out = await federation.forward(peer, `/api/sessions/${card.hubId}/text-reply`, { method: 'POST', body });
+      if (out.status === 200) return { delivered: true };
+      const why = (out.body as { error?: string })?.error ?? `answered ${out.status}`;
+      return out.status >= 500 ? { retry: why } : { refused: why };
+    } catch (err) {
+      return { retry: String(err) };
+    }
+  },
+});
+setInterval(() => void smsReplies.poll(), 30_000).unref();
 manager.on('change', scanAttention);
 federation.on('change', scanAttention);
 setInterval(scanAttention, 15_000).unref();

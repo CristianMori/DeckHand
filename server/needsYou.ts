@@ -4,6 +4,7 @@ import { agentFor } from './agents/index.js';
 import type { ApnsConfig } from './apns.js';
 import { askingText } from './askDetect.js';
 import { DATA_DIR } from './config.js';
+import type { SmsConfig } from './sms.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { Attention, SessionInfo } from './types.js';
 
@@ -29,6 +30,7 @@ interface AttentionConfig {
   delayMs?: number;
   hermod?: { url?: string; key?: string; person?: string };
   apns?: ApnsConfig;
+  sms?: SmsConfig;
 }
 
 /** data/attention.json, read each time so adding a key needs no hub restart. */

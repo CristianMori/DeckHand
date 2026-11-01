@@ -36,21 +36,23 @@ export const KEYS: Record<string, string> = {
   'shift-tab': '\x1b[Z',
 };
 
-/** Type a prompt into a live session's composer and submit it. */
-export async function typePrompt(manager: SessionManager, session: HubSession, text: string) {
+/** Type a prompt into a live session's composer and submit it. False: mayEnter said no. */
+export async function typePrompt(manager: SessionManager, session: HubSession, text: string, mayEnter: () => boolean = () => true) {
   manager.write(session.hubId, text);
   // the CR must arrive in its own chunk — text+CR together reads as a paste
   // to the TUI and lands in the composer without submitting. A long text
   // reaches the TUI as several paste chunks: give the last one time to land.
   await sleep(Math.min(3000, 120 + Math.floor(text.length / 8)));
+  if (!mayEnter()) return false;
   manager.write(session.hubId, '\r');
   // a long paste can still outrun that: if the agent did not start, the CR
   // landed mid-paste and the prompt sits in the composer — submit once more
   // (an empty composer ignores a stray CR, so this never doubles a prompt)
   if (text.length > 500 && session.state !== 'WORKING') {
     const started = await waitUntil(manager, () => session.state === 'WORKING' || !session.proc, 2500);
-    if (!started) manager.write(session.hubId, '\r');
+    if (!started && mayEnter()) manager.write(session.hubId, '\r');
   }
+  return true;
 }
 
 /** Resolve true when pred holds (checked on every state change and on a
