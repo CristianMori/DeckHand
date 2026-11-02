@@ -81,8 +81,8 @@ export class HubSession {
   lastTool?: SessionInfo['tool'];
   /** waiting on the user right now (set by needsYou.ts) */
   attention?: SessionInfo['attention'];
-  /** Discord and text alerts for this session; both off until the user picks them */
-  alerts: AlertChannels = { discord: false, text: false };
+  /** who this session alerts on Discord and by text; nobody until the user picks them */
+  alerts: AlertChannels = { discord: [], text: [] };
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 

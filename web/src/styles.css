@@ -527,3 +527,23 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tr-form input { width: 110px; }
 .tr-form select { flex: 1; min-width: 120px; }
 .tr-error { color: #e88; font-size: 11px; min-height: 1em; margin-top: 4px; }
+
+/* ── the popup on a card ── */
+#card-menu {
+  position: fixed; z-index: 1000; min-width: 210px; max-width: 320px; max-height: calc(100vh - 16px); overflow-y: auto;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg-raise); border: 1px solid var(--line-bright); box-shadow: 0 8px 28px #000a;
+}
+.menu-title, .menu-note {
+  padding: 6px 10px; font-family: var(--font-display); font-size: 10px; letter-spacing: 0.15em; color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu-note { letter-spacing: 0.05em; white-space: normal; padding-left: 22px; }
+.menu-item {
+  appearance: none; background: none; border: 0; text-align: left; cursor: pointer; color: var(--ink);
+  padding: 7px 10px; font-family: var(--font-display); font-size: 11px; letter-spacing: 0.1em;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--line); outline: none; }
+.menu-item.on { color: var(--amber); }
+.menu-item.danger:hover { color: var(--red); }
+.menu-person { padding-left: 22px; letter-spacing: 0.04em; }

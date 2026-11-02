@@ -495,7 +495,7 @@ GET  /api/sessions/:id/screen[?scrollback=200][&format=ansi]    → the terminal
 GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …] oldest first
 GET  /api/sessions/:id                                          → card data
 POST /api/sessions/:id/kill | /resume | /restart | /remove | /autoyes {"on":true}
-POST /api/sessions/:id/alerts {"discord":true,"text":false}
+POST /api/sessions/:id/alerts {"discord":["cristian"],"text":[]}
 ```
 
 Rules of the road:

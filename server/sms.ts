@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
-import type { AttentionEvent } from './needsYou.js';
+import { alertPeople, type AttentionEvent } from './needsYou.js';
 import type { SessionInfo } from './types.js';
 
 /**
  * Texts through hermod-gateway. Off until data/attention.json has an "sms"
  * block naming the gateway and its token file; as with Discord and APNs,
  * exactly one hub is configured. Replies stay off until "replies": true.
+ * A session picks who is texted; only "to" may answer, whoever else is told.
  * A text's `session` handle is its alert episode, so a reply can only ever
  * land on the question it answers.
  */
@@ -70,14 +71,14 @@ function gateway(c: SmsConfig | undefined): { url: string; token: string; to: st
  * One text for one episode. Not retried: an unclear failure may have gone out,
  * and a second text costs money. Never throws, so other channels don't care.
  */
-export async function sendText(e: AttentionEvent, config: SmsConfig | undefined, fetcher: typeof fetch = fetch): Promise<boolean> {
+export async function sendText(e: AttentionEvent, config: SmsConfig | undefined, fetcher: typeof fetch = fetch, to = config?.to): Promise<boolean> {
   const g = gateway(config);
   if (!g) return false;
   try {
     const res = await fetcher(`${g.url}/v1/send`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${g.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: g.to, message: smsText(e), session: e.episode }),
+      body: JSON.stringify({ to: to ?? g.to, message: smsText(e), session: e.episode }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const body = (await res.json().catch(() => ({}))) as { textId?: string; quotaRemaining?: number; error?: string };
@@ -90,6 +91,24 @@ export async function sendText(e: AttentionEvent, config: SmsConfig | undefined,
     console.warn(`[sms] ${e.episode}: gateway unreachable: ${err}`);
   }
   return false;
+}
+
+/** Who the gateway can text, by name; it keeps the numbers. */
+export async function textRecipients(config: SmsConfig | undefined, fetcher: typeof fetch = fetch): Promise<string[]> {
+  const g = gateway(config);
+  if (!g) return [];
+  try {
+    const res = await fetcher(`${g.url}/v1/recipients`, {
+      headers: { Authorization: `Bearer ${g.token}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`answered ${res.status}`);
+    const body = (await res.json()) as { recipients?: unknown };
+    return alertPeople(body.recipients);
+  } catch (err) {
+    console.warn(`[sms] cannot list recipients: ${err}`);
+    return [g.to];
+  }
 }
 
 /** What the session reads. One line, and never starting with a slash command. */

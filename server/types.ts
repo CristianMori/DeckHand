@@ -53,13 +53,14 @@ export interface SessionInfo {
   tool?: { name: string; summary: string; detail: string; at: number };
   /** this session is waiting on the user; absent otherwise (see needsYou.ts) */
   attention?: Attention;
-  /** who else hears when it waits, chosen per session: off unless exactly true */
+  /** who hears on each outside channel when it waits, chosen per session: nobody by default */
   alerts?: AlertChannels;
 }
 
+/** People by name, as Hermod and the text gateway know them. Empty: that channel is off. */
 export interface AlertChannels {
-  discord: boolean;
-  text: boolean;
+  discord: string[];
+  text: string[];
 }
 
 /** A session waiting on the user: one per waiting episode. */

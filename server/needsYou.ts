@@ -202,13 +202,20 @@ export interface AttentionCleared {
   machine?: string;
 }
 
-/** Anything but exactly true is off: a missing, old or unreadable setting sends nothing. */
-export function alertChannels(value: unknown): AlertChannels {
-  const v = (value ?? {}) as Partial<Record<keyof AlertChannels, unknown>>;
-  return { discord: v.discord === true, text: v.text === true };
+const PERSON_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const MAX_PEOPLE = 20;
+
+/** The valid names in a stored or sent list, each once. Anything else is nobody. */
+export function alertPeople(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((p): p is string => typeof p === 'string' && PERSON_NAME.test(p)))].slice(0, MAX_PEOPLE);
 }
 
-export type SendChannel = 'push' | keyof AlertChannels;
+/** A missing, old or unreadable setting sends nothing. */
+export function alertChannels(value: unknown): AlertChannels {
+  const v = (value ?? {}) as Partial<Record<keyof AlertChannels, unknown>>;
+  return { discord: alertPeople(v.discord), text: alertPeople(v.text) };
+}
 
 /**
  * Episodes already sent outside the hub, per channel. A hub restarted within
@@ -226,10 +233,10 @@ export class SentLedger {
     }
   }
 
-  has = (episode: string, channel: SendChannel = 'push') => this.sent.includes(episode) || this.sent.includes(`${channel}:${episode}`);
+  has = (episode: string, channel = 'push') => this.sent.includes(episode) || this.sent.includes(`${channel}:${episode}`);
 
-  /** True the first time an episode is claimed on a channel. */
-  claim(episode: string, channel: SendChannel = 'push'): boolean {
+  /** True the first time an episode is claimed on a channel: push, or discord:<person>. */
+  claim(episode: string, channel = 'push'): boolean {
     if (this.has(episode, channel)) return false;
     this.sent = [...this.sent, `${channel}:${episode}`].slice(-SENT_KEEP);
     try {
@@ -244,18 +251,27 @@ export class SentLedger {
 /**
  * Send one alert outward. The card holds the session's choice: it comes from
  * the owning hub with alertedAt in the same message, so a change made during
- * the wait counts on whichever hub sends. A channel that is off claims nothing.
+ * the wait counts on whichever hub sends. Each person on each channel is claimed
+ * apart, and someone not chosen claims nothing.
  */
 export function sendAlert(
   event: AttentionEvent,
   card: Pick<SessionInfo, 'alerts'>,
   ledger: Pick<SentLedger, 'claim'>,
-  send: Record<SendChannel, (event: AttentionEvent) => unknown>,
+  send: {
+    push: (event: AttentionEvent) => unknown;
+    discord: (event: AttentionEvent, person: string) => unknown;
+    text: (event: AttentionEvent, person: string) => unknown;
+  },
 ) {
-  const on = alertChannels(card.alerts);
+  const who = alertChannels(card.alerts);
   if (ledger.claim(event.episode, 'push')) void send.push(event);
-  if (on.discord && ledger.claim(event.episode, 'discord')) void send.discord(event);
-  if (on.text && ledger.claim(event.episode, 'text')) void send.text(event);
+  for (const person of who.discord) {
+    if (ledger.claim(event.episode, `discord:${person}`)) void send.discord(event, person);
+  }
+  for (const person of who.text) {
+    if (ledger.claim(event.episode, `text:${person}`)) void send.text(event, person);
+  }
 }
 
 /** One announcement per episode from the merged fleet cards, and one when it ends. */
@@ -283,8 +299,23 @@ export class FleetAttention {
   }
 }
 
-/** Tell the user on Discord through Hermod. Off without a key in data/attention.json. */
-export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(), fetcher: typeof fetch = fetch): Promise<boolean> {
+/** Who Hermod can reach on Discord, by name only; its people list says nothing else here. */
+export async function discordRecipients(config = attentionConfig(), fetcher: typeof fetch = fetch): Promise<string[]> {
+  const hermod = config.hermod;
+  if (!hermod?.key || !hermod.url) return [];
+  try {
+    const res = await fetcher(`${hermod.url.replace(/\/+$/, '')}/api/admin/people`, { signal: AbortSignal.timeout(HERMOD_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`answered ${res.status}`);
+    const body = (await res.json()) as { people?: { slug?: string; discordUserId?: string | null }[] };
+    return alertPeople((body.people ?? []).filter((p) => p.discordUserId).map((p) => p.slug));
+  } catch (err) {
+    console.warn(`[attention] cannot list Hermod's people: ${err}`);
+    return alertPeople([hermod.person]);
+  }
+}
+
+/** Tell someone on Discord through Hermod. Off without a key in data/attention.json. */
+export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(), fetcher: typeof fetch = fetch, person = config.hermod?.person ?? 'cristian'): Promise<boolean> {
   const hermod = config.hermod;
   if (!hermod?.key || !hermod.url) return false;
   const what = e.kind === 'permission' ? 'wants approval' : 'has a question';
@@ -293,7 +324,7 @@ export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(
       method: 'POST',
       headers: { Authorization: `Bearer ${hermod.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        person: hermod.person ?? 'cristian',
+        person,
         channel: 'discord',
         subject: `${e.name}${e.machine ? ` on ${e.machine}` : ''} ${what}`,
         message: e.text,
@@ -304,7 +335,7 @@ export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(
     });
     const body = (await res.json().catch(() => ({}))) as { delivered?: boolean; deferred?: boolean; reason?: string; error?: string };
     if (res.ok && (body.delivered || body.deferred)) return true;
-    console.warn(`[attention] Hermod did not deliver ${e.episode}: ${res.status} ${body.error ?? body.reason ?? ''}`);
+    console.warn(`[attention] Hermod did not deliver ${e.episode} to ${person}: ${res.status} ${body.error ?? body.reason ?? ''}`);
   } catch (err) {
     console.warn(`[attention] Hermod unreachable for ${e.episode}: ${err}`);
   }

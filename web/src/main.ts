@@ -1,3 +1,4 @@
+import { openCardMenu, refreshCardMenu, type Channel, type MenuActions } from './cardMenu';
 import './styles.css';
 import type { ControlMessage, SessionInfo } from './types';
 import { api, withElsewhereConfirm } from './api';
@@ -184,61 +185,90 @@ async function restartAllIdle(btn: HTMLButtonElement) {
   btn.textContent = failed ? `RESTART ALL · ${failed} FAILED` : 'RESTART ALL';
 }
 
-function render() {
-  renderSessionList(el.list, sessions, selected, {
-    onSelect: select,
-    onResume: async (s) => {
-      try {
-        await withElsewhereConfirm((force) => api.resumeForce(s.hubId, force));
-      } catch {
-        return; // declined or failed — leave the card as is
-      }
-      restart.failed.delete(s.hubId);
-      dropTerminal(s.hubId);
-      select(s);
-    },
-    onRemove: async (s) => {
-      restart.failed.delete(s.hubId);
-      dropTerminal(s.hubId);
-      tabs = tabs.filter((id) => id !== s.hubId);
-      if (selected === s.hubId) deselect();
-      await api.remove(s.hubId);
-    },
-    onRename: async (s) => {
-      const terminal = s.agentType === 'shell';
-      const name = prompt(
-        terminal
-          ? `Rename ${s.name} to:`
-          : `Rename ${s.name} to:\n\nThe folder is renamed too, on every machine that has it, with its conversations and memory.`,
-        s.name,
-      )?.trim();
-      if (!name || name === s.name) return;
-      try {
-        const r = await api.rename(s.hubId, name);
-        // offline machines are not a problem: they catch up when they reconnect
-        const problems = r.machines.filter((m) => m.error).map((m) => `${m.machine}: ${m.error}`);
-        if (problems.length) alert(`Renamed to ${name}, but:\n\n${problems.join('\n')}`);
-      } catch (err) {
-        alert(`Rename failed: ${String(err).replace(/^Error: \d+: /, '')}`);
-      }
-    },
-    onHandoff: (s) => void openHandoffDialog(s, (ns) => select(ns)),
-    onFiles: (s) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
-    onRestart: (s) => {
-      const warning =
-        s.agentType === 'shell'
-          ? `Restart terminal "${s.name}"?\n\nIt comes back as a fresh shell; whatever is running in it stops.`
-          : s.state !== 'IDLE'
-            ? `"${s.name}" is ${s.state}. Restart it anyway?\n\nThe conversation comes back, but what it is doing right now stops.`
-            : '';
-      if (warning && !confirm(warning)) return;
-      void restartSession(s);
-    },
-    onDismissRestartError: (s) => {
-      restart.failed.delete(s.hubId);
+const cardHandlers = {
+  onSelect: (s: SessionInfo, e: MouseEvent) => {
+    select(s);
+    // a phone's tap opens the terminal full screen; its header has the same controls
+    if (!matchMedia('(max-width: 760px)').matches) openCardMenu(s.hubId, { x: e.clientX, y: e.clientY }, menuActions);
+  },
+  onResume: async (s: SessionInfo) => {
+    try {
+      await withElsewhereConfirm((force) => api.resumeForce(s.hubId, force));
+    } catch {
+      return; // declined or failed — leave the card as is
+    }
+    restart.failed.delete(s.hubId);
+    dropTerminal(s.hubId);
+    select(s);
+  },
+  onRemove: async (s: SessionInfo) => {
+    restart.failed.delete(s.hubId);
+    dropTerminal(s.hubId);
+    tabs = tabs.filter((id) => id !== s.hubId);
+    if (selected === s.hubId) deselect();
+    await api.remove(s.hubId);
+  },
+  onRename: async (s: SessionInfo) => {
+    const terminal = s.agentType === 'shell';
+    const name = prompt(
+      terminal
+        ? `Rename ${s.name} to:`
+        : `Rename ${s.name} to:\n\nThe folder is renamed too, on every machine that has it, with its conversations and memory.`,
+      s.name,
+    )?.trim();
+    if (!name || name === s.name) return;
+    try {
+      const r = await api.rename(s.hubId, name);
+      // offline machines are not a problem: they catch up when they reconnect
+      const problems = r.machines.filter((m) => m.error).map((m) => `${m.machine}: ${m.error}`);
+      if (problems.length) alert(`Renamed to ${name}, but:\n\n${problems.join('\n')}`);
+    } catch (err) {
+      alert(`Rename failed: ${String(err).replace(/^Error: \d+: /, '')}`);
+    }
+  },
+  onHandoff: (s: SessionInfo) => void openHandoffDialog(s, (ns) => select(ns)),
+  onFiles: (s: SessionInfo) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
+  onRestart: (s: SessionInfo) => {
+    const warning =
+      s.agentType === 'shell'
+        ? `Restart terminal "${s.name}"?\n\nIt comes back as a fresh shell; whatever is running in it stops.`
+        : s.state !== 'IDLE'
+          ? `"${s.name}" is ${s.state}. Restart it anyway?\n\nThe conversation comes back, but what it is doing right now stops.`
+          : '';
+    if (warning && !confirm(warning)) return;
+    void restartSession(s);
+  },
+  onDismissRestartError: (s: SessionInfo) => {
+    restart.failed.delete(s.hubId);
+    render();
+  },
+};
+
+const menuActions: MenuActions = {
+  session: (hubId) => sessions.find((x) => x.hubId === hubId),
+  restart: cardHandlers.onRestart,
+  resume: cardHandlers.onResume,
+  freeze: (s) => void toggleFrozen(s),
+  autoYes: toggleAutoYes,
+  handoff: cardHandlers.onHandoff,
+  rename: cardHandlers.onRename,
+  files: cardHandlers.onFiles,
+  kill: (s) => void api.kill(s.hubId),
+  remove: cardHandlers.onRemove,
+  setAlert: (s, channel, people) => {
+    if (!s.alerts) return;
+    const before = s.alerts;
+    s.alerts = { ...before, [channel]: people }; // optimistic; broadcast will confirm
+    render();
+    api.alerts(s.hubId, { [channel]: people }).catch(() => {
+      s.alerts = before;
       render();
-    },
-  }, restart);
+    });
+  },
+};
+
+function render() {
+  renderSessionList(el.list, sessions, selected, cardHandlers, restart);
 
   const waiting = waitingCount();
   document.title = waiting > 0 ? `(${waiting}) Deckhand` : 'Deckhand';
@@ -257,24 +287,28 @@ function render() {
       el.autoYesBtn.hidden = terminal;
       // the owning hub holds the choice: no control when it can't be reached or is too old
       const alerts = terminal || s.unreachable ? undefined : s.alerts;
-      for (const [btn, label, on] of [
+      for (const [btn, label, people] of [
         [el.discordBtn, 'DISCORD', alerts?.discord],
-        [el.textBtn, 'TEXT', alerts?.text],
+        [el.textBtn, 'SMS', alerts?.text],
       ] as const) {
         btn.hidden = !alerts;
-        btn.textContent = `${label} ${on ? 'ON' : 'OFF'}`;
-        btn.classList.toggle('active', !!on);
+        btn.textContent = `${label} ${people?.length ? 'ON' : 'OFF'}`;
+        btn.classList.toggle('active', !!people?.length);
+        btn.title = people?.length ? `Alerts ${people.join(', ')}. Click to change.` : `Choose who is alerted by ${label === 'SMS' ? 'SMS' : 'Discord'}`;
       }
     }
   }
   renderTabs();
   updateManageDialog();
+  refreshCardMenu();
 }
 
-el.frozenBtn.onclick = async () => {
-  if (!selected) return;
+el.frozenBtn.onclick = () => {
   const s = sessions.find((x) => x.hubId === selected);
-  if (!s) return;
+  if (s) void toggleFrozen(s);
+};
+
+async function toggleFrozen(s: SessionInfo) {
   const folder = s.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
   const next = !s.frozen;
   if (
@@ -290,7 +324,7 @@ el.frozenBtn.onclick = async () => {
   } catch (err) {
     alert(`Could not change freeze state: ${err}`);
   }
-};
+}
 
 function select(s: SessionInfo) {
   selected = s.hubId;
@@ -419,30 +453,27 @@ el.killBtn.onclick = () => {
   if (selected) api.kill(selected);
 };
 
-el.autoYesBtn.onclick = () => {
-  if (!selected) return;
-  const s = sessions.find((x) => x.hubId === selected);
-  if (!s) return;
-  const next = !s.autoYes;
-  s.autoYes = next; // optimistic; broadcast will confirm
-  el.autoYesBtn.textContent = next ? 'AUTO-YES ON' : 'AUTO-YES OFF';
-  el.autoYesBtn.classList.toggle('active', next);
-  api.autoYes(selected, next).catch(() => render());
-};
-
-function toggleAlert(channel: 'discord' | 'text') {
-  const s = sessions.find((x) => x.hubId === selected);
-  if (!s?.alerts) return;
-  const before = s.alerts;
-  s.alerts = { ...before, [channel]: !before[channel] }; // optimistic; broadcast will confirm
+function toggleAutoYes(s: SessionInfo) {
+  const before = !!s.autoYes;
+  s.autoYes = !before; // optimistic; broadcast will confirm
   render();
-  api.alerts(s.hubId, { [channel]: s.alerts[channel] }).catch(() => {
-    s.alerts = before;
+  api.autoYes(s.hubId, !before).catch(() => {
+    s.autoYes = before;
     render();
   });
 }
-el.discordBtn.onclick = () => toggleAlert('discord');
-el.textBtn.onclick = () => toggleAlert('text');
+el.autoYesBtn.onclick = () => {
+  const s = sessions.find((x) => x.hubId === selected);
+  if (s) toggleAutoYes(s);
+};
+
+function openAlertMenu(btn: HTMLButtonElement, channel: Channel) {
+  if (!selected) return;
+  const r = btn.getBoundingClientRect();
+  openCardMenu(selected, { x: r.left, y: r.bottom + 4 }, menuActions, channel);
+}
+el.discordBtn.onclick = () => openAlertMenu(el.discordBtn, 'discord');
+el.textBtn.onclick = () => openAlertMenu(el.textBtn, 'text');
 
 // iOS: fixed overlays don't shrink when the on-screen keyboard opens — track
 // the visual viewport so the terminal panel always ends above the keyboard

@@ -17,9 +17,9 @@ import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
-import { NeedsYou, FleetAttention, SentLedger, alertChannels, attentionConfig, attentionEvent, sendAlert, sendToDiscord } from './needsYou.js';
+import { NeedsYou, FleetAttention, SentLedger, alertChannels, alertPeople, attentionConfig, attentionEvent, discordRecipients, sendAlert, sendToDiscord } from './needsYou.js';
 import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
-import { SmsReplies, sendText, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
+import { SmsReplies, sendText, textRecipients, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
 import { startSessionPusher } from './sessionPusher.js';
@@ -1035,21 +1035,42 @@ app.post('/api/sessions/:id/autoyes', sessionAction((id, req, res) => {
   res.json({ ok: true, autoYes: session.autoYes });
 }));
 
-// Which outside channels a session alerts on. Each costs or interrupts, so it
+// Who a session alerts on Discord and by text. Each costs or interrupts, so it
 // is the user's to choose, from the dashboard: not a session's or an agent's.
 app.post('/api/sessions/:id/alerts', sessionAction((id, req, res) => {
   if (/^(session:|gateway:|mimir)/i.test(currentTrace()?.caller ?? '')) {
     return res.status(403).json({ error: 'alert channels are chosen by the user in the dashboard' });
   }
   const { discord, text } = req.body ?? {};
-  if ((discord !== undefined && typeof discord !== 'boolean') || (text !== undefined && typeof text !== 'boolean')) {
-    return res.status(400).json({ error: 'discord and text must be true or false' });
-  }
+  const isList = (v: unknown) => v === undefined || (Array.isArray(v) && alertPeople(v).length === v.length);
+  if (!isList(discord) || !isList(text)) return res.status(400).json({ error: 'discord and text must be lists of names' });
   const session = manager.sessions.get(id)!;
   session.alerts = { discord: discord ?? session.alerts.discord, text: text ?? session.alerts.text };
   manager.emit('change', session);
   res.json({ ok: true, alerts: session.alerts });
 }));
+
+// The people a session can pick. Each hub knows only the senders configured on
+// it, and those live on different hubs, so the answer is gathered from the fleet.
+async function localAlertRecipients() {
+  const config = attentionConfig();
+  const [discord, text] = await Promise.all([discordRecipients(config), textRecipients(config.sms)]);
+  return { discord, text };
+}
+app.get('/api/alert-recipients', async (req, res) => {
+  const mine = await localAlertRecipients();
+  if (req.query.local) return res.json(mine);
+  const peers = await Promise.all(federation.connectedPeers().map(async (peer) => {
+    try {
+      const out = await federation.forward(peer, '/api/alert-recipients?local=1');
+      return out.status === 200 ? (out.body as Partial<typeof mine>) : {};
+    } catch {
+      return {}; // unreachable, or too old to have the route
+    }
+  }));
+  const merged = (channel: keyof typeof mine) => alertPeople([...mine[channel], ...peers.flatMap((p) => p[channel] ?? [])]).sort();
+  res.json({ discord: merged('discord'), text: merged('text') });
+});
 
 // The agent keeps its transcript outside the project folder, and its own
 // retention cleanup can remove it. A session whose transcript is gone can
@@ -2267,8 +2288,8 @@ const fleetAttention = new FleetAttention({
     broadcastAlert(event);
     sendAlert(event, card, sentAttention, {
       push: (e) => apns.sendAttention(e),
-      discord: (e) => sendToDiscord(e),
-      text: (e) => sendText(e, attentionConfig().sms),
+      discord: (e, person) => sendToDiscord(e, attentionConfig(), fetch, person),
+      text: (e, person) => sendText(e, attentionConfig().sms, fetch, person),
     });
   },
   cleared: (event) => {

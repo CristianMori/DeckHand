@@ -56,7 +56,7 @@ export function renderSessionList(
   sessions: SessionInfo[],
   selected: string | null,
   handlers: {
-    onSelect: (s: SessionInfo) => void;
+    onSelect: (s: SessionInfo, e: MouseEvent) => void;
     onResume: (s: SessionInfo) => void;
     onRemove: (s: SessionInfo) => void;
     onRename: (s: SessionInfo) => void;
@@ -185,7 +185,7 @@ export function renderSessionList(
       actions.remove();
     }
 
-    card.onclick = () => handlers.onSelect(s);
+    card.onclick = (e) => handlers.onSelect(s, e);
     root.appendChild(card);
   }
 }
