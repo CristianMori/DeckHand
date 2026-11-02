@@ -481,10 +481,24 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tui-mouse .xterm { cursor: default !important; }
 
 /* ── admin dialog: machines | agents with a valid token ── */
-#admin-dialog { width: 1000px; }
-.ad-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.ad-columns .resume-list { max-height: 60vh; }
-@media (max-width: 760px) { .ad-columns { grid-template-columns: 1fr; } }
+#admin-dialog { width: 1560px; max-width: 96vw; max-height: 92vh; }
+/* only while open: a closed dialog has to stay display:none */
+#admin-dialog[open] { display: flex; flex-direction: column; }
+.ad-columns { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 16px; flex: 1; min-height: 0; }
+/* each column scrolls on its own, so the buttons below stay on screen */
+.ad-columns section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ad-columns .resume-list, .ad-scroll {
+  flex: 1; min-height: 0; max-height: none; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.admin-row .card-actions { margin-top: 6px; }
+#admin-dialog .dialog-actions { flex: none; margin-top: 14px; }
+/* too narrow for three columns: the whole dialog scrolls instead */
+@media (max-width: 1100px) {
+  #admin-dialog[open] { display: block; overflow-y: auto; }
+  .ad-columns { grid-template-columns: 1fr; }
+  .ad-columns .resume-list, .ad-scroll { flex: none; overflow: visible; }
+}
 
 /* ── audit dialog: gateway agents | log ── */
 #audit-dialog { width: 1280px; }
@@ -518,7 +532,6 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .ad-target { font-size: 11px; color: var(--ink-dim); margin: -10px 0 14px; min-height: 1em; }
 .au-layout a, .admin-row a, .ad-columns a { color: var(--amber); }
 /* ADMIN → TRUST: access grants for outside agents */
-.tr-title { margin-top: 18px; }
 .tr-note { font-size: 11px; color: var(--ink-dim); margin-bottom: 8px; }
 .tr-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .tr-row .tr-where { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--ink); }

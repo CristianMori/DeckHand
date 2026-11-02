@@ -23,8 +23,10 @@ export async function openAdminDialog() {
       <section>
         <div class="ad-col-title">OUTSIDE AGENTS (MIMIR)</div>
         <div class="resume-list" id="ad-agents"><div class="empty-note">asking Mimir…</div></div>
-        <div class="ad-col-title tr-title">TRUST — WHAT EACH AGENT MAY REACH</div>
-        <div id="ad-trust"><div class="empty-note">loading grants…</div></div>
+      </section>
+      <section>
+        <div class="ad-col-title">TRUST — WHAT EACH AGENT MAY REACH</div>
+        <div class="ad-scroll" id="ad-trust"><div class="empty-note">loading grants…</div></div>
       </section>
     </div>
     <div class="dialog-actions">
