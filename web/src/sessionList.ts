@@ -51,20 +51,23 @@ export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   });
 }
 
-/** Workers follow their architect. Finished ones stay out of the list: the swarm view has them. */
-function grouped(sessions: SessionInfo[]): { session: SessionInfo; worker: boolean }[] {
+/** Each follows who leads it. Finished ones stay out of the list: the swarm view has them. */
+function grouped(sessions: SessionInfo[]): { session: SessionInfo; depth: number }[] {
   const sorted = sortSessions(sessions);
   const hasLead = (s: SessionInfo) => sessions.some((x) => x.claudeSessionId === s.worker?.architect);
-  const out: { session: SessionInfo; worker: boolean }[] = [];
-  for (const s of sorted) {
-    if (s.worker && hasLead(s)) continue;
-    out.push({ session: s, worker: false });
-    for (const w of sorted) {
-      if (w.worker?.architect === s.claudeSessionId && !finished(w)) out.push({ session: w, worker: true });
-    }
-  }
+  const crew = (s: SessionInfo) => sorted.filter((w) => w.worker?.architect === s.claudeSessionId);
+  // a finished sub-architect stays while a worker of its own is still going
+  const shows = (s: SessionInfo): boolean => !finished(s) || crew(s).some(shows);
+  const out: { session: SessionInfo; depth: number }[] = [];
+  const add = (s: SessionInfo, depth: number) => {
+    out.push({ session: s, depth });
+    if (depth < 2) for (const w of crew(s)) if (shows(w)) add(w, depth + 1);
+  };
+  for (const s of sorted) if (!s.worker || !hasLead(s)) add(s, 0);
   return out;
 }
+
+const ROLE_LABEL = { architect: 'ARCHITECT', subarchitect: 'SUB-ARCHITECT', worker: 'WORKER' } as const;
 
 const finished = (s: SessionInfo) => !s.alive && (s.worker?.status === 'reported' || s.worker?.status === 'failed');
 
@@ -95,11 +98,11 @@ export function renderSessionList(
     return;
   }
 
-  for (const { session: s, worker: nested } of grouped(sessions)) {
+  for (const { session: s, depth } of grouped(sessions)) {
     const chip = s.unreachable ? { cls: 'exited', label: 'UNREACHABLE' } : CHIP[s.state];
     const card = document.createElement('div');
     const waiting = !s.unreachable && (s.state === 'WAITING_QUESTION' || s.state === 'WAITING_PERMISSION');
-    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}${restart.failed.has(s.hubId) ? ' restart-failed' : ''}${nested ? ' worker' : ''}`;
+    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}${restart.failed.has(s.hubId) ? ' restart-failed' : ''}${depth ? ` nested depth-${depth}` : ''}`;
     card.dataset.hubId = s.hubId;
 
     const stateWord = waiting ? 'waiting' : s.state === 'WORKING' ? 'working' : s.state.toLowerCase();
@@ -107,7 +110,7 @@ export function renderSessionList(
       <div class="card-top">
         <span class="card-name"></span>
         <span class="agent-tag"></span>
-        ${s.role ? `<span class="role-tag ${s.role}">${s.role.toUpperCase()}</span>` : ''}
+        ${s.role ? `<span class="role-tag ${s.role}">${ROLE_LABEL[s.role]}</span>` : ''}
         ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
@@ -118,7 +121,7 @@ export function renderSessionList(
         <span class="elapsed">${stateWord} ${elapsed(s.stateSince)}</span>
       </div>
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
-      ${s.role === 'architect' ? '<button class="card-swarm" title="View swarm"></button>' : ''}
+      ${s.role === 'architect' || s.role === 'subarchitect' ? '<button class="card-swarm" title="View swarm"></button>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
       ${restart.failed.has(s.hubId) ? '<div class="card-restart-fail"><span></span><button class="ghost-btn" title="Dismiss">✕</button></div>' : ''}
@@ -154,7 +157,7 @@ export function renderSessionList(
       };
       card.querySelector('.card-files')!.before(restartBtn);
     }
-    if (s.role === 'architect') {
+    if (s.role === 'architect' || s.role === 'subarchitect') {
       const crew = sessions.filter((w) => w.worker?.architect === s.claudeSessionId);
       const done = crew.filter(finished).length;
       const btn = card.querySelector('.card-swarm') as HTMLButtonElement;

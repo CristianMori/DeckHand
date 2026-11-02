@@ -155,7 +155,7 @@ export class NeedsYou {
   private waiting(session: HubSession, t: Track, kind: Attention['kind'], text: string) {
     if (t.turnBySender) return;
     // a worker's prompts go to its architect, unless the user is the one talking to it
-    if (session.role === 'worker' && t.turnBySender !== false) return;
+    if (session.worker && t.turnBySender !== false) return;
     const current = session.attention;
     if (current) {
       if (current.kind === kind && current.text === text) return;

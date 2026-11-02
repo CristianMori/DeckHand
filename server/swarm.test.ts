@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { architectEditWarning, fleetBriefing, isDocPath } from './etiquette.js';
+import { architectEditWarning, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
-import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -399,4 +399,113 @@ test('removing a worker elsewhere asks the architect\'s repo whether it was merg
     rmSync(far.dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('an architect leads sub-architects or workers, a sub-architect only workers, a worker nobody', () => {
+  assert.equal(refusedLead('architect', 'worker'), undefined);
+  assert.equal(refusedLead('architect', 'subarchitect'), undefined);
+  assert.equal(refusedLead('subarchitect', 'worker'), undefined);
+  assert.match(refusedLead('subarchitect', 'subarchitect') ?? '', /only have workers/);
+  assert.match(refusedLead('worker', 'worker') ?? '', /only an architect/);
+  assert.match(refusedLead('worker', 'subarchitect') ?? '', /only an architect/);
+  assert.match(refusedLead(undefined, 'worker') ?? '', /only an architect/);
+});
+
+test('a sub-architect waiting on its workers isn\'t reminded; with none left, it is', () => {
+  assert.equal(workerStep(link(), live('IDLE', 600_000, { crewGoing: true }), NOW), null);
+  assert.deepEqual(workerStep(link(), live('IDLE', 600_000, { crewGoing: false }), NOW), { do: 'nudge' });
+});
+
+test('names Windows can\'t check out are caught, ordinary ones aren\'t', () => {
+  assert.deepEqual(windowsUnsafeNames(['src/a.ts', 'docs/My File.md', 'a.b/c.d']), []);
+  for (const bad of ['a:b.txt', 'what?.md', 'dir/aux.c', 'CON', 'trailing.', 'space ', 'x/nul/y.txt']) {
+    assert.deepEqual(windowsUnsafeNames([bad]), [bad], bad);
+  }
+  assert.deepEqual(windowsUnsafeNames(['Readme.md', 'README.md']).sort(), ['README.md', 'Readme.md']);
+});
+
+test('each role\'s briefing, and what a worker is told across systems', () => {
+  const id = { hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: '/w', hubUrl: 'u' };
+  const sub = fleetBriefing({ ...id, role: 'subarchitect', worker: link({ worktree: '/w', branch: 'worker/x' }) });
+  assert.match(sub, /Your role: SUB-ARCHITECT/);
+  assert.match(sub, /You can only have workers/);
+  assert.match(fleetBriefing({ ...id, role: 'architect' }), /dh_start_subarchitect/);
+  const here = fleetBriefing({ ...id, role: 'worker', worker: link({ architectMachine: 'pc', architectPlatform: process.platform }) });
+  assert.doesNotMatch(here, /has to be able to check out/);
+  const other = process.platform === 'win32' ? 'darwin' : 'win32';
+  const far = fleetBriefing({ ...id, role: 'worker', worker: link({ architectMachine: 'pc', architectPlatform: other }) });
+  assert.match(far, /merges your branch there/);
+});
+
+test('a session in a subfolder gets its worker in the same subfolder, however the path is spelled', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    mkdirSync(join(dir, 'pkg', 'core'), { recursive: true });
+    writeFileSync(join(dir, 'pkg', 'core', 'x.txt'), 'x');
+    git('add', '.');
+    git('commit', '-qm', 'sub');
+    const spelled = process.platform === 'win32' ? join(dir, 'PKG', 'core') : join(dir, 'pkg', 'core');
+    const t = await createWorktree(spelled, 'w', root);
+    assert.ok(existsSync(join(t!.cwd, 'x.txt')), t!.cwd);
+    assert.ok(t!.cwd.startsWith(t!.worktree));
+    assert.equal(t!.cwd.replace(t!.worktree, '').replace(/\\/g, '/'), '/pkg/core');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a worker branches from its sub-architect, and merges into its branch, not main', async () => {
+  const { dir, git } = repo();
+  const { manager, swarm } = harness();
+  const architect = { hubId: 'lead', claudeSessionId: 'arch', name: 'lead', cwd: dir, agentType: 'claude', role: 'architect', proc: {}, state: 'IDLE', lastInputAt: 0 } as unknown as HubSession;
+  manager.sessions.set('lead', architect);
+  const subs = await swarm.start(architect, { task: 'own the parser', name: 'parser', kind: 'subarchitect' });
+  const sub = Object.assign(subs.session!, { claudeSessionId: 'sub-conv', role: 'subarchitect' });
+  try {
+    assert.equal(sub.role, 'subarchitect');
+    await assert.rejects(swarm.start(sub, { task: 'x', kind: 'subarchitect' }), /only have workers/);
+    const started = await swarm.start(sub, { task: 'do it', name: 'hands' });
+    const worker = Object.assign(started.session!, { claudeSessionId: 'w-conv' });
+    assert.equal(worker.role, 'worker');
+    assert.equal(worker.worker?.architect, 'sub-conv');
+
+    // the worker's commit goes into the sub-architect's branch
+    writeFileSync(join(worker.cwd, 'p.txt'), 'p');
+    execFileSync('git', ['-C', worker.cwd, 'add', '.']);
+    execFileSync('git', ['-C', worker.cwd, 'commit', '-qm', 'p']);
+
+    await assert.rejects(swarm.report(sub, 'done', false), /still going/);
+    await assert.rejects(swarm.remove(sub, true), /still has 1 worker/);
+    await swarm.report(worker, 'p added', false);
+    await assert.rejects(swarm.remove(sub, true), /still has 1 worker/);
+
+    execFileSync('git', ['-C', sub.cwd, 'merge', '-q', worker.worker!.branch!]);
+    await swarm.remove(worker, false);
+    await swarm.report(sub, 'parser done', false);
+    assert.equal(sub.worker?.status, 'reported');
+    assert.equal(sub.worker?.commits, 1);
+    assert.match(sub.worker?.outbox?.[0] ?? '', /sub-architect "parser"/);
+
+    // main hasn't moved until the architect merges
+    assert.equal(existsSync(join(dir, 'p.txt')), false);
+    await assert.rejects(swarm.remove(sub, false), /not merged/);
+    git('merge', '-q', sub.worker!.branch!);
+    await swarm.remove(sub, false);
+    assert.ok(existsSync(join(dir, 'p.txt')));
+    assert.equal(git('worktree', 'list').trim().split('\n').length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a question from a worker to its sub-architect stays between them', async () => {
+  const { manager, swarm, typed, asked } = harness();
+  const sub = { hubId: 'sub', claudeSessionId: 'arch-conv', name: 'sub', role: 'subarchitect', proc: {}, state: 'IDLE', stateSince: Date.now(), lastInputAt: 0, worker: link({ architect: 'top' }) } as unknown as HubSession;
+  manager.sessions.set('sub', sub);
+  manager.sessions.set('w1', { hubId: 'w1', claudeSessionId: 'w', name: 'w1', proc: {}, state: 'WORKING', stateSince: Date.now(), worker: link({ outbox: ['which one?'] }) } as unknown as HubSession);
+  await swarm.tick();
+  assert.equal(typed[0].to, 'sub');
+  assert.match(asked.at(-1)!, /^session:/);
 });

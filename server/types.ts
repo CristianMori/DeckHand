@@ -55,16 +55,16 @@ export interface SessionInfo {
   attention?: Attention;
   /** who hears on each outside channel when it waits, chosen per session: nobody by default */
   alerts?: AlertChannels;
-  /** architect: designs and delegates; worker: does one task for an architect. Absent: a plain session */
+  /** architect: designs and delegates; subarchitect: the same for one module, under an architect; worker: one task. Absent: a plain session */
   role?: SessionRole;
   worker?: WorkerLink;
   /** tool calls so far by tool name, kept for workers */
   toolUse?: Record<string, number>;
 }
 
-export type SessionRole = 'architect' | 'worker';
+export type SessionRole = 'architect' | 'subarchitect' | 'worker';
 
-/** A worker's tie to its architect, its task and how it went (see swarm.ts). */
+/** A worker's or sub-architect's tie to who leads it, its task and how it went (see swarm.ts). */
 export interface WorkerLink {
   /** the architect's conversation id: survives its restarts, unlike a hub id */
   architect: string;
@@ -76,6 +76,9 @@ export interface WorkerLink {
   project?: string;
   /** the architect runs on another machine: code travels between the hubs as git bundles */
   architectMachine?: string;
+  /** process.platform of the architect's machine, and of its own: they can differ */
+  architectPlatform?: string;
+  platform?: string;
   /** its branch has commits the architect's repo doesn't have yet */
   sendBranch?: boolean;
   /** its own checkout and branch; absent when the folder is not a git repo */

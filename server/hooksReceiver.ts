@@ -79,7 +79,7 @@ export function makeHookHandler(
         const sharesFolder = session.worker && !session.worker.worktree;
         const warning =
           (sharesFolder ? null : ownershipCheck(session.claudeSessionId, body, fleetSessions())) ??
-          (session.role === 'architect' ? architectEditWarning(session.cwd, editedPaths(body.tool_name, body.tool_input, body.cwd)) : null);
+          (session.role === 'architect' || session.role === 'subarchitect' ? architectEditWarning(session.cwd, editedPaths(body.tool_name, body.tool_input, body.cwd)) : null);
         if (warning) {
           console.log(`[etiquette] ${session.name}: ${warning.slice(0, 120)}…`);
           return res.json({

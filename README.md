@@ -294,7 +294,15 @@ and how to behave towards the others.
   fetches the branch back the same way before it takes the report, so no remote
   or push rights are needed. If either machine is away, the message waits. A
   frozen folder is refused for another machine, and so is a folder that isn't a
-  git repository.
+  git repository. Each may be a different operating system: tasks use paths relative
+  to the repository, a report says where it ran, and a worker on a Mac or Linux whose
+  architect merges on Windows is told what Windows can't check out, with any such
+  names flagged in its report.
+  An architect can divide the system: `dh_start_subarchitect` gives a module to a
+  *sub-architect*, with its own branch and its own workers, whose branches it merges
+  into its own before it reports. An architect has sub-architects or workers, a
+  sub-architect only workers, and the hub refuses anything deeper. It can't report
+  while a worker is still going, or be removed while it still has workers.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with

@@ -2,13 +2,13 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
-import { projectFolderOf } from './etiquette.js';
+import { osName, projectFolderOf, windowsUnsafeNames } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
-import type { WorkerLink } from './types.js';
+import type { SessionRole, WorkerLink } from './types.js';
 
 /**
  * Architects and their workers. An architect session keeps the design in its
@@ -55,6 +55,16 @@ function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'worker';
 }
 
+/**
+ * Who may lead whom: an architect has sub-architects or workers, a sub-architect
+ * only workers. That caps the swarm at two levels below the architect.
+ */
+export function refusedLead(lead: SessionRole | undefined, kind: 'worker' | 'subarchitect'): string | undefined {
+  if (lead === 'architect') return undefined;
+  if (lead === 'subarchitect') return kind === 'worker' ? undefined : 'a sub-architect can only have workers';
+  return `only an architect starts ${kind === 'worker' ? 'workers' : 'sub-architects'}`;
+}
+
 /** What a worker's state calls for next. Pure: the Swarm carries it out. */
 export type WorkerStep =
   | { do: 'resume-tracking' }
@@ -66,7 +76,7 @@ export type WorkerStep =
 
 export function workerStep(
   w: WorkerLink,
-  s: { alive: boolean; state: string; stateSince: number; detail?: string; autoYes?: boolean },
+  s: { alive: boolean; state: string; stateSince: number; detail?: string; autoYes?: boolean; crewGoing?: boolean },
   now: number,
 ): WorkerStep {
   if (w.status === 'reported' || w.status === 'failed') return null;
@@ -82,6 +92,8 @@ export function workerStep(
     return { do: 'waiting' };
   }
   if (w.status !== 'working' || s.state !== 'IDLE' || now - s.stateSince < IDLE_GRACE_MS) return null;
+  // a sub-architect waiting on its workers is doing its job
+  if (s.crewGoing) return null;
   if (!w.nudgedAt) return { do: 'nudge' };
   // it took the reminder and stopped again, or never took it
   return s.stateSince > w.nudgedAt || now - w.nudgedAt > NUDGE_IGNORED_MS ? { do: 'stalled' } : null;
@@ -112,8 +124,9 @@ async function repoBase(folder: string) {
   if (!top) return undefined; // not a git repo: there is nothing to isolate with
   const baseCommit = await git(folder, 'rev-parse', 'HEAD').catch(() => undefined);
   if (!baseCommit) throw new Error('the repository has no commits yet: commit something first, a worker branches from it');
-  // a session in a subfolder gets its worker in the same subfolder
-  const sub = relative(resolve(top), resolve(folder));
+  // a session in a subfolder gets its worker in the same subfolder. Git's answer, not a
+  // comparison of paths: drive-letter case and symlinks differ between the two spellings.
+  const sub = (await git(folder, 'rev-parse', '--show-prefix')).replace(/\/$/, '');
   return { top, baseCommit, sub, baseDirty: !!(await git(folder, 'status', '--porcelain')) };
 }
 
@@ -127,6 +140,12 @@ async function addWorktree(repo: string, baseCommit: string, name: string, root:
 }
 
 /** The worker's own branch off the folder's current commit, outside every synced folder. */
+async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
+  if (!w.worktree || !w.baseCommit) return [];
+  const names = await git(w.worktree, 'diff', '--name-only', `${w.baseCommit}..HEAD`);
+  return names ? names.split('\n') : [];
+}
+
 export async function createWorktree(folder: string, name: string, root = WORKTREES) {
   const base = await repoBase(folder);
   if (!base) return undefined;
@@ -209,6 +228,8 @@ export interface StartWorker {
   permissionMode?: string;
   /** another fleet machine to run it on */
   machine?: string;
+  /** a worker, unless it is to lead a module */
+  kind?: 'worker' | 'subarchitect';
 }
 
 /** What the worker's hub is told by the architect's. */
@@ -224,6 +245,8 @@ export interface HostWorker {
   architect: string;
   architectName: string;
   architectMachine: string;
+  architectPlatform: string;
+  kind?: 'worker' | 'subarchitect';
   baseFolder: string;
   author?: { name: string; email: string };
 }
@@ -256,6 +279,8 @@ export class Swarm {
       lastReply: (session: HubSession) => Promise<string | undefined>;
       save: () => void;
       fleet?: SwarmFleet;
+      /** every session in the fleet: a session's workers can be on other machines */
+      fleetSessions?: () => { claudeSessionId: string; worker?: WorkerLink }[];
     },
   ) {
     manager.on('removed', (s: HubSession) => void this.tidyAfterRemoval(s));
@@ -265,20 +290,30 @@ export class Swarm {
     return [...this.manager.sessions.values()].filter((s) => s.worker?.architect === architect.claudeSessionId);
   }
 
+  /** Those it leads, on any machine. */
+  private crewOf(lead: HubSession) {
+    const all = this.deps.fleetSessions?.() ?? [...this.manager.sessions.values()];
+    return all.filter((s) => s.worker && s.worker.architect === lead.claudeSessionId);
+  }
+
   async start(architect: HubSession, opts: StartWorker) {
-    if (architect.role !== 'architect') throw new Error('only an architect session starts workers');
+    const kind = opts.kind ?? 'worker';
+    const refused = refusedLead(architect.role, kind);
+    if (refused) throw new Error(refused);
     const task = opts.task?.trim();
     if (!task) throw new Error('task required');
     if (task.length > TASK_MAX) throw new Error(`task too long (${task.length} characters, the limit is ${TASK_MAX})`);
-    const name = opts.name?.trim() || `${architect.name} worker`;
+    const name = opts.name?.trim() || `${architect.name} ${kind === 'worker' ? 'worker' : 'sub-architect'}`;
     if (opts.machine && opts.machine !== this.deps.fleet?.self) return this.startElsewhere(architect, { ...opts, task, name }, opts.machine);
     const tree = await createWorktree(architect.cwd, name);
+    if (!tree && kind === 'subarchitect') throw new Error('a sub-architect works on a branch of its own, and this folder is not a git repository');
     const worker: WorkerLink = {
       architect: architect.claudeSessionId,
       architectName: architect.name,
       task,
       baseFolder: architect.cwd,
-      project: projectName(architect.cwd),
+      project: architect.worker?.project ?? projectName(architect.cwd),
+      platform: process.platform,
       worktree: tree?.worktree,
       repo: tree?.repo,
       branch: tree?.branch,
@@ -293,7 +328,7 @@ export class Swarm {
       model: opts.model ?? architect.model,
       permissionMode: opts.permissionMode,
       initialPrompt: task,
-      role: 'worker',
+      role: kind,
       worker,
     });
     session.autoYes = true; // unattended: a prompt nobody is watching would stall it
@@ -307,9 +342,9 @@ export class Swarm {
   private async startElsewhere(architect: HubSession, opts: StartWorker & { name: string }, machine: string) {
     const fleet = this.deps.fleet;
     if (!fleet) throw new Error('this hub has no fleet to reach');
-    const project = projectName(architect.cwd);
+    const project = architect.worker?.project ?? projectName(architect.cwd);
     // freezing a folder promises its code stays on this machine
-    if (fleet.isFrozen(folderNameOf(architect.cwd))) throw new Error(`${project} is frozen to this machine: its code can't go to ${machine}. Run the worker here, or unfreeze it.`);
+    if (fleet.isFrozen(project)) throw new Error(`${project} is frozen to this machine: its code can't go to ${machine}. Run the worker here, or unfreeze it.`);
     const base = await repoBase(architect.cwd);
     if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
     const ask = async (path: string, body: unknown) => {
@@ -338,6 +373,8 @@ export class Swarm {
       architect: architect.claudeSessionId,
       architectName: architect.name,
       architectMachine: fleet.self,
+      architectPlatform: process.platform,
+      kind: opts.kind,
       baseFolder: architect.cwd,
       author: author && { name: author[0], email: author[1] },
     };
@@ -358,11 +395,13 @@ export class Swarm {
       model: h.model,
       permissionMode: h.permissionMode,
       initialPrompt: h.task,
-      role: 'worker',
+      role: h.kind === 'subarchitect' ? 'subarchitect' : 'worker',
       worker: {
         architect: h.architect,
         architectName: h.architectName,
         architectMachine: h.architectMachine,
+        architectPlatform: h.architectPlatform,
+        platform: process.platform,
         task: h.task,
         baseFolder: h.baseFolder,
         project: h.project,
@@ -393,6 +432,8 @@ export class Swarm {
     const w = session.worker;
     if (!w) throw new Error('only a worker reports');
     if (w.status === 'reported' || w.status === 'failed') throw new Error('already reported: end your turn now');
+    const going = this.crewOf(session).filter((c) => !['reported', 'failed'].includes(c.worker!.status));
+    if (going.length) throw new Error(`${going.length} of your workers ${going.length === 1 ? 'is' : 'are'} still going: wait for ${going.length === 1 ? 'it' : 'them'}, or remove ${going.length === 1 ? 'it' : 'them'}`);
     const text = result?.trim();
     if (!text) throw new Error('result required');
     if (text.length > REPORT_MAX) {
@@ -409,8 +450,10 @@ export class Swarm {
     const where = facts.branch
       ? `Branch ${facts.branch}: ${facts.commits} commit${facts.commits === 1 ? '' : 's'}, ${facts.files} file${facts.files === 1 ? '' : 's'} changed${facts.dirty ? ', with uncommitted changes left in its worktree' : ''}.`
       : 'It worked in your folder, with no branch of its own.';
+    const unsafe = w.architectPlatform === 'win32' && process.platform !== 'win32' ? windowsUnsafeNames(await changedFiles(w)) : [];
+    const warning = unsafe.length ? `\nWARNING: Windows can't check out these names, so merging it there will fail: ${unsafe.slice(0, 10).join(', ')}` : '';
     const next = facts.commits ? `\nReview and merge the branch, then dh_remove_worker. A follow-up: dh_worker_followup.` : `\nWhen you are done with it: dh_remove_worker. A follow-up: dh_worker_followup.`;
-    this.queue(session, `${failed ? 'could not finish' : 'finished'}. ${where}\nRESULT:\n${text}${next}`);
+    this.queue(session, `${failed ? 'could not finish' : 'finished'}. ${where}\nRESULT:\n${text}${warning}${next}`);
     setTimeout(() => {
       if (session.worker?.status === w.status && session.proc) this.manager.kill(session.hubId);
     }, STOP_AFTER_REPORT_MS).unref?.();
@@ -462,6 +505,9 @@ export class Swarm {
   async remove(session: HubSession, discard: boolean) {
     const w = session.worker;
     if (!w) throw new Error('not a worker');
+    // its workers have their checkouts in its repository, and they report to it
+    const crew = this.crewOf(session);
+    if (crew.length) throw new Error(`it still has ${crew.length} worker${crew.length === 1 ? '' : 's'}: remove ${crew.length === 1 ? 'it' : 'them'} first`);
     if (w.worktree && w.repo && !discard) {
       const facts = await worktreeFacts(w).catch(() => undefined);
       if (facts?.dirty) throw new Error('its worktree has uncommitted changes: pass discard=true to throw them away');
@@ -509,7 +555,9 @@ export class Swarm {
 
   private queue(worker: HubSession, text: string) {
     const w = worker.worker!;
-    w.outbox = [...(w.outbox ?? []), `[Deckhand, worker "${worker.name}" (${worker.hubId})] ${text}`];
+    const kind = worker.role === 'subarchitect' ? 'sub-architect' : 'worker';
+    const where = w.architectMachine ? ` on ${this.deps.fleet?.self ?? 'another machine'}, ${osName(w.platform)}` : '';
+    w.outbox = [...(w.outbox ?? []), `[Deckhand, ${kind} "${worker.name}" (${worker.hubId})${where}] ${text}`];
     this.manager.emit('change', worker);
     this.deps.save();
   }
@@ -544,8 +592,9 @@ export class Swarm {
       const text = [...(architect.inbox ?? []), ...from.flatMap((s) => s.worker!.outbox!)].join('\n\n');
       architect.inbox = undefined;
       for (const s of from) s.worker!.outbox = undefined;
-      // not from a session: a question the architect then asks is really for the user
-      this.deps.promptFrom(architect, 'swarm', false);
+      // not from a session: a question the architect then asks is really for the user.
+      // A sub-architect asks its own architect instead.
+      this.deps.promptFrom(architect, architect.worker ? 'session:swarm' : 'swarm', false);
       void this.deps.typePrompt(architect, text).finally(() => {
         this.delivering.delete(architect.hubId);
         this.deps.save();
@@ -586,7 +635,8 @@ export class Swarm {
 
   private async step(s: HubSession, now: number) {
     const w = s.worker!;
-    const step = workerStep(w, { alive: !!s.proc, state: s.state, stateSince: s.stateSince, detail: s.detail, autoYes: s.autoYes }, now);
+    const crewGoing = this.crewOf(s).some((c) => !['reported', 'failed'].includes(c.worker!.status));
+    const step = workerStep(w, { alive: !!s.proc, state: s.state, stateSince: s.stateSince, detail: s.detail, autoYes: s.autoYes, crewGoing }, now);
     switch (step?.do) {
       case 'resume-tracking':
         w.status = 'working';

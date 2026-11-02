@@ -80,7 +80,7 @@ function draw() {
       root.append(item(s.frozen ? 'UNFREEZE' : 'FREEZE', act(a.freeze)));
       root.append(item(`AUTO-YES ${s.autoYes ? 'ON' : 'OFF'}`, () => a.autoYes(s), s.autoYes ? 'on' : ''));
       if (s.alerts) for (const channel of ['discord', 'text'] as const) appendAlert(root, s, channel);
-      if (s.role !== 'worker') {
+      if (!s.worker) {
         root.append(item(s.role === 'architect' ? 'STOP BEING ARCHITECT' : 'MAKE ARCHITECT', act((x) => a.setArchitect(x, s.role !== 'architect'))));
       }
       root.append(item('HAND OFF', act(a.handoff)));

@@ -50,18 +50,29 @@ function section(label: string, text: string, cls = ''): HTMLElement {
   return box;
 }
 
-function workerCard(s: SessionInfo): HTMLElement {
+const finishedFirstLast = (a: SessionInfo, b: SessionInfo) =>
+  // the ones still going first, then the latest to finish
+  Number(!b.worker!.reportedAt) - Number(!a.worker!.reportedAt) || (b.worker!.reportedAt ?? b.worker!.startedAt) - (a.worker!.reportedAt ?? a.worker!.startedAt);
+
+const crewOf = (lead: string, all: SessionInfo[]) => all.filter((s) => s.worker?.architect === lead).sort(finishedFirstLast);
+
+const OS: Record<string, string> = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+
+function workerCard(s: SessionInfo, all: SessionInfo[]): HTMLElement {
   const w = s.worker!;
   const live = s.alive && !s.unreachable;
   const status = STATUS[w.status] ?? STATUS.working;
-  const card = div(`sw-card s-${status.cls}`);
+  const sub = s.role === 'subarchitect';
+  const card = div(`sw-card s-${status.cls}${sub ? ' sw-sub' : ''}`);
 
   const top = div('sw-top');
   const name = div('sw-name', s.name);
-  top.append(name, chip(status.cls, status.label));
+  top.append(name);
+  if (sub) top.append(chip('starting', 'SUB-ARCHITECT'));
+  top.append(chip(status.cls, status.label));
   card.append(top);
 
-  const facts = [s.machine, s.agentType ?? 'claude', s.model, live ? s.state.toLowerCase() : 'stopped', `started ${ago(w.startedAt)}`].filter(Boolean).join(' · ');
+  const facts = [s.machine, w.platform && OS[w.platform], s.agentType ?? 'claude', s.model, live ? s.state.toLowerCase() : 'stopped', `started ${ago(w.startedAt)}`].filter(Boolean).join(' · ');
   card.append(div('sw-meta', facts));
   if (w.branch) {
     const size = w.commits === undefined ? '' : ` · ${w.commits} commit${w.commits === 1 ? '' : 's'}, ${w.files ?? 0} file${w.files === 1 ? '' : 's'}`;
@@ -104,6 +115,14 @@ function workerCard(s: SessionInfo): HTMLElement {
   const foot = div('sw-foot');
   foot.append(open);
   card.append(foot);
+  if (sub) {
+    const crew = crewOf(s.claudeSessionId, all);
+    if (crew.length) {
+      const list = div('sw-crew');
+      for (const c of crew) list.append(workerCard(c, all));
+      card.append(list);
+    }
+  }
   return card;
 }
 
@@ -111,13 +130,11 @@ function drawSwarm() {
   if (!current) return;
   const all = current.sessions();
   const lead = all.find((s) => s.claudeSessionId === current!.architect);
-  const workers = all
-    .filter((s) => s.worker?.architect === current!.architect)
-    // the ones still going first, then the latest to finish
-    .sort((a, b) => Number(!!b.worker!.reportedAt === false) - Number(!!a.worker!.reportedAt === false) || (b.worker!.reportedAt ?? b.worker!.startedAt) - (a.worker!.reportedAt ?? a.worker!.startedAt));
+  const workers = crewOf(current.architect, all);
+  const everyone = [...workers, ...workers.flatMap((s) => crewOf(s.claudeSessionId, all))];
 
   // the times in it move on their own: only what actually changed redraws
-  const signature = JSON.stringify([lead?.state, lead?.name, workers.map((s) => [s.hubId, s.name, s.state, s.alive, s.worker, s.toolUse, s.tool?.summary])]);
+  const signature = JSON.stringify([lead?.state, lead?.name, everyone.map((s) => [s.hubId, s.name, s.state, s.alive, s.worker, s.toolUse, s.tool?.summary])]);
   if (signature === drawn) return;
   drawn = signature;
 
@@ -134,14 +151,14 @@ function drawSwarm() {
   if (lead) top.append(chip(lead.alive ? (lead.state === 'WORKING' ? 'working' : 'idle') : 'exited', lead.alive ? lead.state : 'STOPPED'));
   head.append(top);
   if (lead) head.append(div('sw-meta', `${lead.machine ?? ''} · ${lead.cwd}`));
-  const going = workers.filter((s) => !s.worker!.reportedAt).length;
-  head.append(div('sw-meta', workers.length ? `${going} going, ${workers.length - going} finished` : ''));
+  const going = everyone.filter((s) => !s.worker!.reportedAt).length;
+  head.append(div('sw-meta', everyone.length ? `${going} going, ${everyone.length - going} finished` : ''));
   d.append(head);
 
   if (workers.length) {
     d.append(div('sw-trunk'));
     const list = div('sw-workers');
-    for (const s of workers) list.append(workerCard(s));
+    for (const s of workers) list.append(workerCard(s, all));
     d.append(list);
     list.scrollTop = scroll;
   } else {
@@ -164,7 +181,14 @@ export function closeSwarm() {
 /** Any member of the swarm opens it: an architect, or one of its workers. */
 export function openSwarm(s: SessionInfo, sessions: () => SessionInfo[], open: (s: SessionInfo) => void) {
   const saved = current;
-  current = { architect: s.worker?.architect ?? s.claudeSessionId, sessions, open };
+  // always from the top, whichever member it was opened on
+  let top = s;
+  for (let i = 0; i < 2 && top.worker; i++) {
+    const lead = sessions().find((x) => x.claudeSessionId === top.worker!.architect);
+    if (!lead) break;
+    top = lead;
+  }
+  current = { architect: top.worker?.architect ?? top.claudeSessionId, sessions, open };
   if (saved?.architect !== current.architect) expanded.clear();
   drawn = '';
   drawSwarm();

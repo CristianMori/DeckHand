@@ -309,8 +309,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'dh_start_subarchitect',
+    description: 'Architect sessions only: give one module of the system to a sub-architect: a long-lived session on its own branch that holds the module\'s detail, runs workers of its own and reports to you. It can only have workers. Use it for a module that needs sustained design, not for a single task (that is dh_start_worker). Returns at once; its report arrives later as a prompt. Optional: machine (any connected fleet machine; default this one), name, agentType and model (default: yours).',
+    schema: { task: S('the module: what it covers, its boundaries with the rest, constraints, what you want back'), machine: S('fleet machine to run it on; omit for this one'), name: S('short card name, usually the module'), agentType: S('claude | codex (default: yours)'), model: S('model id (default: yours)') },
+    required: ['task'],
+    run: async (a) => {
+      const body = { task: a.task, kind: 'subarchitect' };
+      for (const k of ['name', 'agentType', 'model', 'machine']) if (nz(a[k])) body[k] = a[k];
+      const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, nz(a.machine) ? 600_000 : 60_000);
+      return `Sub-architect ${s.hubId} "${s.name}" started on ${s.machine}, on branch ${s.worker.branch}.${s.baseDirty ? ' Your folder has uncommitted changes it does not have.' : ''} End your turn: its report comes as a prompt.`;
+    },
+  },
+  {
     name: 'dh_list_workers',
-    description: 'Architect sessions: your workers, what each was asked, and how each stands.',
+    description: 'Architect and sub-architect sessions: who you lead, what each was asked, and how each stands.',
     schema: {},
     run: async () => {
       const all = arr(await get('/api/sessions'));
@@ -318,7 +330,7 @@ const TOOLS = [
       const me = all.find((s) => s.hubId === ME.hubId)?.claudeSessionId ?? ME.conversationId;
       const mine = all.filter((s) => s.worker && s.worker.architect === me);
       if (!mine.length) return 'No workers.';
-      return mine.map((s) => `[${s.hubId}] ${s.name} on ${s.machine}: ${s.worker.status} (${s.state})${s.worker.branch ? `, branch ${s.worker.branch}` : ''}\n  task: ${s.worker.task.slice(0, 200)}${s.worker.result ? `\n  result: ${s.worker.result}` : ''}`).join('\n');
+      return mine.map((s) => `[${s.hubId}] ${s.role === 'subarchitect' ? '(sub-architect) ' : ''}${s.name} on ${s.machine}: ${s.worker.status} (${s.state})${s.worker.branch ? `, branch ${s.worker.branch}` : ''}\n  task: ${s.worker.task.slice(0, 200)}${s.worker.result ? `\n  result: ${s.worker.result}` : ''}`).join('\n');
     },
   },
   {
@@ -333,7 +345,7 @@ const TOOLS = [
   },
   {
     name: 'dh_remove_worker',
-    description: 'Architect sessions: remove a worker\'s card, worktree and branch once you are done with it. Refused while its branch is unmerged or its worktree has changes, unless discard=true, which throws that work away.',
+    description: 'Architect sessions: remove a worker\'s or sub-architect\'s card, worktree and branch once you are done with it. Refused while its branch is unmerged or its worktree has changes, unless discard=true, which throws that work away, and refused while a sub-architect still has workers.',
     schema: { worker: S('the worker\'s id or name, as in its report'), discard: B('throw away unmerged or uncommitted work') },
     required: ['worker'],
     run: async ({ worker, discard }) => {
@@ -344,7 +356,7 @@ const TOOLS = [
   },
   {
     name: 'dh_report',
-    description: 'Worker sessions: finish your task and give the architect the result: what you found or built, whether tests pass, what it must know or decide. Short, 3000 characters at most. Commit first; a report with uncommitted changes is refused unless failed=true. The hub stops you shortly after.',
+    description: 'Worker and sub-architect sessions: finish your task and give the architect the result: what you found or built, whether tests pass, what it must know or decide. Short, 3000 characters at most. Commit first; a report with uncommitted changes is refused unless failed=true. The hub stops you shortly after.',
     schema: { result: S('the result, not the story'), failed: B('you could not finish; say why in result') },
     required: ['result'],
     run: async ({ result, failed }) => {
@@ -354,7 +366,7 @@ const TOOLS = [
   },
   {
     name: 'dh_ask_architect',
-    description: 'Worker sessions: you need a decision to go on. Put the question and your own recommendation here, then end your turn. The answer arrives as your next prompt.',
+    description: 'Worker and sub-architect sessions: you need a decision to go on. Put the question and your own recommendation here, then end your turn. The answer arrives as your next prompt.',
     schema: { question: S('the question, with your recommendation') },
     required: ['question'],
     run: async ({ question }) => {

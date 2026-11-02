@@ -29,8 +29,8 @@ export interface SessionInfo {
   frozen?: boolean;
   /** files the session handed to the user (dh_send_file), newest first */
   files?: { id: string; name: string; size: number; at: number; url: string }[];
-  /** architect: designs and delegates; worker: one task for an architect. Absent: plain */
-  role?: 'architect' | 'worker';
+  /** architect: designs and delegates; subarchitect: the same for one module; worker: one task. Absent: plain */
+  role?: 'architect' | 'subarchitect' | 'worker';
   worker?: WorkerLink;
   /** tool calls so far by tool name, kept for workers */
   toolUse?: Record<string, number>;
@@ -44,6 +44,9 @@ export interface WorkerLink {
   task: string;
   followUps?: string[];
   baseFolder: string;
+  project?: string;
+  architectMachine?: string;
+  platform?: string;
   worktree?: string;
   branch?: string;
   status: 'working' | 'asking' | 'stalled' | 'reported' | 'failed';

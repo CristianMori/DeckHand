@@ -83,13 +83,20 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     get('ns-role-label').hidden = !!terminal;
     select.hidden = !!terminal;
     const folder = get<HTMLSelectElement>('ns-folder').value;
-    const leads = live.filter((s) => s.role === 'architect' && s.alive && !s.unreachable && folderName(s.cwd) === folderName(folder));
+    const leading = (s: SessionInfo) => (s.role === 'architect' || s.role === 'subarchitect') && s.alive && !s.unreachable;
+    const leads = live.filter((s) => leading(s) && folderName(s.worker?.project ?? s.cwd) === folderName(folder));
+    const tops = leads.filter((s) => s.role === 'architect');
     select.innerHTML =
       leads.map((s) => `<option value="worker:${s.hubId}"></option>`).join('') +
+      tops.map((s) => `<option value="subarchitect:${s.hubId}"></option>`).join('') +
       '<option value="architect">ARCHITECT: discusses, keeps the repo and docs, delegates</option>' +
       '<option value="">PLAIN: does its own work</option>';
+    const where = (s: SessionInfo) => `${s.name}${s.machine ? ` (${s.machine})` : ''}`;
     leads.forEach((s, i) => {
-      select.options[i].textContent = `WORKER under ${s.name}${s.machine ? ` (${s.machine})` : ''}: one task, reports back`;
+      select.options[i].textContent = `WORKER under ${where(s)}: one task, reports back`;
+    });
+    tops.forEach((s, i) => {
+      select.options[leads.length + i].textContent = `SUB-ARCHITECT under ${where(s)}: leads one module`;
     });
     select.selectedIndex = 0;
     syncPromptLabel();
@@ -97,8 +104,9 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
 
   function syncPromptLabel() {
     const a = selectedAgent();
-    const worker = get<HTMLSelectElement>('ns-role').value.startsWith('worker:');
-    get('ns-prompt-label').textContent = a.terminal ? 'INITIAL COMMAND (optional)' : worker ? 'TASK' : 'INITIAL PROMPT (optional)';
+    const role = get<HTMLSelectElement>('ns-role').value;
+    const label = role.startsWith('worker:') ? 'TASK' : role.startsWith('subarchitect:') ? 'THE MODULE' : 'INITIAL PROMPT (optional)';
+    get('ns-prompt-label').textContent = a.terminal ? 'INITIAL COMMAND (optional)' : label;
   }
 
   // a terminal can start in the home folder, not only in a project
@@ -213,9 +221,9 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
       return;
     }
     const role = selectedAgent().terminal ? '' : get<HTMLSelectElement>('ns-role').value;
-    const architect = role.startsWith('worker:') ? role.slice('worker:'.length) : undefined;
+    const [kind, architect] = role.includes(':') ? role.split(':') : [role, undefined];
     if (architect && !get<HTMLTextAreaElement>('ns-prompt').value.trim()) {
-      alert('A worker needs a task.');
+      alert(kind === 'worker' ? 'A worker needs a task.' : 'A sub-architect needs its module described.');
       return;
     }
     btn.disabled = true;
@@ -232,7 +240,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
           model: get<HTMLSelectElement>('ns-model').value || undefined,
           machine: selectedMachine(),
           force,
-          role: architect ? 'worker' : role === 'architect' ? 'architect' : undefined,
+          role: kind === 'worker' || kind === 'subarchitect' || kind === 'architect' ? kind : undefined,
           architect,
         }),
       );

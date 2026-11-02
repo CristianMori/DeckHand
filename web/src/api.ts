@@ -66,8 +66,8 @@ export const api = {
     initialPrompt?: string;
     machine?: string;
     force?: boolean;
-    role?: 'architect' | 'worker';
-    /** hub id of the architect a worker works for */
+    role?: 'architect' | 'subarchitect' | 'worker';
+    /** hub id of whoever leads a worker or sub-architect */
     architect?: string;
   }) =>
     fetch('/api/sessions', {

@@ -151,7 +151,7 @@ for (const rec of loadPersisted()) {
   const s = manager.addExitedRecord(rec);
   s.autoYes = !!rec.autoYes;
   s.alerts = alertChannels(rec.alerts);
-  s.role = rec.role === 'architect' || rec.role === 'worker' ? rec.role : undefined;
+  s.role = rec.role === 'architect' || rec.role === 'subarchitect' || rec.role === 'worker' ? rec.role : undefined;
   s.worker = rec.worker;
   s.toolUse = rec.toolUse;
   s.inbox = rec.inbox;
@@ -862,7 +862,7 @@ app.post('/api/sessions', async (req, res) => {
   let cwd: string | undefined = req.body?.cwd;
   // from the dashboard: a worker under a live architect, the same as one it starts itself.
   // Decided on the architect's hub, wherever the worker is to run.
-  if (role === 'worker') {
+  if (role === 'worker' || role === 'subarchitect') {
     const lead = manager.sessions.get(String(architect));
     if (!lead) {
       const peer = federation.peerBySession(String(architect));
@@ -871,7 +871,7 @@ app.post('/api/sessions', async (req, res) => {
       return out ? res.status(out.status).json(out.body) : res.status(502).json({ error: `forward to ${peer.info.machine} failed` });
     }
     try {
-      const { session, info } = await swarm.start(lead, { task: initialPrompt, name, agentType, model, permissionMode, machine });
+      const { session, info } = await swarm.start(lead, { task: initialPrompt, name, agentType, model, permissionMode, machine, kind: role });
       return res.json(session ? { ...session.info(), machine: discovery.selfName } : info);
     } catch (err) {
       return res.status(400).json({ error: errorText(err) });
@@ -1110,10 +1110,12 @@ app.post('/api/sessions/:id/role', sessionAction((id, req, res) => {
 app.post('/api/sessions/:id/workers', sessionAction(async (id, req, res) => {
   if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'a session starts only its own workers' });
   const { task, name, agentType, model, permissionMode, machine } = req.body ?? {};
+  const kind = req.body?.kind;
+  if (kind !== undefined && kind !== 'worker' && kind !== 'subarchitect') return res.status(400).json({ error: 'kind must be worker or subarchitect' });
   // another machine answers for its own engines
   if (agentType && (!machine || machine === discovery.selfName) && engineMissing(res, agentType)) return;
   try {
-    const { session, info, baseDirty, isolated } = await swarm.start(manager.sessions.get(id)!, { task, name, agentType, model, permissionMode, machine });
+    const { session, info, baseDirty, isolated } = await swarm.start(manager.sessions.get(id)!, { task, name, agentType, model, permissionMode, machine, kind });
     res.json({ ...(session ? { ...session.info(), machine: discovery.selfName } : info), baseDirty, isolated });
   } catch (err) {
     res.status(400).json({ error: errorText(err) });
@@ -1174,7 +1176,7 @@ app.post('/api/sessions/:id/worker-message', sessionAction(async (id, req, res) 
   const lead = manager.sessions.get(id)!;
   let text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (!text.trim()) return res.status(400).json({ error: 'text required' });
-  if (lead.role !== 'architect') return res.status(400).json({ error: 'not an architect' });
+  if (lead.role !== 'architect' && lead.role !== 'subarchitect') return res.status(400).json({ error: 'not an architect' });
   const { branch, worker } = req.body ?? {};
   if (typeof branch === 'string' && typeof worker === 'string') {
     const peer = federation.peerBySession(worker);
@@ -1731,6 +1733,7 @@ const swarm = new Swarm(manager, {
   promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
   lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
   save: () => savePersisted(manager),
+  fleetSessions: () => mergedList(),
   fleet: {
     get self() {
       return discovery.selfName;
