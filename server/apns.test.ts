@@ -242,7 +242,7 @@ test('sent ledger: an episode goes out once, across a hub restart', () => {
   assert.equal(after.claim('e1'), false);
   assert.equal(after.has('e1'), true);
   assert.equal(after.has('e2'), false);
-  for (let i = 0; i < 600; i++) after.claim(`x${i}`);
+  for (let i = 0; i < 1600; i++) after.claim(`x${i}`);
   assert.equal(new SentLedger(file).has('e1'), false, 'kept short');
-  assert.equal(new SentLedger(file).has('x599'), true);
+  assert.equal(new SentLedger(file).has('x1599'), true);
 });

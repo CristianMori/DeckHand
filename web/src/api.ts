@@ -169,6 +169,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ on }),
     }).then((r) => json<{ ok: boolean; autoYes: boolean }>(r)),
+  alerts: (hubId: string, change: { discord?: boolean; text?: boolean }) =>
+    fetch(`/api/sessions/${hubId}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(change),
+    }).then((r) => json<{ ok: boolean; alerts: { discord: boolean; text: boolean } }>(r)),
   kill: (hubId: string) => fetch(`/api/sessions/${hubId}/kill`, { method: 'POST' }),
   /** onlyIdle: refuse if the session is no longer idle when the hub gets to it */
   restart: (hubId: string, onlyIdle = false) =>

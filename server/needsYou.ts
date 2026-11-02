@@ -6,7 +6,7 @@ import { askingText } from './askDetect.js';
 import { DATA_DIR } from './config.js';
 import type { SmsConfig } from './sms.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
-import type { Attention, SessionInfo } from './types.js';
+import type { AlertChannels, Attention, SessionInfo } from './types.js';
 
 /**
  * Which sessions are waiting on the user, and telling the user once they have
@@ -24,7 +24,7 @@ const QUEUED_PROMPT_TTL_MS = 30 * 60_000; // a queued one starts when the runnin
 const ANNOUNCE_WITHIN_MS = 10 * 60_000;
 const HERMOD_TIMEOUT_MS = 10_000;
 const SENT_FILE = join(DATA_DIR, 'attention-sent.json');
-const SENT_KEEP = 500;
+const SENT_KEEP = 1500; // up to three entries an episode, one per channel
 
 interface AttentionConfig {
   delayMs?: number;
@@ -202,9 +202,18 @@ export interface AttentionCleared {
   machine?: string;
 }
 
+/** Anything but exactly true is off: a missing, old or unreadable setting sends nothing. */
+export function alertChannels(value: unknown): AlertChannels {
+  const v = (value ?? {}) as Partial<Record<keyof AlertChannels, unknown>>;
+  return { discord: v.discord === true, text: v.text === true };
+}
+
+export type SendChannel = 'push' | keyof AlertChannels;
+
 /**
- * Episodes already sent outside the hub (Discord, push). A hub restarted within
+ * Episodes already sent outside the hub, per channel. A hub restarted within
  * the announce window sees a peer's alert as new, and would send it again.
+ * A bare episode is from before channels were kept apart: it went out on all.
  */
 export class SentLedger {
   private sent: string[];
@@ -217,12 +226,12 @@ export class SentLedger {
     }
   }
 
-  has = (episode: string) => this.sent.includes(episode);
+  has = (episode: string, channel: SendChannel = 'push') => this.sent.includes(episode) || this.sent.includes(`${channel}:${episode}`);
 
-  /** True the first time an episode is claimed. */
-  claim(episode: string): boolean {
-    if (this.has(episode)) return false;
-    this.sent = [...this.sent, episode].slice(-SENT_KEEP);
+  /** True the first time an episode is claimed on a channel. */
+  claim(episode: string, channel: SendChannel = 'push'): boolean {
+    if (this.has(episode, channel)) return false;
+    this.sent = [...this.sent, `${channel}:${episode}`].slice(-SENT_KEEP);
     try {
       writeFileSync(this.file, JSON.stringify(this.sent));
     } catch (err) {
@@ -232,11 +241,28 @@ export class SentLedger {
   }
 }
 
+/**
+ * Send one alert outward. The card holds the session's choice: it comes from
+ * the owning hub with alertedAt in the same message, so a change made during
+ * the wait counts on whichever hub sends. A channel that is off claims nothing.
+ */
+export function sendAlert(
+  event: AttentionEvent,
+  card: Pick<SessionInfo, 'alerts'>,
+  ledger: Pick<SentLedger, 'claim'>,
+  send: Record<SendChannel, (event: AttentionEvent) => unknown>,
+) {
+  const on = alertChannels(card.alerts);
+  if (ledger.claim(event.episode, 'push')) void send.push(event);
+  if (on.discord && ledger.claim(event.episode, 'discord')) void send.discord(event);
+  if (on.text && ledger.claim(event.episode, 'text')) void send.text(event);
+}
+
 /** One announcement per episode from the merged fleet cards, and one when it ends. */
 export class FleetAttention {
   private live = new Map<string, AttentionCleared>();
 
-  constructor(private out: { announce: (e: AttentionEvent) => void; cleared: (e: AttentionCleared) => void }) {}
+  constructor(private out: { announce: (e: AttentionEvent, card: SessionInfo) => void; cleared: (e: AttentionCleared) => void }) {}
 
   scan(sessions: SessionInfo[], now = Date.now()) {
     const present = new Set<string>();
@@ -247,7 +273,7 @@ export class FleetAttention {
       if (this.live.has(a.episode)) continue;
       // tracked even when too old to announce: its end still has to be told
       this.live.set(a.episode, { type: 'attention-cleared', episode: a.episode, hubId: s.hubId, conversationId: s.claudeSessionId, machine: s.machine });
-      if (now - a.alertedAt <= ANNOUNCE_WITHIN_MS) this.out.announce(attentionEvent(s)!);
+      if (now - a.alertedAt <= ANNOUNCE_WITHIN_MS) this.out.announce(attentionEvent(s)!, s);
     }
     for (const [episode, cleared] of this.live) {
       if (present.has(episode)) continue;

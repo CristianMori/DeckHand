@@ -14,7 +14,7 @@ import { fleetBriefing, identityEnv, projectFolderOf, type Identity } from './et
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { HandoffLineage, SessionInfo, SessionState, SharedFile, SpawnOptions } from './types.js';
+import type { AlertChannels, HandoffLineage, SessionInfo, SessionState, SharedFile, SpawnOptions } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -81,6 +81,8 @@ export class HubSession {
   lastTool?: SessionInfo['tool'];
   /** waiting on the user right now (set by needsYou.ts) */
   attention?: SessionInfo['attention'];
+  /** Discord and text alerts for this session; both off until the user picks them */
+  alerts: AlertChannels = { discord: false, text: false };
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -95,6 +97,7 @@ export class HubSession {
     this.permissionMode = opts.permissionMode;
     this.handoff = opts.handoff;
     this.command = opts.command;
+    if (opts.alerts) this.alerts = opts.alerts;
   }
 
   info(): SessionInfo {
@@ -120,6 +123,7 @@ export class HubSession {
       files: this.files.length ? this.files : undefined,
       tool: this.lastTool,
       attention: this.attention,
+      alerts: this.alerts,
     };
   }
 
@@ -208,12 +212,16 @@ export class SessionManager extends EventEmitter {
   create(opts: SpawnOptions): HubSession {
     // resuming a conversation supersedes its EXITED cards — leaving them
     // around both clutters the sidebar and poisons claudeSessionId lookups
+    let alerts = opts.alerts;
     if (opts.resumeSessionId) {
       for (const [hubId, s] of this.sessions) {
-        if (s.claudeSessionId === opts.resumeSessionId && !s.proc) this.sessions.delete(hubId);
+        if (s.claudeSessionId === opts.resumeSessionId && !s.proc) {
+          alerts ??= s.alerts; // the same conversation keeps its choice
+          this.sessions.delete(hubId);
+        }
       }
     }
-    const session = new HubSession(opts);
+    const session = new HubSession({ ...opts, alerts });
     this.sessions.set(session.hubId, session);
     this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId, opts.command);
     return session;

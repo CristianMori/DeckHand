@@ -360,10 +360,13 @@ button {
   body.term-open #terminal-panel { display: flex; }
   .mobile-only { display: inline-block; }
 
-  #terminal-header { padding: 8px 10px; gap: 8px; }
+  #terminal-header { padding: 8px 10px; gap: 8px; flex-wrap: wrap; }
   #terminal-title {
+    flex: 1 1 0; min-width: 0;
     font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* the buttons get a row of their own, not a narrow column beside the title */
+  .term-actions { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; }
 
   /* thumb-sized quick answers */
   #quick-bar { flex-wrap: wrap; padding: 8px 10px; gap: 6px; }

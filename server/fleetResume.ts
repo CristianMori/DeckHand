@@ -10,6 +10,7 @@ import { isFrozen } from './frozen.js';
 import type { SessionManager } from './sessionManager.js';
 import type { SyncManager } from './syncthing.js';
 import type { Federation } from './federation.js';
+import type { AlertChannels } from './types.js';
 import type { SessionInfo } from './types.js';
 
 export type ResumePhase =
@@ -141,6 +142,7 @@ export function startFleetResume(opts: {
   agentType?: string;
   claudeSessionId: string;
   sourceMachine?: string;
+  alerts?: AlertChannels;
   selfName: string;
   manager: SessionManager;
   sync: SyncManager | null;
@@ -238,6 +240,7 @@ export function startFleetResume(opts: {
         name: opts.folder,
         resumeSessionId: opts.claudeSessionId,
         initialPrompt: nudge,
+        alerts: opts.alerts,
       });
       job.session = { ...session.info(), machine: opts.selfName };
       job.phase = 'done';

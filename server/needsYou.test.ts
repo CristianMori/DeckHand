@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { askingText } from './askDetect.js';
-import { FleetAttention, NeedsYou, attentionEvent, sendToDiscord, type AttentionEvent } from './needsYou.js';
-import type { HubSession, SessionManager } from './sessionManager.js';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FleetAttention, NeedsYou, SentLedger, alertChannels, attentionEvent, sendAlert, sendToDiscord, type AttentionEvent, type SendChannel } from './needsYou.js';
+import { HubSession } from './sessionManager.js';
+import type { SessionManager } from './sessionManager.js';
 import type { SessionInfo } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -271,4 +275,71 @@ test('discord: a failure or an undeliverable answer is reported, not thrown', as
   assert.equal(await sendToDiscord(event, cfg, undelivered), false);
   const deferred = (async () => new Response(JSON.stringify({ delivered: false, deferred: true }))) as typeof fetch;
   assert.equal(await sendToDiscord(event, cfg, deferred), true);
+});
+
+test('alert channels: only exactly true is on', () => {
+  for (const bad of [undefined, null, 'yes', 1, [], {}, { discord: 'true', text: 1 }]) {
+    assert.deepEqual(alertChannels(bad), { discord: false, text: false }, JSON.stringify(bad));
+  }
+  assert.deepEqual(alertChannels({ discord: true }), { discord: true, text: false });
+});
+
+function sendRig(file = join(mkdtempSync(join(tmpdir(), 'alerts-')), 'sent.json')) {
+  const went: SendChannel[] = [];
+  const send = { push: () => went.push('push'), discord: () => went.push('discord'), text: () => went.push('text') };
+  return { file, went, send, ledger: new SentLedger(file) };
+}
+
+test('a session with nothing chosen sends push only', () => {
+  for (const alerts of [undefined, { discord: false, text: false }]) {
+    const { went, send, ledger } = sendRig();
+    sendAlert(event, { alerts }, ledger, send);
+    assert.deepEqual(went, ['push']);
+  }
+});
+
+test('each channel follows its own setting', () => {
+  const a = sendRig();
+  sendAlert(event, { alerts: { discord: true, text: false } }, a.ledger, a.send);
+  assert.deepEqual(a.went, ['push', 'discord']);
+  const b = sendRig();
+  sendAlert(event, { alerts: { discord: false, text: true } }, b.ledger, b.send);
+  assert.deepEqual(b.went, ['push', 'text']);
+});
+
+test('a channel that was off is not marked sent; one that was on is not sent twice, across a restart', () => {
+  const first = sendRig();
+  sendAlert(event, { alerts: { discord: true, text: false } }, first.ledger, first.send);
+  assert.deepEqual(JSON.parse(readFileSync(first.file, 'utf8')), ['push:e1', 'discord:e1']);
+  const again = sendRig(first.file);
+  sendAlert(event, { alerts: { discord: true, text: true } }, again.ledger, again.send);
+  assert.deepEqual(again.went, ['text']);
+});
+
+test('an episode in the old ledger format went out everywhere: nothing goes again', () => {
+  const { file, went, send } = sendRig();
+  writeFileSync(file, JSON.stringify(['e1']));
+  const ledger = new SentLedger(file);
+  sendAlert(event, { alerts: { discord: true, text: true } }, ledger, send);
+  assert.deepEqual(went, []);
+  assert.equal(ledger.has('e1'), true, 'its clear still goes out');
+});
+
+test('the sender goes by the card as the owner published it with the alert', () => {
+  const asked = { episode: 'e9', kind: 'question' as const, text: 'Which?', since: 1, alertedAt: Date.now() };
+  const { went, send, ledger } = sendRig();
+  const fleet = new FleetAttention({ announce: (e, c) => sendAlert(e, c, ledger, send), cleared: () => {} });
+  // waiting, not alerted yet, while the setting is off: nothing goes
+  fleet.scan([card({ machine: 'peer', alerts: { discord: false, text: false }, attention: { ...asked, alertedAt: undefined } })]);
+  assert.deepEqual(went, []);
+  // turned on during the wait: the card with alertedAt carries it
+  const on = card({ machine: 'peer', alerts: { discord: false, text: true }, attention: asked });
+  fleet.scan([on]);
+  fleet.scan([on]);
+  assert.deepEqual(went, ['push', 'text']);
+});
+
+test('a new card is off; a card moved here takes the choice it is given', () => {
+  assert.deepEqual(new HubSession({ cwd: '/x', agentType: 'claude' }).info().alerts, { discord: false, text: false });
+  assert.deepEqual(new HubSession({ cwd: '/x', agentType: 'claude', alerts: { discord: true, text: false } }).info().alerts, { discord: true, text: false });
 });

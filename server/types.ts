@@ -53,6 +53,13 @@ export interface SessionInfo {
   tool?: { name: string; summary: string; detail: string; at: number };
   /** this session is waiting on the user; absent otherwise (see needsYou.ts) */
   attention?: Attention;
+  /** who else hears when it waits, chosen per session: off unless exactly true */
+  alerts?: AlertChannels;
+}
+
+export interface AlertChannels {
+  discord: boolean;
+  text: boolean;
 }
 
 /** A session waiting on the user: one per waiting episode. */
@@ -99,6 +106,8 @@ export interface SpawnOptions {
   initialPrompt?: string;
   resumeSessionId?: string;
   handoff?: HandoffLineage;
+  /** carried over from the machine this conversation last ran on */
+  alerts?: AlertChannels;
   /** terminal sessions: run this command non-interactively, then exit */
   command?: string;
 }

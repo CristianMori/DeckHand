@@ -21,6 +21,8 @@ export interface SessionInfo {
   createdAt: number;
   alive: boolean;
   autoYes?: boolean;
+  /** absent on a hub too old to have the setting */
+  alerts?: { discord: boolean; text: boolean };
   machine?: string;
   unreachable?: boolean;
   handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };

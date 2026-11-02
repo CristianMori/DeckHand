@@ -29,6 +29,8 @@ const el = {
   quickBar: document.getElementById('quick-bar')!,
   killBtn: document.getElementById('kill-btn') as HTMLButtonElement,
   autoYesBtn: document.getElementById('autoyes-btn') as HTMLButtonElement,
+  discordBtn: document.getElementById('discord-btn') as HTMLButtonElement,
+  textBtn: document.getElementById('text-btn') as HTMLButtonElement,
   frozenBtn: document.getElementById('frozen-btn') as HTMLButtonElement,
   soundToggle: document.getElementById('sound-toggle') as HTMLButtonElement,
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
@@ -253,6 +255,16 @@ function render() {
       const terminal = s.agentType === 'shell';
       el.frozenBtn.hidden = !!s.unreachable || terminal;
       el.autoYesBtn.hidden = terminal;
+      // the owning hub holds the choice: no control when it can't be reached or is too old
+      const alerts = terminal || s.unreachable ? undefined : s.alerts;
+      for (const [btn, label, on] of [
+        [el.discordBtn, 'DISCORD', alerts?.discord],
+        [el.textBtn, 'TEXT', alerts?.text],
+      ] as const) {
+        btn.hidden = !alerts;
+        btn.textContent = `${label} ${on ? 'ON' : 'OFF'}`;
+        btn.classList.toggle('active', !!on);
+      }
     }
   }
   renderTabs();
@@ -417,6 +429,20 @@ el.autoYesBtn.onclick = () => {
   el.autoYesBtn.classList.toggle('active', next);
   api.autoYes(selected, next).catch(() => render());
 };
+
+function toggleAlert(channel: 'discord' | 'text') {
+  const s = sessions.find((x) => x.hubId === selected);
+  if (!s?.alerts) return;
+  const before = s.alerts;
+  s.alerts = { ...before, [channel]: !before[channel] }; // optimistic; broadcast will confirm
+  render();
+  api.alerts(s.hubId, { [channel]: s.alerts[channel] }).catch(() => {
+    s.alerts = before;
+    render();
+  });
+}
+el.discordBtn.onclick = () => toggleAlert('discord');
+el.textBtn.onclick = () => toggleAlert('text');
 
 // iOS: fixed overlays don't shrink when the on-screen keyboard opens — track
 // the visual viewport so the terminal panel always ends above the keyboard

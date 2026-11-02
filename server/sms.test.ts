@@ -248,3 +248,11 @@ test('typing: Enter is not pressed if the session moved on while the text went i
   assert.equal(await typePrompt(manager, session, 'hello', () => true), true);
   assert.deepEqual(written, ['hello', 'hello', '\r']);
 });
+
+test('replies: a text already sent is still answered after its channel is turned off', async () => {
+  const gw = await fakeGateway();
+  gw.state.replies.push(reply(1));
+  const { replies, delivered } = poller({ ...gw.config, replies: true }, [card({ alerts: { discord: false, text: false } })]);
+  await replies.poll();
+  assert.equal(delivered.length, 1);
+});

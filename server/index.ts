@@ -17,7 +17,7 @@ import { agentFor, getAgent, listAgents } from './agents/index.js';
 import { SessionManager, type HubSession } from './sessionManager.js';
 import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
-import { NeedsYou, FleetAttention, SentLedger, attentionConfig, attentionEvent, sendToDiscord } from './needsYou.js';
+import { NeedsYou, FleetAttention, SentLedger, alertChannels, attentionConfig, attentionEvent, sendAlert, sendToDiscord } from './needsYou.js';
 import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
 import { SmsReplies, sendText, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
@@ -149,6 +149,7 @@ const toRestore: HubSession[] = [];
 for (const rec of loadPersisted()) {
   const s = manager.addExitedRecord(rec);
   s.autoYes = !!rec.autoYes;
+  s.alerts = alertChannels(rec.alerts);
   if (rec.alive) toRestore.push(s);
 }
 
@@ -1032,6 +1033,22 @@ app.post('/api/sessions/:id/autoyes', sessionAction((id, req, res) => {
   manager.emit('change', session);
   if (session.autoYes) maybeAutoAnswer(session); // catch an already-pending prompt
   res.json({ ok: true, autoYes: session.autoYes });
+}));
+
+// Which outside channels a session alerts on. Each costs or interrupts, so it
+// is the user's to choose, from the dashboard: not a session's or an agent's.
+app.post('/api/sessions/:id/alerts', sessionAction((id, req, res) => {
+  if (/^(session:|gateway:|mimir)/i.test(currentTrace()?.caller ?? '')) {
+    return res.status(403).json({ error: 'alert channels are chosen by the user in the dashboard' });
+  }
+  const { discord, text } = req.body ?? {};
+  if ((discord !== undefined && typeof discord !== 'boolean') || (text !== undefined && typeof text !== 'boolean')) {
+    return res.status(400).json({ error: 'discord and text must be true or false' });
+  }
+  const session = manager.sessions.get(id)!;
+  session.alerts = { discord: discord ?? session.alerts.discord, text: text ?? session.alerts.text };
+  manager.emit('change', session);
+  res.json({ ok: true, alerts: session.alerts });
 }));
 
 // The agent keeps its transcript outside the project folder, and its own
@@ -2037,6 +2054,7 @@ app.post('/api/fleet-resume', async (req, res) => {
     agentType: agentType ? String(agentType) : undefined,
     claudeSessionId: String(claudeSessionId),
     sourceMachine: sourceMachine ? String(sourceMachine) : undefined,
+    alerts: alertsOfConversation(String(claudeSessionId)),
     selfName: discovery.selfName,
     manager,
     sync,
@@ -2044,6 +2062,14 @@ app.post('/api/fleet-resume', async (req, res) => {
   });
   res.json({ jobId: job.id, machine: discovery.selfName });
 });
+
+/** Moving to this machine keeps the choice the conversation's card has elsewhere in the fleet. */
+function alertsOfConversation(claudeSessionId: string) {
+  const cards = mergedList().filter((s) => s.claudeSessionId === claudeSessionId);
+  // a move leaves a dead card behind: the live or latest one has the current choice
+  const latest = cards.sort((a, b) => Number(b.alive) - Number(a.alive) || b.stateSince - a.stateSince)[0];
+  return latest?.alerts ? alertChannels(latest.alerts) : undefined;
+}
 
 app.get('/api/fleet-resume/:jobId', async (req, res) => {
   const machine = typeof req.query.machine === 'string' ? req.query.machine : undefined;
@@ -2233,15 +2259,17 @@ federation.on('alert', (alert: PeerAlert) => {
 
 // A session still waiting on the user after the delay: one event per waiting
 // episode, from whichever hub owns it, to every dashboard and app connected
-// here, and to Discord from the hub that holds a Hermod key.
+// here, to push from the hub with an APNs key, and to Discord and text from the
+// hubs configured for them when the session has that channel on.
 const sentAttention = new SentLedger();
 const fleetAttention = new FleetAttention({
-  announce: (event) => {
+  announce: (event, card) => {
     broadcastAlert(event);
-    if (!sentAttention.claim(event.episode)) return;
-    void sendToDiscord(event);
-    void apns.sendAttention(event);
-    void sendText(event, attentionConfig().sms);
+    sendAlert(event, card, sentAttention, {
+      push: (e) => apns.sendAttention(e),
+      discord: (e) => sendToDiscord(e),
+      text: (e) => sendText(e, attentionConfig().sms),
+    });
   },
   cleared: (event) => {
     broadcastAlert(event);

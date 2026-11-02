@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { PERSIST_FILE } from './config.js';
 import type { SessionManager } from './sessionManager.js';
+import type { AlertChannels } from './types.js';
 
 export interface PersistedSession {
   agentType?: string;
@@ -15,6 +16,7 @@ export interface PersistedSession {
   /** the process was running when this was written — restored on the next boot */
   alive?: boolean;
   autoYes?: boolean;
+  alerts?: AlertChannels;
   /** when the card entered its current state — keeps the sidebar order across restarts */
   stateSince?: number;
   /** when this file was written; a card alive then is "exited since" this moment */
@@ -45,6 +47,7 @@ export function savePersisted(manager: SessionManager) {
     handoff: s.handoff,
     alive: s.proc !== null,
     autoYes: s.autoYes,
+    alerts: s.alerts,
     stateSince: s.stateSince,
     savedAt: now,
   }));
