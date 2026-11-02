@@ -51,6 +51,23 @@ export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   });
 }
 
+/** Workers follow their architect. Finished ones stay out of the list: the swarm view has them. */
+function grouped(sessions: SessionInfo[]): { session: SessionInfo; worker: boolean }[] {
+  const sorted = sortSessions(sessions);
+  const hasLead = (s: SessionInfo) => sessions.some((x) => x.claudeSessionId === s.worker?.architect);
+  const out: { session: SessionInfo; worker: boolean }[] = [];
+  for (const s of sorted) {
+    if (s.worker && hasLead(s)) continue;
+    out.push({ session: s, worker: false });
+    for (const w of sorted) {
+      if (w.worker?.architect === s.claudeSessionId && !finished(w)) out.push({ session: w, worker: true });
+    }
+  }
+  return out;
+}
+
+const finished = (s: SessionInfo) => !s.alive && (s.worker?.status === 'reported' || s.worker?.status === 'failed');
+
 export function renderSessionList(
   root: HTMLElement,
   sessions: SessionInfo[],
@@ -64,6 +81,8 @@ export function renderSessionList(
     onFiles: (s: SessionInfo) => void;
     onRestart: (s: SessionInfo) => void;
     onDismissRestartError: (s: SessionInfo) => void;
+    onSwarm: (s: SessionInfo) => void;
+    onContextMenu: (s: SessionInfo, e: MouseEvent) => void;
   },
   restart: { running: Set<string>; failed: Map<string, string> },
 ) {
@@ -76,11 +95,11 @@ export function renderSessionList(
     return;
   }
 
-  for (const s of sortSessions(sessions)) {
+  for (const { session: s, worker: nested } of grouped(sessions)) {
     const chip = s.unreachable ? { cls: 'exited', label: 'UNREACHABLE' } : CHIP[s.state];
     const card = document.createElement('div');
     const waiting = !s.unreachable && (s.state === 'WAITING_QUESTION' || s.state === 'WAITING_PERMISSION');
-    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}${restart.failed.has(s.hubId) ? ' restart-failed' : ''}`;
+    card.className = `card s-${waiting ? 'waiting' : chip.cls}${s.hubId === selected ? ' selected' : ''}${s.unreachable ? ' unreachable' : ''}${restart.failed.has(s.hubId) ? ' restart-failed' : ''}${nested ? ' worker' : ''}`;
     card.dataset.hubId = s.hubId;
 
     const stateWord = waiting ? 'waiting' : s.state === 'WORKING' ? 'working' : s.state.toLowerCase();
@@ -88,6 +107,7 @@ export function renderSessionList(
       <div class="card-top">
         <span class="card-name"></span>
         <span class="agent-tag"></span>
+        ${s.role ? `<span class="role-tag ${s.role}">${s.role.toUpperCase()}</span>` : ''}
         ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
@@ -98,6 +118,7 @@ export function renderSessionList(
         <span class="elapsed">${stateWord} ${elapsed(s.stateSince)}</span>
       </div>
       ${s.handoff ? '<div class="card-lineage"></div>' : ''}
+      ${s.role === 'architect' ? '<button class="card-swarm" title="View swarm"></button>' : ''}
       ${s.summary ? '<div class="card-summary"></div>' : ''}
       ${s.detail && waiting ? '<div class="card-detail"></div>' : ''}
       ${restart.failed.has(s.hubId) ? '<div class="card-restart-fail"><span></span><button class="ghost-btn" title="Dismiss">✕</button></div>' : ''}
@@ -132,6 +153,16 @@ export function renderSessionList(
         handlers.onRestart(s);
       };
       card.querySelector('.card-files')!.before(restartBtn);
+    }
+    if (s.role === 'architect') {
+      const crew = sessions.filter((w) => w.worker?.architect === s.claudeSessionId);
+      const done = crew.filter(finished).length;
+      const btn = card.querySelector('.card-swarm') as HTMLButtonElement;
+      btn.textContent = crew.length ? `⛭ ${crew.length - done} working · ${done} finished` : '⛭ no workers';
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        handlers.onSwarm(s);
+      };
     }
     if (s.handoff) {
       (card.querySelector('.card-lineage') as HTMLElement).textContent =
@@ -186,6 +217,10 @@ export function renderSessionList(
     }
 
     card.onclick = (e) => handlers.onSelect(s, e);
+    card.oncontextmenu = (e) => {
+      e.preventDefault();
+      handlers.onContextMenu(s, e);
+    };
     root.appendChild(card);
   }
 }

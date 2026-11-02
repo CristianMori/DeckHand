@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { agentFor, listAgents } from './agents/index.js';
 import type { HookPayload } from './agents/types.js';
-import { editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
+import { architectEditWarning, editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
 import { normCwd } from './transcriptIo.js';
@@ -75,7 +75,11 @@ export function makeHookHandler(
     // etiquette level 2: warn on edits into another live session's folder
     if (event === 'PreToolUse') {
       try {
-        const warning = ownershipCheck(session.claudeSessionId, body, fleetSessions());
+        // a worker with no worktree of its own works in its architect's folder by design
+        const sharesFolder = session.worker && !session.worker.worktree;
+        const warning =
+          (sharesFolder ? null : ownershipCheck(session.claudeSessionId, body, fleetSessions())) ??
+          (session.role === 'architect' ? architectEditWarning(session.cwd, editedPaths(body.tool_name, body.tool_input, body.cwd)) : null);
         if (warning) {
           console.log(`[etiquette] ${session.name}: ${warning.slice(0, 120)}…`);
           return res.json({

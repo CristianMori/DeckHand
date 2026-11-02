@@ -285,6 +285,69 @@ const TOOLS = [
     },
   },
   {
+    name: 'dh_start_worker',
+    description: 'Architect sessions: give a task to a new worker session on this machine, in its own git worktree and branch off your current commit, with auto-approve on. It knows only what you write in task. Returns at once; its report arrives later as a prompt, so end your turn rather than wait. Optional: name (card name), agentType and model (default: yours).',
+    schema: { task: S('the whole assignment: goal, constraints, what was ruled out, what the result must contain'), name: S('short card name for the worker'), agentType: S('claude | codex (default: yours)'), model: S('model id (default: yours)') },
+    required: ['task'],
+    run: async (a) => {
+      const body = { task: a.task };
+      for (const k of ['name', 'agentType', 'model']) if (nz(a[k])) body[k] = a[k];
+      const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, 60_000);
+      const where = s.isolated ? `branch ${s.worker.branch}` : 'your own folder, because it is not a git repository: nothing isolates its changes';
+      return `Worker ${s.hubId} "${s.name}" started, in ${where}.${s.baseDirty ? ' Your folder has uncommitted changes the worker does not have.' : ''} End your turn: its report comes as a prompt.`;
+    },
+  },
+  {
+    name: 'dh_list_workers',
+    description: 'Architect sessions: your workers, what each was asked, and how each stands.',
+    schema: {},
+    run: async () => {
+      const mine = arr(await get('/api/sessions')).filter((s) => s.worker && s.worker.architect === ME.conversationId);
+      if (!mine.length) return 'No workers.';
+      return mine.map((s) => `[${s.hubId}] ${s.name}: ${s.worker.status} (${s.state})${s.worker.branch ? `, branch ${s.worker.branch}` : ''}\n  task: ${s.worker.task.slice(0, 200)}${s.worker.result ? `\n  result: ${s.worker.result}` : ''}`).join('\n');
+    },
+  },
+  {
+    name: 'dh_worker_followup',
+    description: 'Architect sessions: more work for an existing worker, which keeps its context and branch. A stopped worker is brought back first.',
+    schema: { hubId: S('the worker'), task: S('what to do next') },
+    required: ['hubId', 'task'],
+    run: async ({ hubId, task }) => {
+      const s = await post(`/api/sessions/${q(hubId)}/follow-up`, { task }, 60_000);
+      return `Worker ${s.hubId} has it. End your turn: its report comes as a prompt.`;
+    },
+  },
+  {
+    name: 'dh_remove_worker',
+    description: 'Architect sessions: remove a worker\'s card, worktree and branch once you are done with it. Refused while its branch is unmerged or its worktree has changes, unless discard=true, which throws that work away.',
+    schema: { hubId: S('the worker'), discard: B('throw away unmerged or uncommitted work') },
+    required: ['hubId'],
+    run: async ({ hubId, discard }) => {
+      await post(`/api/sessions/${q(hubId)}/remove-worker`, { discard: !!discard }, 60_000);
+      return `Worker ${hubId} removed.`;
+    },
+  },
+  {
+    name: 'dh_report',
+    description: 'Worker sessions: finish your task and give the architect the result: what you found or built, whether tests pass, what it must know or decide. Short, 3000 characters at most. Commit first; a report with uncommitted changes is refused unless failed=true. The hub stops you shortly after.',
+    schema: { result: S('the result, not the story'), failed: B('you could not finish; say why in result') },
+    required: ['result'],
+    run: async ({ result, failed }) => {
+      const r = await post(`/api/sessions/${q(ME.hubId)}/report`, { result, failed: !!failed }, 60_000);
+      return `Reported (${r.commits} commits, ${r.files} files on your branch). You're done: end your turn now.`;
+    },
+  },
+  {
+    name: 'dh_ask_architect',
+    description: 'Worker sessions: you need a decision to go on. Put the question and your own recommendation here, then end your turn. The answer arrives as your next prompt.',
+    schema: { question: S('the question, with your recommendation') },
+    required: ['question'],
+    run: async ({ question }) => {
+      await post(`/api/sessions/${q(ME.hubId)}/ask-architect`, { question });
+      return 'Sent to the architect. End your turn now: the answer arrives as your next prompt.';
+    },
+  },
+  {
     name: 'dh_run',
     description: 'Run one shell command on a fleet machine and get its output and exit code back. It runs in a visible terminal card on that machine (the user can open it). cwd defaults to the home folder ("~" and "~/sub" work). shell: the target\'s default when omitted (login shell on macOS/Linux, PowerShell on Windows; see dh_list_agents, engine "shell"). A command still running at timeoutMs keeps running: you get timedOut=true and the card\'s hubId for dh_wait_for_session (until=EXITED) and dh_read_screen. Fleet etiquette: a folder a live agent session works in is refused until you have agreed the command with that session (dh_send_prompt) and pass force=true. No sudo/password prompts: the user types those into the card.',
     schema: {

@@ -26,6 +26,7 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
+import { Swarm } from './swarm.js';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
 import { Federation, type PeerAlert } from './federation.js';
@@ -150,6 +151,9 @@ for (const rec of loadPersisted()) {
   const s = manager.addExitedRecord(rec);
   s.autoYes = !!rec.autoYes;
   s.alerts = alertChannels(rec.alerts);
+  s.role = rec.role === 'architect' || rec.role === 'worker' ? rec.role : undefined;
+  s.worker = rec.worker;
+  s.toolUse = rec.toolUse;
   if (rec.alive) toRestore.push(s);
 }
 
@@ -772,6 +776,7 @@ hookBus.on('hook', (session, event, body) => {
   if (event !== 'PreToolUse' || !body.tool_name) return;
   const input = (body.tool_input ?? {}) as Record<string, unknown>;
   session.lastTool = { name: body.tool_name, summary: summarizeTool(body.tool_name, input), detail: detailOf(input), at: Date.now() };
+  if (session.worker) (session.toolUse ??= {})[body.tool_name] = (session.toolUse[body.tool_name] ?? 0) + 1;
 });
 
 /** The etiquette every fleet session is briefed with (level 1), for humans and agents to read. */
@@ -840,7 +845,7 @@ async function turnResult(session: HubSession, prompt: string | undefined, timed
 }
 
 app.post('/api/sessions', async (req, res) => {
-  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait } = req.body ?? {};
+  const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait, role, architect } = req.body ?? {};
   let cwd: string | undefined = req.body?.cwd;
   // spawn requested on another fleet machine — hand it to the owning hub
   if (machine && machine !== discovery.selfName) {
@@ -849,7 +854,7 @@ app.post('/api/sessions', async (req, res) => {
     try {
       const out = await federation.forward(peer, '/api/sessions', {
         method: 'POST',
-        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder, wait },
+        body: { cwd, agentType, name, model, permissionMode, initialPrompt, force, newFolder, wait, role, architect },
       });
       return res.status(out.status).json(out.body);
     } catch {
@@ -858,6 +863,19 @@ app.post('/api/sessions', async (req, res) => {
   }
   if (engineMissing(res, agentType)) return;
   const terminal = !!getAgent(agentType).outputOnlyStatus;
+  // from the dashboard: a worker under a live architect, the same as one it starts itself
+  if (role === 'worker') {
+    const lead = manager.sessions.get(String(architect));
+    if (!lead) return res.status(400).json({ error: 'a worker needs a live architect on this machine' });
+    try {
+      const { session } = await swarm.start(lead, { task: initialPrompt, name, agentType, model, permissionMode });
+      return res.json({ ...session.info(), machine: discovery.selfName });
+    } catch (err) {
+      return res.status(400).json({ error: errorText(err) });
+    }
+  }
+  if (role !== undefined && role !== 'architect') return res.status(400).json({ error: 'role must be architect or worker' });
+  if (role && terminal) return res.status(400).json({ error: 'a terminal has no role' });
   if (typeof cwd === 'string') cwd = expandHome(cwd);
   // a brand-new project: create its folder under the projects root first
   if (newFolder) {
@@ -877,7 +895,7 @@ app.post('/api/sessions', async (req, res) => {
     const busy = liveElsewhere(folderName);
     if (busy.length) return activeElsewhereError(res, busy);
   }
-  const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt });
+  const session = manager.create({ cwd, agentType, name, model, permissionMode, initialPrompt, role });
   if (initialPrompt) needsYou.promptFrom(session, currentTrace()?.caller, true);
   if (!wait) return res.json({ ...session.info(), machine: discovery.selfName });
   // automation: block until the first turn (the initial prompt, or just the
@@ -1048,6 +1066,97 @@ app.post('/api/sessions/:id/alerts', sessionAction((id, req, res) => {
   session.alerts = { discord: discord ?? session.alerts.discord, text: text ?? session.alerts.text };
   manager.emit('change', session);
   res.json({ ok: true, alerts: session.alerts });
+}));
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const notTheUser = () => /^(session:|agent:|gateway:|mimir)/i.test(currentTrace()?.caller ?? '');
+const isCaller = (id: string) => (currentTrace()?.caller ?? '').startsWith(`session:${id}/`);
+
+// Whether a session is an architect. The user's, from the dashboard. It takes
+// effect when the session next starts: its instructions are given at launch.
+app.post('/api/sessions/:id/role', sessionAction((id, req, res) => {
+  if (notTheUser()) return res.status(403).json({ error: 'roles are chosen by the user in the dashboard' });
+  const session = manager.sessions.get(id)!;
+  const role = req.body?.role;
+  if (role !== 'architect' && role !== null) return res.status(400).json({ error: 'role must be architect or null' });
+  if (session.worker) return res.status(400).json({ error: 'a worker stays a worker' });
+  if (getAgent(session.agentType).outputOnlyStatus) return res.status(400).json({ error: 'a terminal has no role' });
+  session.role = role ?? undefined;
+  manager.emit('change', session);
+  res.json({ ok: true, role });
+}));
+
+// Architects and workers (swarm.ts). What a session may do here is limited to
+// itself, or its own workers; outside agents never get past the access gate.
+app.post('/api/sessions/:id/workers', sessionAction(async (id, req, res) => {
+  if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'a session starts only its own workers' });
+  const { task, name, agentType, model, permissionMode } = req.body ?? {};
+  if (agentType && engineMissing(res, agentType)) return;
+  try {
+    const { session, baseDirty, isolated } = await swarm.start(manager.sessions.get(id)!, { task, name, agentType, model, permissionMode });
+    res.json({ ...session.info(), machine: discovery.selfName, baseDirty, isolated });
+  } catch (err) {
+    res.status(400).json({ error: errorText(err) });
+  }
+}));
+
+/** A worker, with the caller limited to the session itself or its architect. */
+function workerFor(id: string, res: express.Response, selfOnly: boolean): HubSession | undefined {
+  const session = manager.sessions.get(id)!;
+  if (!session.worker) {
+    res.status(400).json({ error: 'not a worker session' });
+    return undefined;
+  }
+  const lead = manager.byClaudeSessionId(session.worker.architect);
+  const allowed = isCaller(id) || (!selfOnly && (!notTheUser() || (lead && isCaller(lead.hubId))));
+  if (!allowed) {
+    res.status(403).json({ error: selfOnly ? 'a worker speaks only for itself' : 'only its architect or the user' });
+    return undefined;
+  }
+  return session;
+}
+
+app.post('/api/sessions/:id/report', sessionAction(async (id, req, res) => {
+  const session = workerFor(id, res, true);
+  if (!session) return;
+  try {
+    res.json({ ok: true, ...(await swarm.report(session, req.body?.result, !!req.body?.failed)) });
+  } catch (err) {
+    res.status(409).json({ error: errorText(err) });
+  }
+}));
+
+app.post('/api/sessions/:id/ask-architect', sessionAction((id, req, res) => {
+  const session = workerFor(id, res, true);
+  if (!session) return;
+  try {
+    swarm.ask(session, req.body?.question);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: errorText(err) });
+  }
+}));
+
+app.post('/api/sessions/:id/follow-up', sessionAction(async (id, req, res) => {
+  const session = workerFor(id, res, false);
+  if (!session) return;
+  try {
+    await swarm.followUp(session, req.body?.task);
+    res.json({ ...session.info(), machine: discovery.selfName });
+  } catch (err) {
+    res.status(409).json({ error: errorText(err) });
+  }
+}));
+
+app.post('/api/sessions/:id/remove-worker', sessionAction(async (id, req, res) => {
+  const session = workerFor(id, res, false);
+  if (!session) return;
+  try {
+    await swarm.remove(session, !!req.body?.discard);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(409).json({ error: errorText(err) });
+  }
 }));
 
 // The people a session can pick. Each hub knows only the senders configured on
@@ -1515,6 +1624,14 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
  * its prompt, so a text can never land on a permission prompt. Not a route
  * outside agents may call.
  */
+const swarm = new Swarm(manager, {
+  typePrompt: (session, text) => typePrompt(manager, session, text),
+  promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
+  lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
+  save: () => savePersisted(manager),
+});
+setInterval(() => void swarm.tick(), 3000).unref();
+
 async function answerFromText(session: HubSession, episode: unknown, text: string): Promise<string | undefined> {
   const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));
   const before = refusal();
@@ -2076,6 +2193,7 @@ app.post('/api/fleet-resume', async (req, res) => {
     claudeSessionId: String(claudeSessionId),
     sourceMachine: sourceMachine ? String(sourceMachine) : undefined,
     alerts: alertsOfConversation(String(claudeSessionId)),
+    role: mergedList().some((s) => s.claudeSessionId === claudeSessionId && s.role === 'architect') ? 'architect' : undefined,
     selfName: discovery.selfName,
     manager,
     sync,

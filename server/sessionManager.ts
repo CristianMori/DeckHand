@@ -14,7 +14,7 @@ import { fleetBriefing, identityEnv, projectFolderOf, type Identity } from './et
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { AlertChannels, HandoffLineage, SessionInfo, SessionState, SharedFile, SpawnOptions } from './types.js';
+import type { AlertChannels, HandoffLineage, SessionInfo, SessionRole, SessionState, SharedFile, SpawnOptions, WorkerLink } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -83,6 +83,9 @@ export class HubSession {
   attention?: SessionInfo['attention'];
   /** who this session alerts on Discord and by text; nobody until the user picks them */
   alerts: AlertChannels = { discord: [], text: [] };
+  role?: SessionRole;
+  worker?: WorkerLink;
+  toolUse?: Record<string, number>;
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -98,6 +101,8 @@ export class HubSession {
     this.handoff = opts.handoff;
     this.command = opts.command;
     if (opts.alerts) this.alerts = opts.alerts;
+    this.role = opts.role;
+    this.worker = opts.worker;
   }
 
   info(): SessionInfo {
@@ -124,6 +129,9 @@ export class HubSession {
       tool: this.lastTool,
       attention: this.attention,
       alerts: this.alerts,
+      role: this.role,
+      worker: this.worker && { ...this.worker, outbox: undefined },
+      toolUse: this.toolUse,
     };
   }
 
@@ -212,16 +220,21 @@ export class SessionManager extends EventEmitter {
   create(opts: SpawnOptions): HubSession {
     // resuming a conversation supersedes its EXITED cards — leaving them
     // around both clutters the sidebar and poisons claudeSessionId lookups
-    let alerts = opts.alerts;
+    let { alerts, role, worker } = opts;
+    let toolUse: Record<string, number> | undefined;
     if (opts.resumeSessionId) {
       for (const [hubId, s] of this.sessions) {
         if (s.claudeSessionId === opts.resumeSessionId && !s.proc) {
           alerts ??= s.alerts; // the same conversation keeps its choice
+          role ??= s.role;
+          worker ??= s.worker;
+          toolUse = s.toolUse;
           this.sessions.delete(hubId);
         }
       }
     }
-    const session = new HubSession({ ...opts, alerts });
+    const session = new HubSession({ ...opts, alerts, role, worker });
+    session.toolUse = toolUse;
     this.sessions.set(session.hubId, session);
     this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId, opts.command);
     return session;
@@ -287,6 +300,8 @@ export class SessionManager extends EventEmitter {
       engine: session.agentType,
       cwd: session.cwd,
       hubUrl: this.identity.hubUrl,
+      role: session.role,
+      worker: session.worker,
     };
     adapter.beforeSpawn?.(session.cwd);
     const args = adapter.buildArgs({
@@ -410,6 +425,7 @@ export class SessionManager extends EventEmitter {
     if (session.proc) this.kill(hubId);
     this.sessions.delete(hubId);
     this.emit('change', session);
+    this.emit('removed', session);
   }
 
   /** Register a persisted record from a previous hub run as an EXITED card with Resume available. */

@@ -66,6 +66,9 @@ export const api = {
     initialPrompt?: string;
     machine?: string;
     force?: boolean;
+    role?: 'architect' | 'worker';
+    /** hub id of the architect a worker works for */
+    architect?: string;
   }) =>
     fetch('/api/sessions', {
       method: 'POST',
@@ -180,6 +183,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(change),
     }).then((r) => json<{ ok: boolean; alerts: AlertRecipients }>(r)),
+  setRole: (hubId: string, role: 'architect' | null) =>
+    fetch(`/api/sessions/${hubId}/role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }).then((r) => json<{ ok: boolean }>(r)),
   alertRecipients: () => fetch('/api/alert-recipients').then((r) => json<AlertRecipients>(r)),
   kill: (hubId: string) => fetch(`/api/sessions/${hubId}/kill`, { method: 'POST' }),
   /** onlyIdle: refuse if the session is no longer idle when the hub gets to it */

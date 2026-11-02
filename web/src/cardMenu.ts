@@ -19,6 +19,8 @@ export interface MenuActions {
   kill: (s: SessionInfo) => void;
   remove: (s: SessionInfo) => void;
   setAlert: (s: SessionInfo, channel: Channel, people: string[]) => void;
+  swarm: (s: SessionInfo) => void;
+  setArchitect: (s: SessionInfo, on: boolean) => void;
 }
 
 export type Channel = 'discord' | 'text';
@@ -63,6 +65,9 @@ function draw() {
   title.textContent = s.name;
   root.append(title);
 
+  // the swarm can be looked at whatever state its hub is in
+  if (s.role) root.append(item('VIEW SWARM', act(a.swarm)));
+
   if (s.unreachable) {
     const note = document.createElement('div');
     note.className = 'menu-note';
@@ -75,6 +80,9 @@ function draw() {
       root.append(item(s.frozen ? 'UNFREEZE' : 'FREEZE', act(a.freeze)));
       root.append(item(`AUTO-YES ${s.autoYes ? 'ON' : 'OFF'}`, () => a.autoYes(s), s.autoYes ? 'on' : ''));
       if (s.alerts) for (const channel of ['discord', 'text'] as const) appendAlert(root, s, channel);
+      if (s.role !== 'worker') {
+        root.append(item(s.role === 'architect' ? 'STOP BEING ARCHITECT' : 'MAKE ARCHITECT', act((x) => a.setArchitect(x, s.role !== 'architect'))));
+      }
       root.append(item('HAND OFF', act(a.handoff)));
     }
     if (exited) root.append(item('RENAME', act(a.rename)));

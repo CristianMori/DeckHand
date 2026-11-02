@@ -55,6 +55,41 @@ export interface SessionInfo {
   attention?: Attention;
   /** who hears on each outside channel when it waits, chosen per session: nobody by default */
   alerts?: AlertChannels;
+  /** architect: designs and delegates; worker: does one task for an architect. Absent: a plain session */
+  role?: SessionRole;
+  worker?: WorkerLink;
+  /** tool calls so far by tool name, kept for workers */
+  toolUse?: Record<string, number>;
+}
+
+export type SessionRole = 'architect' | 'worker';
+
+/** A worker's tie to its architect, its task and how it went (see swarm.ts). */
+export interface WorkerLink {
+  /** the architect's conversation id: survives its restarts, unlike a hub id */
+  architect: string;
+  architectName: string;
+  task: string;
+  followUps?: string[];
+  baseFolder: string;
+  /** its own checkout and branch; absent when the folder is not a git repo */
+  worktree?: string;
+  repo?: string;
+  branch?: string;
+  baseCommit?: string;
+  status: 'working' | 'asking' | 'stalled' | 'reported' | 'failed';
+  startedAt: number;
+  result?: string;
+  reportedAt?: number;
+  commits?: number;
+  files?: number;
+  question?: string;
+  askedAt?: number;
+  nudgedAt?: number;
+  /** stateSince of the last prompt already passed to the architect */
+  forwardedWait?: number;
+  /** messages for the architect, waiting until it is idle */
+  outbox?: string[];
 }
 
 /** People by name, as Hermod and the text gateway know them. Empty: that channel is off. */
@@ -109,6 +144,8 @@ export interface SpawnOptions {
   handoff?: HandoffLineage;
   /** carried over from the machine this conversation last ran on */
   alerts?: AlertChannels;
+  role?: SessionRole;
+  worker?: WorkerLink;
   /** terminal sessions: run this command non-interactively, then exit */
   command?: string;
 }

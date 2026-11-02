@@ -31,6 +31,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     <label>PROJECT FOLDER</label>
     <select id="ns-folder"></select>
     <input id="ns-newfolder" placeholder="new folder name — created under the projects root" hidden />
+    <label id="ns-role-label">ROLE</label>
+    <select id="ns-role"></select>
     <label>SESSION NAME (optional)</label>
     <input id="ns-name" placeholder="defaults to folder name" />
     <label id="ns-prompt-label">INITIAL PROMPT (optional)</label>
@@ -46,6 +48,11 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
   `;
 
   const get = <T extends HTMLElement>(id: string) => dialog.querySelector(`#${id}`) as T;
+  const live = await api.sessions().catch(() => [] as SessionInfo[]);
+  const samePath = (a: string, b: string) => {
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    return norm(a) === norm(b);
+  };
 
   const selectedMachine = (): string | undefined => {
     if (!multiMachine) return undefined;
@@ -66,9 +73,35 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const noModes = !a.permissionModes.length;
     get('ns-mode-label').hidden = noModes;
     get('ns-mode').hidden = noModes;
-    get('ns-prompt-label').textContent = a.terminal ? 'INITIAL COMMAND (optional)' : 'INITIAL PROMPT (optional)';
     get<HTMLTextAreaElement>('ns-prompt').placeholder = a.terminal ? 'typed into the shell once it starts' : 'sent as the first message';
     syncHomeOption();
+  }
+
+  // Architect unless the user says otherwise. A folder that already has a live
+  // architect suggests a worker under it, so two don't end up keeping one design.
+  function syncRole() {
+    const terminal = selectedAgent().terminal;
+    const select = get<HTMLSelectElement>('ns-role');
+    get('ns-role-label').hidden = !!terminal;
+    select.hidden = !!terminal;
+    const machine = multiMachine ? get<HTMLSelectElement>('ns-machine').value : machines[0]?.machine;
+    const folder = get<HTMLSelectElement>('ns-folder').value;
+    const leads = live.filter((s) => s.role === 'architect' && s.alive && !s.unreachable && (!machine || !s.machine || s.machine === machine) && samePath(s.cwd, folder));
+    select.innerHTML =
+      leads.map((s) => `<option value="worker:${s.hubId}"></option>`).join('') +
+      '<option value="architect">ARCHITECT: discusses, keeps the repo and docs, delegates</option>' +
+      '<option value="">PLAIN: does its own work</option>';
+    leads.forEach((s, i) => {
+      select.options[i].textContent = `WORKER under ${s.name}: one task, reports back`;
+    });
+    select.selectedIndex = 0;
+    syncPromptLabel();
+  }
+
+  function syncPromptLabel() {
+    const a = selectedAgent();
+    const worker = get<HTMLSelectElement>('ns-role').value.startsWith('worker:');
+    get('ns-prompt-label').textContent = a.terminal ? 'INITIAL COMMAND (optional)' : worker ? 'TASK' : 'INITIAL PROMPT (optional)';
   }
 
   // a terminal can start in the home folder, not only in a project
@@ -96,6 +129,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const input = get<HTMLInputElement>('ns-newfolder');
     input.hidden = !isNew;
     if (isNew && focus) input.focus();
+    syncRole();
   }
 
   // the agents on offer are the ones installed on the machine that will run the session
@@ -169,6 +203,7 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     };
   }
   get<HTMLSelectElement>('ns-agent').onchange = loadAgentOptions;
+  get<HTMLSelectElement>('ns-role').onchange = syncPromptLabel;
   await Promise.all([loadAgents(), loadFolders()]);
 
   get<HTMLButtonElement>('ns-cancel').onclick = () => dialog.close();
@@ -178,6 +213,12 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const newFolder = isNew ? get<HTMLInputElement>('ns-newfolder').value.trim() : '';
     if (isNew && !newFolder) {
       alert('Give the new project folder a name.');
+      return;
+    }
+    const role = selectedAgent().terminal ? '' : get<HTMLSelectElement>('ns-role').value;
+    const architect = role.startsWith('worker:') ? role.slice('worker:'.length) : undefined;
+    if (architect && !get<HTMLTextAreaElement>('ns-prompt').value.trim()) {
+      alert('A worker needs a task.');
       return;
     }
     btn.disabled = true;
@@ -194,6 +235,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
           model: get<HTMLSelectElement>('ns-model').value || undefined,
           machine: selectedMachine(),
           force,
+          role: architect ? 'worker' : role === 'architect' ? 'architect' : undefined,
+          architect,
         }),
       );
       dialog.close();

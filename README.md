@@ -268,6 +268,27 @@ and how to behave towards the others.
   plus `dh_run` (a command on any machine, output and exit code back),
   `dh_rename_session` and the fleet memory tools below.
   It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
+- **Architects and workers.** A long session forgets detail as its context
+  compacts, so a session you launch from the dashboard is an *architect* unless
+  you pick otherwise: it discusses with you, keeps the repo, the docs and
+  `docs/ARCHITECTURE.md`, and delegates everything whose detail stops mattering
+  once its result is known. `dh_start_worker` starts a *worker*: an ordinary
+  session on the same machine, in its own git worktree and branch under
+  `data/worktrees`, with auto-yes on and its task in its instructions so
+  compaction can't lose it. It finishes with `dh_report` (3000 characters at
+  most, refused while its work is uncommitted), and the hub stops it. Reports
+  and questions (`dh_ask_architect`) wait in the worker's outbox until the
+  architect is idle and the user isn't typing, so they survive a busy or stopped
+  architect and a hub restart. A worker that dies or stops without reporting is
+  reminded once and then reported as stuck. Its prompts go to the architect, not
+  to your phone. The architect merges, then `dh_remove_worker` takes the card,
+  worktree and branch; `dh_worker_followup` brings a stopped worker back with its
+  context. Roles are in the instructions given at launch, which compaction
+  doesn't touch; an edit to code by an architect gets a warning but goes through,
+  and only the edit tools are seen, not a shell command. API spawns stay plain
+  unless they pass `role`. VIEW SWARM on a card's menu shows the architect, each
+  worker's instruction, state, result, branch and tool counts. Workers run on the
+  architect's machine only.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with

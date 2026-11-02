@@ -29,6 +29,30 @@ export interface SessionInfo {
   frozen?: boolean;
   /** files the session handed to the user (dh_send_file), newest first */
   files?: { id: string; name: string; size: number; at: number; url: string }[];
+  /** architect: designs and delegates; worker: one task for an architect. Absent: plain */
+  role?: 'architect' | 'worker';
+  worker?: WorkerLink;
+  /** tool calls so far by tool name, kept for workers */
+  toolUse?: Record<string, number>;
+  /** the latest tool call */
+  tool?: { name: string; summary: string; detail: string; at: number };
+}
+
+export interface WorkerLink {
+  architect: string;
+  architectName: string;
+  task: string;
+  followUps?: string[];
+  baseFolder: string;
+  worktree?: string;
+  branch?: string;
+  status: 'working' | 'asking' | 'stalled' | 'reported' | 'failed';
+  startedAt: number;
+  result?: string;
+  reportedAt?: number;
+  commits?: number;
+  files?: number;
+  question?: string;
 }
 
 export interface HandoffJob {

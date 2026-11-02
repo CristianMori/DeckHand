@@ -13,6 +13,7 @@ import { openAuditDialog } from './auditDialog';
 import { openFilesDialog } from './filesDialog';
 import { openManageDialog, updateManageDialog } from './manageDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
+import { openSwarm, updateSwarm } from './swarmDialog';
 
 let sessions: SessionInfo[] = [];
 let selected: string | null = null;
@@ -242,7 +243,23 @@ const cardHandlers = {
     restart.failed.delete(s.hubId);
     render();
   },
+  onSwarm: (s: SessionInfo) => openSwarm(s, () => sessions, select),
+  // the same menu, without opening the session
+  onContextMenu: (s: SessionInfo, e: MouseEvent) => openCardMenu(s.hubId, { x: e.clientX, y: e.clientY }, menuActions),
 };
+
+/** A role is given when a session starts, so a live one has to restart to take it. */
+async function setArchitect(s: SessionInfo, on: boolean) {
+  try {
+    await api.setRole(s.hubId, on ? 'architect' : null);
+  } catch (err) {
+    alert(`Could not change its role: ${err}`);
+    return;
+  }
+  if (!s.alive) return;
+  if (s.state === 'IDLE') void restartSession(s, true);
+  else alert(`"${s.name}" is ${s.state}. Its new role takes effect the next time it restarts.`);
+}
 
 const menuActions: MenuActions = {
   session: (hubId) => sessions.find((x) => x.hubId === hubId),
@@ -255,6 +272,8 @@ const menuActions: MenuActions = {
   files: cardHandlers.onFiles,
   kill: (s) => void api.kill(s.hubId),
   remove: cardHandlers.onRemove,
+  swarm: cardHandlers.onSwarm,
+  setArchitect: (s, on) => void setArchitect(s, on),
   setAlert: (s, channel, people) => {
     if (!s.alerts) return;
     const before = s.alerts;
@@ -301,6 +320,7 @@ function render() {
   renderTabs();
   updateManageDialog();
   refreshCardMenu();
+  updateSwarm();
 }
 
 el.frozenBtn.onclick = () => {
