@@ -72,6 +72,12 @@ export interface WorkerLink {
   task: string;
   followUps?: string[];
   baseFolder: string;
+  /** the project's name, which holds on every machine, unlike a path */
+  project?: string;
+  /** the architect runs on another machine: code travels between the hubs as git bundles */
+  architectMachine?: string;
+  /** its branch has commits the architect's repo doesn't have yet */
+  sendBranch?: boolean;
   /** its own checkout and branch; absent when the folder is not a git repo */
   worktree?: string;
   repo?: string;

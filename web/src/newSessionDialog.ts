@@ -49,10 +49,8 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
 
   const get = <T extends HTMLElement>(id: string) => dialog.querySelector(`#${id}`) as T;
   const live = await api.sessions().catch(() => [] as SessionInfo[]);
-  const samePath = (a: string, b: string) => {
-    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    return norm(a) === norm(b);
-  };
+  // the same project on any machine: a worker can run away from its architect
+  const folderName = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.toLowerCase() ?? '';
 
   const selectedMachine = (): string | undefined => {
     if (!multiMachine) return undefined;
@@ -84,15 +82,14 @@ export async function openNewSessionDialog(onSpawned: (s: SessionInfo) => void) 
     const select = get<HTMLSelectElement>('ns-role');
     get('ns-role-label').hidden = !!terminal;
     select.hidden = !!terminal;
-    const machine = multiMachine ? get<HTMLSelectElement>('ns-machine').value : machines[0]?.machine;
     const folder = get<HTMLSelectElement>('ns-folder').value;
-    const leads = live.filter((s) => s.role === 'architect' && s.alive && !s.unreachable && (!machine || !s.machine || s.machine === machine) && samePath(s.cwd, folder));
+    const leads = live.filter((s) => s.role === 'architect' && s.alive && !s.unreachable && folderName(s.cwd) === folderName(folder));
     select.innerHTML =
       leads.map((s) => `<option value="worker:${s.hubId}"></option>`).join('') +
       '<option value="architect">ARCHITECT: discusses, keeps the repo and docs, delegates</option>' +
       '<option value="">PLAIN: does its own work</option>';
     leads.forEach((s, i) => {
-      select.options[i].textContent = `WORKER under ${s.name}: one task, reports back`;
+      select.options[i].textContent = `WORKER under ${s.name}${s.machine ? ` (${s.machine})` : ''}: one task, reports back`;
     });
     select.selectedIndex = 0;
     syncPromptLabel();

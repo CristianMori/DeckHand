@@ -61,7 +61,7 @@ function workerCard(s: SessionInfo): HTMLElement {
   top.append(name, chip(status.cls, status.label));
   card.append(top);
 
-  const facts = [s.agentType ?? 'claude', s.model, live ? s.state.toLowerCase() : 'stopped', `started ${ago(w.startedAt)}`].filter(Boolean).join(' · ');
+  const facts = [s.machine, s.agentType ?? 'claude', s.model, live ? s.state.toLowerCase() : 'stopped', `started ${ago(w.startedAt)}`].filter(Boolean).join(' · ');
   card.append(div('sw-meta', facts));
   if (w.branch) {
     const size = w.commits === undefined ? '' : ` · ${w.commits} commit${w.commits === 1 ? '' : 's'}, ${w.files ?? 0} file${w.files === 1 ? '' : 's'}`;

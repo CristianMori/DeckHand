@@ -20,6 +20,7 @@ export interface PersistedSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
+  inbox?: string[];
   /** when the card entered its current state — keeps the sidebar order across restarts */
   stateSince?: number;
   /** when this file was written; a card alive then is "exited since" this moment */
@@ -54,6 +55,7 @@ export function savePersisted(manager: SessionManager) {
     role: s.role,
     worker: s.worker,
     toolUse: s.toolUse,
+    inbox: s.inbox,
     stateSince: s.stateSince,
     savedAt: now,
   }));

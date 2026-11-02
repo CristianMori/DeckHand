@@ -86,6 +86,8 @@ export class HubSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
+  /** an architect's messages from workers on other machines, waiting until it is idle */
+  inbox?: string[];
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 

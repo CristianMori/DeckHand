@@ -287,8 +287,14 @@ and how to behave towards the others.
   doesn't touch; an edit to code by an architect gets a warning but goes through,
   and only the edit tools are seen, not a shell command. API spawns stay plain
   unless they pass `role`. VIEW SWARM on a card's menu shows the architect, each
-  worker's instruction, state, result, branch and tool counts. Workers run on the
-  architect's machine only.
+  worker's instruction, state, result, branch and tool counts.
+  A worker can run on any fleet machine (`machine`), with nothing shared between
+  them: its hub keeps a bare mirror per project under `data/worktrees/.mirrors`,
+  the base commit arrives as a git bundle sent hub to hub, and the architect's hub
+  fetches the branch back the same way before it takes the report, so no remote
+  or push rights are needed. If either machine is away, the message waits. A
+  frozen folder is refused for another machine, and so is a folder that isn't a
+  git repository.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with

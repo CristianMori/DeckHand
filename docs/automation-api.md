@@ -307,7 +307,7 @@ Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `sess
 | `DELETE /api/memories/:id` | – | forget a memory (id or unique prefix) |
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |
 | `POST /api/sessions/:id/role` | `{"role":"architect"}` or `{"role":null}` | make a session an architect, or plain again; takes effect when it next starts. The user's: 403 for a session, an outside agent or Mimir. A new session takes `role` in `POST /api/sessions`, and is plain if it doesn't say |
-| `POST /api/sessions/:id/workers` | `{"task":"…","name":"…","agentType":"…","model":"…"}` | start a worker for this architect, in its own git worktree and branch, auto-yes on. The architect itself or the user |
+| `POST /api/sessions/:id/workers` | `{"task":"…","name":"…","agentType":"…","model":"…","machine":"…"}` | start a worker for this architect, in its own git worktree and branch, auto-yes on, on `machine` if given (its hub receives the code as a git bundle, and its branch comes back the same way). 400 for a frozen folder or one that isn't a git repository on another machine. The architect itself or the user |
 | `POST /api/sessions/:id/report` | `{"result":"…","failed":false}` | a worker finishes, at most 3000 characters. 409 while it has uncommitted changes, unless `failed`. Stopped shortly after. The worker itself only |
 | `POST /api/sessions/:id/ask-architect` | `{"question":"…"}` | a worker needs a decision. The worker itself only |
 | `POST /api/sessions/:id/follow-up` | `{"task":"…"}` | more work for a worker, brought back first if stopped. Its architect or the user |

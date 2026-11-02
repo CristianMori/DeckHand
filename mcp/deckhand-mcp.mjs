@@ -96,6 +96,17 @@ const S = (description) => ({ type: 'string', description });
 const I = (description) => ({ type: 'integer', description });
 const B = (description) => ({ type: 'boolean', description });
 
+/** The id of one of this architect's workers, from its id or its name. */
+async function myWorker(ref) {
+  const all = arr(await get('/api/sessions'));
+  const me = all.find((s) => s.hubId === ME.hubId)?.claudeSessionId ?? ME.conversationId;
+  const mine = all.filter((s) => s.worker && s.worker.architect === me);
+  const hits = mine.filter((s) => s.hubId === ref || s.name === ref);
+  if (hits.length === 1) return hits[0].hubId;
+  const known = mine.map((s) => `${s.hubId} "${s.name}"`).join(', ') || 'none';
+  throw new HubError(hits.length ? `more than one worker is called ${ref}: use its id. Yours: ${known}` : `you have no worker ${ref}. Yours: ${known}`);
+}
+
 const TOOLS = [
   {
     name: 'dh_whoami',
@@ -286,15 +297,15 @@ const TOOLS = [
   },
   {
     name: 'dh_start_worker',
-    description: 'Architect sessions: give a task to a new worker session on this machine, in its own git worktree and branch off your current commit, with auto-approve on. It knows only what you write in task. Returns at once; its report arrives later as a prompt, so end your turn rather than wait. Optional: name (card name), agentType and model (default: yours).',
-    schema: { task: S('the whole assignment: goal, constraints, what was ruled out, what the result must contain'), name: S('short card name for the worker'), agentType: S('claude | codex (default: yours)'), model: S('model id (default: yours)') },
+    description: 'Architect sessions: give a task to a new worker session, in its own git worktree and branch off your current commit, with auto-approve on. It knows only what you write in task. Returns at once; its report arrives later as a prompt, so end your turn rather than wait. Optional: machine (any connected fleet machine, see dh_list_fleet; default this one; the hub carries the code there and brings its branch back), name (card name), agentType and model (default: yours).',
+    schema: { task: S('the whole assignment: goal, constraints, what was ruled out, what the result must contain'), machine: S('fleet machine to run it on; omit for this one'), name: S('short card name for the worker'), agentType: S('claude | codex (default: yours)'), model: S('model id (default: yours)') },
     required: ['task'],
     run: async (a) => {
       const body = { task: a.task };
-      for (const k of ['name', 'agentType', 'model']) if (nz(a[k])) body[k] = a[k];
-      const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, 60_000);
+      for (const k of ['name', 'agentType', 'model', 'machine']) if (nz(a[k])) body[k] = a[k];
+      const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, nz(a.machine) ? 600_000 : 60_000);
       const where = s.isolated ? `branch ${s.worker.branch}` : 'your own folder, because it is not a git repository: nothing isolates its changes';
-      return `Worker ${s.hubId} "${s.name}" started, in ${where}.${s.baseDirty ? ' Your folder has uncommitted changes the worker does not have.' : ''} End your turn: its report comes as a prompt.`;
+      return `Worker ${s.hubId} "${s.name}" started on ${s.machine}, in ${where}.${s.baseDirty ? ' Your folder has uncommitted changes the worker does not have.' : ''} End your turn: its report comes as a prompt.`;
     },
   },
   {
@@ -302,29 +313,33 @@ const TOOLS = [
     description: 'Architect sessions: your workers, what each was asked, and how each stands.',
     schema: {},
     run: async () => {
-      const mine = arr(await get('/api/sessions')).filter((s) => s.worker && s.worker.architect === ME.conversationId);
+      const all = arr(await get('/api/sessions'));
+      // the id in the environment can be a placeholder from before the engine named its conversation
+      const me = all.find((s) => s.hubId === ME.hubId)?.claudeSessionId ?? ME.conversationId;
+      const mine = all.filter((s) => s.worker && s.worker.architect === me);
       if (!mine.length) return 'No workers.';
-      return mine.map((s) => `[${s.hubId}] ${s.name}: ${s.worker.status} (${s.state})${s.worker.branch ? `, branch ${s.worker.branch}` : ''}\n  task: ${s.worker.task.slice(0, 200)}${s.worker.result ? `\n  result: ${s.worker.result}` : ''}`).join('\n');
+      return mine.map((s) => `[${s.hubId}] ${s.name} on ${s.machine}: ${s.worker.status} (${s.state})${s.worker.branch ? `, branch ${s.worker.branch}` : ''}\n  task: ${s.worker.task.slice(0, 200)}${s.worker.result ? `\n  result: ${s.worker.result}` : ''}`).join('\n');
     },
   },
   {
     name: 'dh_worker_followup',
     description: 'Architect sessions: more work for an existing worker, which keeps its context and branch. A stopped worker is brought back first.',
-    schema: { hubId: S('the worker'), task: S('what to do next') },
-    required: ['hubId', 'task'],
-    run: async ({ hubId, task }) => {
-      const s = await post(`/api/sessions/${q(hubId)}/follow-up`, { task }, 60_000);
+    schema: { worker: S('the worker\'s id or name, as in its report'), task: S('what to do next') },
+    required: ['worker', 'task'],
+    run: async ({ worker, task }) => {
+      const s = await post(`/api/sessions/${q(await myWorker(worker))}/follow-up`, { task }, 60_000);
       return `Worker ${s.hubId} has it. End your turn: its report comes as a prompt.`;
     },
   },
   {
     name: 'dh_remove_worker',
     description: 'Architect sessions: remove a worker\'s card, worktree and branch once you are done with it. Refused while its branch is unmerged or its worktree has changes, unless discard=true, which throws that work away.',
-    schema: { hubId: S('the worker'), discard: B('throw away unmerged or uncommitted work') },
-    required: ['hubId'],
-    run: async ({ hubId, discard }) => {
-      await post(`/api/sessions/${q(hubId)}/remove-worker`, { discard: !!discard }, 60_000);
-      return `Worker ${hubId} removed.`;
+    schema: { worker: S('the worker\'s id or name, as in its report'), discard: B('throw away unmerged or uncommitted work') },
+    required: ['worker'],
+    run: async ({ worker, discard }) => {
+      const id = await myWorker(worker);
+      await post(`/api/sessions/${q(id)}/remove-worker`, { discard: !!discard }, 60_000);
+      return `Worker ${worker} removed.`;
     },
   },
   {

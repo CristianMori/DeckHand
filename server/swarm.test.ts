@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { architectEditWarning, fleetBriefing, isDocPath } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
-import { createWorktree, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -165,7 +165,9 @@ test('from task to report to merge to removal', async () => {
   const { manager, swarm, typed, asked } = harness();
   const architect = { hubId: 'lead', claudeSessionId: 'arch-conv', name: 'lead', cwd: dir, agentType: 'claude', role: 'architect', proc: {}, state: 'WORKING', lastInputAt: 0 } as unknown as HubSession;
   manager.sessions.set('lead', architect);
-  const { session, isolated } = await swarm.start(architect, { task: 'add b', name: 'adder' });
+  const started = await swarm.start(architect, { task: 'add b', name: 'adder' });
+  const session = started.session!;
+  const { isolated } = started;
   try {
     assert.equal(isolated, true);
     assert.equal(session.autoYes, true);
@@ -257,4 +259,144 @@ test('a stalled worker tells the architect what it last said', async () => {
   await swarm.tick(now);
   assert.match(typed[0].text, /it said this/);
   assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
+});
+
+test('a commit travels to a mirror and a branch comes back, with nothing else shared', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-far-'));
+  try {
+    const mirror = await projectMirror('demo', root);
+    const first = git('rev-parse', 'HEAD').trim();
+    assert.deepEqual(await mirrorHeads(mirror), []);
+    const whole = await bundleCommit(dir, first, []);
+    assert.ok(whole);
+    await receiveCommit(mirror, whole);
+    assert.deepEqual(await mirrorHeads(mirror), [first]);
+    // nothing new to send, and nothing left behind on the sender
+    assert.equal(await bundleCommit(dir, first, [first]), undefined);
+    assert.equal(git('for-each-ref', 'refs/deckhand').trim(), '');
+
+    // the next base goes as the difference, and unknown commits in the list do no harm
+    writeFileSync(join(dir, 'big.txt'), 'x'.repeat(200_000));
+    git('add', '.');
+    git('commit', '-qm', 'second');
+    const second = git('rev-parse', 'HEAD').trim();
+    const diff = await bundleCommit(dir, second, [first, 'f'.repeat(40)]);
+    assert.ok(diff);
+    await receiveCommit(mirror, diff);
+    assert.ok((await mirrorHeads(mirror)).includes(second));
+
+    // a worker on that mirror commits, and its branch reaches the original repo
+    const worktree = join(root, 'w1');
+    execFileSync('git', ['-C', mirror, 'worktree', 'add', '-q', '-b', 'worker/w1', worktree, second]);
+    writeFileSync(join(worktree, 'c.txt'), 'c\n');
+    execFileSync('git', ['-C', worktree, 'add', '.']);
+    execFileSync('git', ['-C', worktree, '-c', 'user.name=w', '-c', 'user.email=w@w', 'commit', '-qm', 'c']);
+    await receiveBranch(dir, 'worker/w1', await bundleBranch(mirror, 'worker/w1', second));
+    assert.equal(git('log', '--format=%s', '-1', 'worker/w1').trim(), 'c');
+    assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
+
+    // a follow-up moves the branch on
+    writeFileSync(join(worktree, 'd.txt'), 'd\n');
+    execFileSync('git', ['-C', worktree, 'add', '.']);
+    execFileSync('git', ['-C', worktree, '-c', 'user.name=w', '-c', 'user.email=w@w', 'commit', '-qm', 'd']);
+    await receiveBranch(dir, 'worker/w1', await bundleBranch(mirror, 'worker/w1', second));
+    assert.equal(git('log', '--format=%s', '-1', 'worker/w1').trim(), 'd');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function fleetHarness(answer: (conv: string, path: string, body: any) => { status: number; body: any } | undefined) {
+  const h = harness();
+  const sent: { path: string; body: any }[] = [];
+  const swarm = new Swarm(h.manager as unknown as SessionManager, {
+    typePrompt: async () => {},
+    promptFrom: () => {},
+    lastReply: async () => undefined,
+    save() {},
+    fleet: {
+      self: 'alpha',
+      call: async () => ({ status: 200, body: {} }),
+      upload: async () => ({ status: 200, body: {} }),
+      callArchitect: async (conv, path, body) => {
+        sent.push({ path, body });
+        return answer(conv, path, body);
+      },
+      isFrozen: (folder) => folder === 'icebox',
+    },
+  });
+  return { ...h, swarm, sent };
+}
+
+test('a message for an architect elsewhere stays until its hub has it', async () => {
+  let up = false;
+  const { manager, swarm, sent } = fleetHarness(() => (up ? { status: 200, body: {} } : undefined));
+  const w = { hubId: 'w1', claudeSessionId: 'w-conv', name: 'w1', proc: null, state: 'EXITED', stateSince: Date.now(), worker: link({ architectMachine: 'alpha', status: 'reported', outbox: ['done'], branch: 'worker/w1', sendBranch: true }) } as unknown as HubSession;
+  manager.sessions.set('w1', w);
+  await swarm.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sent.length, 1);
+  assert.deepEqual(w.worker?.outbox, ['done']);
+  assert.equal(w.worker?.sendBranch, true);
+  // it isn't tried again straight away
+  await swarm.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sent.length, 1);
+  up = true;
+  await swarm.tick(Date.now() + 60_000);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sent.at(-1)?.body.branch, 'worker/w1');
+  assert.equal(sent.at(-1)?.body.worker, 'w-conv');
+  assert.equal(w.worker?.outbox, undefined);
+  assert.equal(w.worker?.sendBranch, false);
+});
+
+test('messages from elsewhere join the rest, and wait for the architect to be idle', async () => {
+  const { manager, swarm, typed } = harness();
+  const architect = { hubId: 'lead', claudeSessionId: 'arch-conv', name: 'lead', proc: {}, state: 'WORKING', lastInputAt: 0, inbox: undefined } as unknown as HubSession;
+  manager.sessions.set('lead', architect);
+  swarm.acceptMessage(architect, 'from beta');
+  await swarm.tick();
+  assert.equal(typed.length, 0);
+  architect.state = 'IDLE';
+  await swarm.tick();
+  assert.match(typed[0].text, /from beta/);
+  assert.equal(architect.inbox, undefined);
+});
+
+test('a frozen folder, or one with no repository, stays on its machine', async () => {
+  const { swarm } = fleetHarness(() => undefined);
+  const plain = mkdtempSync(join(tmpdir(), 'swarm-plain-'));
+  try {
+    const lead = (cwd: string) => ({ hubId: 'lead', claudeSessionId: 'c', name: 'lead', cwd, role: 'architect', agentType: 'claude' }) as unknown as HubSession;
+    await assert.rejects(swarm.start(lead('D:/p/icebox'), { task: 't', machine: 'beta' }), /frozen/);
+    await assert.rejects(swarm.start(lead(plain), { task: 't', machine: 'beta' }), /not a git repository/);
+  } finally {
+    rmSync(plain, { recursive: true, force: true });
+  }
+});
+
+test('removing a worker elsewhere asks the architect\'s repo whether it was merged', async () => {
+  const far = repo();
+  let merged = false;
+  const { manager, swarm, sent } = fleetHarness((_c, path) => (path === 'worker-merged' ? { status: 200, body: { merged } } : { status: 200, body: {} }));
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    const t = await createWorktree(far.dir, 'w', root);
+    writeFileSync(join(t!.worktree, 'x.txt'), 'x');
+    execFileSync('git', ['-C', t!.worktree, 'add', '.']);
+    execFileSync('git', ['-C', t!.worktree, 'commit', '-qm', 'x']);
+    const s = { hubId: 'w1', name: 'w1', proc: null, worker: link({ architectMachine: 'alpha', worktree: t!.worktree, repo: t!.repo, branch: t!.branch, baseCommit: t!.baseCommit }) } as unknown as HubSession;
+    manager.sessions.set('w1', s);
+    await assert.rejects(swarm.remove(s, false), /not merged/);
+    merged = true;
+    await swarm.remove(s, false);
+    assert.equal(existsSync(t!.worktree), false);
+    assert.ok(sent.some((x) => x.path === 'worker-branch-gone'));
+  } finally {
+    rmSync(far.dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 });

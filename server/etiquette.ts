@@ -40,7 +40,8 @@ You do: discuss design and decisions with the user, know the whole architecture,
 You delegate: writing and debugging code, research, reading through many files, running builds and long test runs, anything whose detail stops mattering once its result is known. A small fix of a line or two is yours if a worker would be silly.
 
 How to delegate:
-- dh_start_worker gives a task to a new worker session on this machine, in its own git worktree and branch off your current commit. Commit first: uncommitted work is not in its checkout. The worker knows nothing but what you write, so state the goal, the constraints, what you have ruled out, and what the result must contain.
+- dh_start_worker gives a task to a new worker session, in its own git worktree and branch off your current commit. Commit first: uncommitted work is not in its checkout. The worker knows nothing but what you write, so state the goal, the constraints, what you have ruled out, and what the result must contain.
+- A worker can run on any fleet machine (machine, see dh_list_fleet): pick one for what it has, or to spread the load. The hub carries the code there and brings its branch back to your repository before you hear from it, so a report from any machine is handled the same way.
 - Don't wait for it or check on it. End your turn: reports and questions arrive by themselves as a prompt starting "[Deckhand, worker". Stay out of its transcript unless a report doesn't add up. Knowing the least about how it went is the point.
 - A report gives you a result and a branch. Check it fits the design, merge it, then dh_remove_worker. dh_worker_followup sends more work to the same worker, which still has its context. dh_list_workers shows them all.
 - A worker asks you first when it needs a decision. Answer from what you know of the design with dh_send_prompt. Bring it to the user only when it is really the user's decision.
@@ -49,7 +50,7 @@ Your memory: docs/ARCHITECTURE.md holds the architecture: the parts, how they ta
 
 const workerRules = (w: WorkerLink) => `Your role: WORKER for the architect session "${w.architectName}". You have one task and a clean context. The architect wants the result, not the story.
 
-${w.worktree ? `You work in your own checkout (${w.worktree}) on your own branch (${w.branch}), made from a clean commit: files git ignores, like dependencies and local config, are not there, so install or ask for what you need. Stay in it, commit your work on your branch, and never push, merge or touch main or the folder ${w.baseFolder}.` : `You work in the architect's own folder (${w.baseFolder}), which is not a git repository, so nothing isolates your changes: be careful.`}
+${w.worktree ? `You work in your own checkout (${w.worktree}) on your own branch (${w.branch}), made from a clean commit: files git ignores, like dependencies and local config, are not there, so install or ask for what you need. Stay in it, commit your work on your branch, and never push, merge or touch main${w.architectMachine ? '. The architect is on ' + w.architectMachine + ': the hub takes your branch to it when you report, so just commit' : ' or the folder ' + w.baseFolder}.` : `You work in the architect's own folder (${w.baseFolder}), which is not a git repository, so nothing isolates your changes: be careful.`}
 
 Auto-approve is on so that you never stall, and that makes you responsible: don't deploy, publish, restart services, or change anything outside your checkout unless your task says so.
 
@@ -83,7 +84,7 @@ export function architectEditWarning(cwd: string, files: string[]): string | nul
 export function fleetBriefing(id: Identity): string {
   // a worker's checkout is named for the worker: its project is the architect's
   const home = id.worker?.baseFolder ?? id.cwd;
-  const memories = memoryBriefing(id.machine, projectFolderOf(home) ?? basename(home.replace(/[\\/]+$/, '')));
+  const memories = memoryBriefing(id.machine, id.worker?.project ?? projectFolderOf(home) ?? basename(home.replace(/[\\/]+$/, '')));
   return (
     `Deckhand fleet session: hub id ${id.hubId}` +
     (id.conversationId.startsWith('pending-') ? '' : `, conversation ${id.conversationId}`) +
