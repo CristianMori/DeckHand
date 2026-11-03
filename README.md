@@ -266,23 +266,28 @@ and how to behave towards the others.
   `dh_fleet_resume`, `dh_handoff`, `dh_list_fleet`, `dh_list_agents`,
   `dh_list_projects`, `dh_list_fleet_folders`, `dh_hub_info`, `dh_etiquette`,
   plus `dh_run` (a command on any machine, output and exit code back),
-  `dh_rename_session` and the fleet memory tools below.
+  `dh_rename_session`, the fleet memory tools below, and the swarm tools
+  (`dh_start_worker`, `dh_start_subarchitect`, `dh_list_workers`,
+  `dh_worker_followup`, `dh_remove_worker`, `dh_answer_worker`, `dh_report`,
+  `dh_ask_architect`, `dh_swarm_inbox`).
   It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
 - **Architects and workers.** A long session forgets detail as its context
   compacts, so a session you launch from the dashboard is an *architect* unless
   you pick otherwise: it discusses with you, keeps the repo, the docs and
   `docs/ARCHITECTURE.md`, and delegates everything whose detail stops mattering
   once its result is known. `dh_start_worker` starts a *worker*: an ordinary
-  session on the same machine, in its own git worktree and branch under
-  `data/worktrees`, with auto-yes on and its task in its instructions so
-  compaction can't lose it. It finishes with `dh_report` (3000 characters at
-  most, refused while its work is uncommitted), and the hub stops it. Reports
-  and questions (`dh_ask_architect`) wait in the worker's outbox until the
-  architect is idle and the user isn't typing, so they survive a busy or stopped
-  architect and a hub restart. A worker that dies or stops without reporting is
-  reminded once and then reported as stuck. Its prompts go to the architect, not
-  to your phone. The architect merges, then `dh_remove_worker` takes the card,
-  worktree and branch; `dh_worker_followup` brings a stopped worker back with its
+  session, on this machine or another (see below), in its own git worktree and
+  branch under `data/worktrees`, with auto-yes on and its task in its
+  instructions so compaction can't lose it. It finishes with `dh_report` (3000
+  characters at most, refused while its work is uncommitted), and the hub stops
+  it. Reports and questions (`dh_ask_architect`) wait until the architect's hub
+  has them, and the architect is only told something is waiting once it is idle
+  and you aren't typing, so they survive a busy or stopped architect and a hub
+  restart. It reads them with `dh_swarm_inbox` and answers a question with
+  `dh_answer_worker`. A worker that dies or stops without reporting is reminded
+  once and then reported as stuck. Its prompts go to the architect, not to your
+  phone. The architect merges, then `dh_remove_worker` takes the card, worktree
+  and branch; `dh_worker_followup` brings a stopped worker back with its
   context. Roles are in the instructions given at launch, which compaction
   doesn't touch; an edit to code by an architect gets a warning but goes through,
   and only the edit tools are seen, not a shell command. API spawns stay plain
@@ -319,6 +324,10 @@ and how to behave towards the others.
   running as the same OS user on that machine, including that machine's auto-yes
   workers, so it holds against other machines and against text typed into a session,
   not against code already running as that user.
+  Outside agents reach only architects (see *Outside agents* below), never a sub-architect
+  or worker. Every hub in a swarm has to run a build with signed messages, and a
+  session with a role gets its key the next time it starts, so restart one that was
+  already running.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with
