@@ -2,9 +2,10 @@ import { api, type AlertRecipients } from './api';
 import type { SessionInfo } from './types';
 
 /**
- * The popup a left click on a card opens, and the DISCORD and TEXT header
- * buttons open at their channel. Built from the session's latest card each
- * time something changes, so it stays right while the list re-renders.
+ * The popup a right click (or a touch long press) on a card opens, and the
+ * DISCORD and TEXT header buttons open at their channel. Built from the
+ * session's latest card each time something changes, so it stays right while
+ * the list re-renders.
  */
 
 export interface MenuActions {

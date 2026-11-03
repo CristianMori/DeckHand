@@ -187,11 +187,8 @@ async function restartAllIdle(btn: HTMLButtonElement) {
 }
 
 const cardHandlers = {
-  onSelect: (s: SessionInfo, e: MouseEvent) => {
-    select(s);
-    // a phone's tap opens the terminal full screen; its header has the same controls
-    if (!matchMedia('(max-width: 760px)').matches) openCardMenu(s.hubId, { x: e.clientX, y: e.clientY }, menuActions);
-  },
+  // a click only selects and opens the session; the menu is on right click
+  onSelect: (s: SessionInfo) => select(s),
   onResume: async (s: SessionInfo) => {
     try {
       await withElsewhereConfirm((force) => api.resumeForce(s.hubId, force));
@@ -244,7 +241,7 @@ const cardHandlers = {
     render();
   },
   onSwarm: (s: SessionInfo) => openSwarm(s, () => sessions, select),
-  // the same menu, without opening the session
+  // right click (or a touch long press) opens the menu, without opening the session
   onContextMenu: (s: SessionInfo, e: MouseEvent) => openCardMenu(s.hubId, { x: e.clientX, y: e.clientY }, menuActions),
 };
 

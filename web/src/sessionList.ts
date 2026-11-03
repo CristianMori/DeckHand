@@ -221,11 +221,43 @@ export function renderSessionList(
       actions.remove();
     }
 
-    card.onclick = (e) => handlers.onSelect(s, e);
+    // left click selects and opens the session; right click opens the card menu.
+    // iOS fires no contextmenu for touch, so a long press on the card (not on
+    // its buttons) opens the menu there; where the platform does fire one on
+    // long press (Android), opening the same menu twice is harmless.
+    let suppressClick = false;
+    let press: { timer: number; x: number; y: number } | null = null;
+    const cancelPress = () => {
+      if (press) clearTimeout(press.timer);
+      press = null;
+    };
+    card.onclick = (e) => {
+      if (suppressClick) return;
+      handlers.onSelect(s, e);
+    };
     card.oncontextmenu = (e) => {
       e.preventDefault();
       handlers.onContextMenu(s, e);
     };
+    card.onpointerdown = (e) => {
+      suppressClick = false;
+      if (e.pointerType !== 'touch' || (e.target as HTMLElement).closest('button')) return;
+      const { clientX: x, clientY: y } = e;
+      press = {
+        x,
+        y,
+        timer: window.setTimeout(() => {
+          press = null;
+          suppressClick = true; // a click right after the long press must not open the session
+          handlers.onContextMenu(s, e);
+        }, 500),
+      };
+    };
+    card.onpointermove = (e) => {
+      if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
+    };
+    card.onpointerup = cancelPress;
+    card.onpointercancel = cancelPress;
     root.appendChild(card);
   }
 }
