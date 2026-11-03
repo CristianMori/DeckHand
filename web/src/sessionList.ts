@@ -1,20 +1,5 @@
 import type { SessionInfo, SessionState } from './types';
-
-// needs attention first, then what is being worked on, then the rest;
-// cards of an unreachable machine always sink to the bottom
-const STATE_RANK: Record<SessionState, number> = {
-  WAITING_QUESTION: 0,
-  WAITING_PERMISSION: 0,
-  WORKING: 1,
-  STARTING: 1,
-  IDLE: 2,
-  EXITED: 3,
-};
-const UNREACHABLE_RANK = 4;
-
-function rankOf(s: SessionInfo): number {
-  return s.unreachable ? UNREACHABLE_RANK : STATE_RANK[s.state];
-}
+import { sortSessions } from './sessionOrder';
 
 const CHIP: Record<SessionState, { cls: string; label: string }> = {
   WAITING_QUESTION: { cls: 'waiting', label: 'QUESTION' },
@@ -35,20 +20,6 @@ function elapsed(since: number): string {
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
-}
-
-export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
-  return [...sessions].sort((a, b) => {
-    const rank = rankOf(a) - rankOf(b);
-    if (rank !== 0) return rank;
-    if (rankOf(a) === 0) return a.stateSince - b.stateSince; // oldest wait first
-    // within working, idle and exited: the card that entered the state most
-    // recently sits at the top of its band — a session that just finished
-    // lands right under the working ones, a session that just exited lands
-    // right under the idle ones, each pushing its older siblings down one
-    if (rankOf(a) >= 1 && rankOf(a) <= 3) return b.stateSince - a.stateSince;
-    return b.createdAt - a.createdAt;
-  });
 }
 
 /** Each follows who leads it. Finished ones stay out of the list: the swarm view has them. */

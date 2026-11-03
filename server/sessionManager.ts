@@ -124,6 +124,7 @@ export class HubSession {
       permissionMode: this.permissionMode,
       state: this.state,
       stateSince: this.stateSince,
+      lastOutputAt: this.lastOutputAt || undefined,
       detail: this.detail,
       summary: this.summary,
       createdAt: this.createdAt,

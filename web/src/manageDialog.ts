@@ -1,5 +1,5 @@
 import { api, withElsewhereConfirm } from './api';
-import { sortSessions } from './sessionList';
+import { sortSessions } from './sessionOrder';
 import type { SessionInfo } from './types';
 
 // Bulk maintenance: one compact row per session, tick some, then kill,

@@ -26,6 +26,8 @@ export interface SessionInfo {
   permissionMode?: string;
   state: SessionState;
   stateSince: number;
+  /** when the pty last printed anything — the session's last sign of life */
+  lastOutputAt?: number;
   detail?: string;
   summary?: string;
   createdAt: number;
