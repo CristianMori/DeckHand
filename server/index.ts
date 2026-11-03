@@ -26,7 +26,8 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
-import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, type HostWorker } from './swarm.js';
+import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, WORKER_BRANCH, type HostWorker } from './swarm.js';
+import { signatureHolds } from '../mcp/swarm-envelope.mjs';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
 import { Federation, type PeerAlert } from './federation.js';
@@ -154,7 +155,11 @@ for (const rec of loadPersisted()) {
   s.role = rec.role === 'architect' || rec.role === 'subarchitect' || rec.role === 'worker' ? rec.role : undefined;
   s.worker = rec.worker;
   s.toolUse = rec.toolUse;
-  s.inbox = rec.inbox;
+  s.swarmKey = rec.swarmKey;
+  s.crew = rec.crew;
+  // from before messages were signed: nothing there can be verified, and nobody is waiting on it
+  s.inbox = rec.inbox?.filter((l) => typeof l === 'object');
+  if (s.worker?.outbox) s.worker.outbox = s.worker.outbox.filter((p) => typeof p === 'object');
   if (rec.alive) toRestore.push(s);
 }
 
@@ -1122,14 +1127,6 @@ app.post('/api/sessions/:id/workers', sessionAction(async (id, req, res) => {
   }
 }));
 
-/** Is the caller this conversation? Across hubs too: a hub id is only known where the session runs. */
-function callerIsConversation(conversation: string): boolean {
-  const hubId = /^session:([^/]+)\//.exec(currentTrace()?.caller ?? '')?.[1];
-  if (!hubId) return false;
-  const conv = manager.sessions.get(hubId)?.claudeSessionId ?? federation.peerBySession(hubId)?.sessions.find((s) => s.hubId === hubId)?.claudeSessionId;
-  return conv === conversation;
-}
-
 // A worker on another machine (swarm.ts). Hub to hub: the code as bundles, the
 // messages with the branch they talk about. Outside agents stop at the access gate.
 const hostProject = (v: unknown) => (typeof v === 'string' && /^[^\\/:*?"<>|\x00-\x1f]{1,200}$/.test(v) && !v.startsWith('.') ? v : undefined);
@@ -1146,7 +1143,7 @@ app.post('/api/worker-host/heads', async (req, res) => {
 
 app.post('/api/worker-host/start', async (req, res) => {
   const h = (req.body ?? {}) as HostWorker;
-  if (!hostProject(h.project) || !/^[0-9a-f]{40,64}$/.test(h.baseCommit ?? '') || !h.task || !h.architect) return res.status(400).json({ error: 'not a worker' });
+  if (!hostProject(h.project) || !/^[0-9a-f]{40,64}$/.test(h.baseCommit ?? '') || !h.task || !h.architect || typeof h.leadKey !== 'string') return res.status(400).json({ error: 'not a worker' });
   // a relative path inside the checkout, whatever it says
   if (h.sub && (/^[\\/]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(h.sub))) return res.status(400).json({ error: 'bad subfolder' });
   if (h.agentType && engineMissing(res, h.agentType)) return;
@@ -1168,27 +1165,30 @@ app.get('/api/sessions/:id/worker-branch', sessionAction(async (id, _req, res) =
   }
 }));
 
-// A message for an architect. With a branch, that comes first: what the message
-// talks about has to be here when it is read. Not reaching the worker's hub is
-// worth retrying, and answers an error so the message stays there. Git refusing
-// won't get better, so the architect hears about it instead.
-app.post('/api/sessions/:id/worker-message', sessionAction(async (id, req, res) => {
+// A signed message for an architect. With a branch, that comes first: what the
+// message talks about has to be here when it is read, and has to be the commit
+// the worker signed for. Not reaching the worker's hub is worth retrying, and
+// answers an error so the message stays there. Git refusing won't get better,
+// so the architect hears about it instead.
+app.post('/api/sessions/:id/swarm-message', sessionAction(async (id, req, res) => {
   const lead = manager.sessions.get(id)!;
-  let text = typeof req.body?.text === 'string' ? req.body.text : '';
-  if (!text.trim()) return res.status(400).json({ error: 'text required' });
   if (lead.role !== 'architect' && lead.role !== 'subarchitect') return res.status(400).json({ error: 'not an architect' });
-  const { branch, worker } = req.body ?? {};
-  if (typeof branch === 'string' && typeof worker === 'string') {
-    const peer = federation.peerBySession(worker);
-    const got = peer && (await federation.forwardRaw(peer, `/api/sessions/${encodeURIComponent(worker)}/worker-branch`, { method: 'GET' }).catch(() => undefined));
+  const packet = req.body?.packet;
+  if (!signatureHolds(packet?.env)) return res.status(403).json({ error: 'bad signature' });
+  const { env } = packet;
+  let note: string | undefined;
+  const pin = lead.crew?.[env.from];
+  if (req.body?.branch && pin?.branch && typeof packet.branchOf === 'string' && swarm.isFresh(lead, env)) {
+    const peer = federation.peerBySession(packet.branchOf);
+    const got = peer && (await federation.forwardRaw(peer, `/api/sessions/${encodeURIComponent(packet.branchOf)}/worker-branch`, { method: 'GET' }).catch(() => undefined));
     if (got?.status !== 200) return res.status(502).json({ error: 'could not fetch the branch from the worker\'s hub' });
     try {
-      await receiveBranch(lead.cwd, branch, got.bytes);
+      await receiveBranch(lead.cwd, pin.branch, got.bytes, typeof env.body.head === 'string' ? env.body.head : undefined);
     } catch (err) {
-      text += `\n(The hub could not bring its branch to this repository: ${errorText(err).slice(0, 300)})`;
+      note = `(The hub did not bring its branch to this repository: ${errorText(err).slice(0, 300)})`;
     }
   }
-  swarm.acceptMessage(lead, text);
+  swarm.accept(lead, packet, note);
   res.json({ ok: true });
 }));
 
@@ -1198,68 +1198,95 @@ app.post('/api/sessions/:id/worker-merged', sessionAction(async (id, req, res) =
   res.json({ merged: await isMergedHere(manager.sessions.get(id)!.cwd, commit) });
 }));
 
+// Signed by the worker's hub with its key: it deletes a branch, so only that worker's, and only once.
 app.post('/api/sessions/:id/worker-branch-gone', sessionAction(async (id, req, res) => {
-  const branch = String(req.body?.branch ?? '');
-  if (!/^worker\/[a-z0-9-]+$/.test(branch)) return res.status(400).json({ error: 'not a worker branch' });
-  await dropBranchHere(manager.sessions.get(id)!.cwd, branch, !!req.body?.discard).catch(() => {});
+  const lead = manager.sessions.get(id)!;
+  const env = req.body?.env;
+  if (!signatureHolds(env) || env.type !== 'gone' || env.to !== lead.swarmKey) return res.status(403).json({ error: 'bad signature' });
+  const pin = lead.crew?.[env.from];
+  if (!pin) return res.status(403).json({ error: 'not a worker of this session' });
+  if (pin.branch && WORKER_BRANCH.test(pin.branch)) await dropBranchHere(lead.cwd, pin.branch, !!env.body.discard).catch(() => {});
+  delete lead.crew![env.from];
   res.json({ ok: true });
 }));
 
-/** A worker, with the caller limited to the session itself or its architect. */
-function workerFor(id: string, res: express.Response, selfOnly: boolean): HubSession | undefined {
+const swarmError = (res: express.Response, status: number, err: unknown) => res.status(status).json({ error: errorText(err) });
+
+// What a session sends for itself has to be signed with its own key.
+app.post('/api/sessions/:id/report', sessionAction(async (id, req, res) => {
+  try {
+    res.json({ ok: true, ...(await swarm.report(manager.sessions.get(id)!, req.body?.env)) });
+  } catch (err) {
+    swarmError(res, 409, err);
+  }
+}));
+
+app.post('/api/sessions/:id/ask-architect', sessionAction((id, req, res) => {
+  try {
+    swarm.ask(manager.sessions.get(id)!, req.body?.env);
+    res.json({ ok: true });
+  } catch (err) {
+    swarmError(res, 400, err);
+  }
+}));
+
+// From a lead, signed with the key the worker was started under.
+app.post('/api/sessions/:id/lead-message', sessionAction(async (id, req, res) => {
+  const session = manager.sessions.get(id)!;
+  try {
+    await swarm.fromLead(session, req.body?.env);
+    res.json({ ...session.info(), machine: discovery.selfName });
+  } catch (err) {
+    swarmError(res, 409, err);
+  }
+}));
+
+// The session's own inbox. Letting anyone else empty it would hide messages from it.
+app.get('/api/sessions/:id/swarm-inbox', sessionAction((id, _req, res) => {
+  if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'a session reads only its own inbox' });
+  res.json({ letters: swarm.inboxOf(manager.sessions.get(id)!) });
+}));
+
+app.post('/api/sessions/:id/swarm-inbox', sessionAction((id, req, res) => {
+  if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'a session reads only its own inbox' });
+  const ids = Array.isArray(req.body?.read) ? req.body.read.filter((x: unknown) => typeof x === 'string') : [];
+  swarm.ackInbox(manager.sessions.get(id)!, ids);
+  res.json({ ok: true });
+}));
+
+// The user's way in, from the dashboard or a script. A session uses lead-message.
+function workerForUser(id: string, res: express.Response): HubSession | undefined {
   const session = manager.sessions.get(id)!;
   if (!session.worker) {
     res.status(400).json({ error: 'not a worker session' });
     return undefined;
   }
-  const allowed = isCaller(id) || (!selfOnly && (!notTheUser() || callerIsConversation(session.worker.architect)));
-  if (!allowed) {
-    res.status(403).json({ error: selfOnly ? 'a worker speaks only for itself' : 'only its architect or the user' });
+  if (notTheUser()) {
+    res.status(403).json({ error: 'a session signs this: dh_worker_followup or dh_remove_worker' });
     return undefined;
   }
   return session;
 }
 
-app.post('/api/sessions/:id/report', sessionAction(async (id, req, res) => {
-  const session = workerFor(id, res, true);
-  if (!session) return;
-  try {
-    res.json({ ok: true, ...(await swarm.report(session, req.body?.result, !!req.body?.failed)) });
-  } catch (err) {
-    res.status(409).json({ error: errorText(err) });
-  }
-}));
-
-app.post('/api/sessions/:id/ask-architect', sessionAction((id, req, res) => {
-  const session = workerFor(id, res, true);
-  if (!session) return;
-  try {
-    swarm.ask(session, req.body?.question);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(400).json({ error: errorText(err) });
-  }
-}));
-
 app.post('/api/sessions/:id/follow-up', sessionAction(async (id, req, res) => {
-  const session = workerFor(id, res, false);
+  const session = workerForUser(id, res);
   if (!session) return;
   try {
     await swarm.followUp(session, req.body?.task);
     res.json({ ...session.info(), machine: discovery.selfName });
   } catch (err) {
-    res.status(409).json({ error: errorText(err) });
+    swarmError(res, 409, err);
   }
 }));
 
 app.post('/api/sessions/:id/remove-worker', sessionAction(async (id, req, res) => {
-  const session = workerFor(id, res, false);
+  const session = workerForUser(id, res);
   if (!session) return;
   try {
     await swarm.remove(session, !!req.body?.discard);
     res.json({ ok: true });
   } catch (err) {
-    res.status(409).json({ error: errorText(err) });
+    swarmError(res, 409, err);
   }
 }));
 

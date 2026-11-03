@@ -57,6 +57,8 @@ export interface SessionInfo {
   alerts?: AlertChannels;
   /** architect: designs and delegates; subarchitect: the same for one module, under an architect; worker: one task. Absent: a plain session */
   role?: SessionRole;
+  /** public key for signed swarm messages */
+  swarmKey?: string;
   worker?: WorkerLink;
   /** tool calls so far by tool name, kept for workers */
   toolUse?: Record<string, number>;
@@ -65,6 +67,9 @@ export interface SessionInfo {
 export type SessionRole = 'architect' | 'subarchitect' | 'worker';
 
 /** A worker's or sub-architect's tie to who leads it, its task and how it went (see swarm.ts). */
+export type { SwarmEnvelope } from '../mcp/swarm-envelope.mjs';
+import type { SwarmEnvelope } from '../mcp/swarm-envelope.mjs';
+
 export interface WorkerLink {
   /** the architect's conversation id: survives its restarts, unlike a hub id */
   architect: string;
@@ -97,8 +102,49 @@ export interface WorkerLink {
   nudgedAt?: number;
   /** stateSince of the last prompt already passed to the architect */
   forwardedWait?: number;
-  /** messages for the architect, waiting until it is idle */
-  outbox?: string[];
+  /** the public key of who leads it, pinned when it was started: only that key can tell it anything */
+  leadKey?: string;
+  /** ids of signed messages already taken from its lead, so none is taken twice */
+  seen?: string[];
+  /** signed messages for the architect, until its hub has them */
+  outbox?: SwarmPacket[];
+}
+
+/** A signed message and what the sender's hub adds about it, which only the hub vouches for. */
+export interface SwarmPacket {
+  env: SwarmEnvelope;
+  facts?: { commits: number; files: number; dirty: boolean; unsafe?: string[]; platform?: string; machine?: string };
+  /** a branch to fetch first, from the hub holding this conversation */
+  branchOf?: string;
+}
+
+/** A session this one leads: its public key, pinned when this session started it. */
+export interface CrewPin {
+  name: string;
+  kind: 'worker' | 'subarchitect';
+  hubId: string;
+  machine?: string;
+  branch?: string;
+  /** ids of messages already taken, so none is taken twice */
+  seen: string[];
+}
+
+/** A message waiting for a session to read it with dh_swarm_inbox. */
+export interface SwarmLetter {
+  id: string;
+  at: number;
+  /** verified: a pinned key signed it. unsigned: the dashboard or a local caller, with no signature. unknown-key: a valid signature from a key not pinned here */
+  trust: 'verified' | 'unsigned' | 'unknown-key';
+  /** who and what, in the hub's words: comes from the pin, not from the sender */
+  header: string;
+  /** the sender's own text */
+  said: string;
+  /** what the hub adds afterwards */
+  footer?: string;
+  /** the session has been told it is here */
+  notified?: boolean;
+  /** kept so it can follow a conversation that moved to another hub */
+  packet?: SwarmPacket;
 }
 
 /** People by name, as Hermod and the text gateway know them. Empty: that channel is off. */
@@ -154,6 +200,8 @@ export interface SpawnOptions {
   /** carried over from the machine this conversation last ran on */
   alerts?: AlertChannels;
   role?: SessionRole;
+  /** public key for signed swarm messages */
+  swarmKey?: string;
   worker?: WorkerLink;
   /** terminal sessions: run this command non-interactively, then exit */
   command?: string;

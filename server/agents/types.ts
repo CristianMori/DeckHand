@@ -24,6 +24,8 @@ export interface BuildArgsInput {
   briefing?: string;
   /** the hub's own MCP server (stdio), handed to the session so it can reach the fleet */
   mcp?: { name: string; command: string; args: string[]; env: Record<string, string> };
+  /** tools of that server that need no permission prompt, where the engine has such a setting */
+  alwaysAllow?: string[];
 }
 
 export interface TranscriptRef {

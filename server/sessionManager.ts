@@ -9,12 +9,13 @@ import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serializ
 import { agentFor, getAgent } from './agents/index.js';
 import { HUB_ROOT } from './config.js';
 import { fleetBriefing, identityEnv, projectFolderOf, type Identity } from './etiquette.js';
+import { ensureSwarmKey } from './swarmKeys.js';
 
 // @xterm packages ship CJS without named ESM exports
 const require = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = require('@xterm/headless') as typeof import('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize') as typeof import('@xterm/addon-serialize');
-import type { AlertChannels, HandoffLineage, SessionInfo, SessionRole, SessionState, SharedFile, SpawnOptions, WorkerLink } from './types.js';
+import type { AlertChannels, CrewPin, HandoffLineage, SessionInfo, SessionRole, SessionState, SharedFile, SpawnOptions, SwarmLetter, WorkerLink } from './types.js';
 
 const RING_BUFFER_CAP = 1_000_000; // ~1 MB of terminal output per session
 
@@ -86,8 +87,12 @@ export class HubSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
-  /** an architect's messages from workers on other machines, waiting until it is idle */
-  inbox?: string[];
+  /** public key for signed swarm messages; the private half is a file only this machine has */
+  swarmKey?: string;
+  /** who it leads, by public key: pinned when it started them */
+  crew?: Record<string, CrewPin>;
+  /** signed messages waiting for dh_swarm_inbox */
+  inbox?: SwarmLetter[];
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -132,7 +137,8 @@ export class HubSession {
       attention: this.attention,
       alerts: this.alerts,
       role: this.role,
-      worker: this.worker && { ...this.worker, outbox: undefined },
+      swarmKey: this.swarmKey,
+      worker: this.worker && { ...this.worker, outbox: undefined, seen: undefined },
       toolUse: this.toolUse,
     };
   }
@@ -224,6 +230,7 @@ export class SessionManager extends EventEmitter {
     // around both clutters the sidebar and poisons claudeSessionId lookups
     let { alerts, role, worker } = opts;
     let toolUse: Record<string, number> | undefined;
+    let kept: Pick<HubSession, 'swarmKey' | 'crew' | 'inbox'> | undefined;
     if (opts.resumeSessionId) {
       for (const [hubId, s] of this.sessions) {
         if (s.claudeSessionId === opts.resumeSessionId && !s.proc) {
@@ -231,12 +238,14 @@ export class SessionManager extends EventEmitter {
           role ??= s.role;
           worker ??= s.worker;
           toolUse = s.toolUse;
+          kept = { swarmKey: s.swarmKey, crew: s.crew, inbox: s.inbox };
           this.sessions.delete(hubId);
         }
       }
     }
     const session = new HubSession({ ...opts, alerts, role, worker });
     session.toolUse = toolUse;
+    Object.assign(session, kept);
     this.sessions.set(session.hubId, session);
     this.spawnInto(session, opts.initialPrompt, !!opts.resumeSessionId, opts.command);
     return session;
@@ -306,6 +315,8 @@ export class SessionManager extends EventEmitter {
       worker: session.worker,
     };
     adapter.beforeSpawn?.(session.cwd);
+    // only the MCP server gets the key's path: it's what signs for this session
+    const swarmKeyFile = session.role ? ensureSwarmKey(session) : undefined;
     const args = adapter.buildArgs({
       sessionId: session.claudeSessionId,
       resume: isResume,
@@ -316,9 +327,11 @@ export class SessionManager extends EventEmitter {
       initialPrompt,
       command,
       briefing: fleetBriefing(identity),
+      // reading its own inbox asks nobody's leave: a report must not wait on a permission prompt
+      alwaysAllow: session.role ? ['mcp__deckhand__dh_swarm_inbox'] : undefined,
       // the node running the hub runs the server too — no PATH lookup in a service session
       // identity goes in explicitly: Codex does not hand its own environment to MCP servers
-      mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: identityEnv(identity) },
+      mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: { ...identityEnv(identity), ...(swarmKeyFile ? { DECKHAND_SWARM_KEY: swarmKeyFile } : {}) } },
     });
 
     const proc = pty.spawn(this.exeFor(session.agentType, session.model), args, {

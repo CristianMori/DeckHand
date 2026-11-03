@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { PERSIST_FILE } from './config.js';
 import type { SessionManager } from './sessionManager.js';
-import type { AlertChannels, SessionRole, WorkerLink } from './types.js';
+import type { AlertChannels, CrewPin, SessionRole, SwarmLetter, WorkerLink } from './types.js';
 
 export interface PersistedSession {
   agentType?: string;
@@ -20,7 +20,9 @@ export interface PersistedSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
-  inbox?: string[];
+  swarmKey?: string;
+  crew?: Record<string, CrewPin>;
+  inbox?: SwarmLetter[];
   /** when the card entered its current state — keeps the sidebar order across restarts */
   stateSince?: number;
   /** when this file was written; a card alive then is "exited since" this moment */
@@ -55,6 +57,8 @@ export function savePersisted(manager: SessionManager) {
     role: s.role,
     worker: s.worker,
     toolUse: s.toolUse,
+    swarmKey: s.swarmKey,
+    crew: s.crew,
     inbox: s.inbox,
     stateSince: s.stateSince,
     savedAt: now,

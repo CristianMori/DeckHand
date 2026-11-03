@@ -181,7 +181,7 @@ export const claudeAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing, mcp }) {
+  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing, mcp, alwaysAllow }) {
     const args: string[] = [];
     if (mcp) {
       // the hub's MCP server rides along as an extra server; the project's own
@@ -197,6 +197,7 @@ export const claudeAdapter: AgentAdapter = {
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
     args.push('-n', name, '--settings', HOOKS_JSON);
+    if (alwaysAllow?.length) args.push('--allowedTools', alwaysAllow.join(','));
     if (permissionMode) args.push('--permission-mode', permissionMode);
     if (model) args.push('--model', model);
     if (briefing) args.push('--append-system-prompt', briefing);

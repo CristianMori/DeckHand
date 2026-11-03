@@ -303,6 +303,22 @@ and how to behave towards the others.
   into its own before it reports. An architect has sub-architects or workers, a
   sub-architect only workers, and the hub refuses anything deeper. It can't report
   while a worker is still going, or be removed while it still has workers.
+  Messages between them are signed. Every session with a role has an Ed25519 key
+  (`data/swarm-keys`, never leaving its machine, only the public half on its card),
+  and each side pins the other's public key when a worker is started. The session's
+  MCP server signs reports, questions, answers, follow-ups and removals; the
+  receiving hub refuses a bad signature, a repeat, or a key that isn't the pinned
+  one, and a report's branch has to end on the commit the worker signed for. The
+  text is never typed into a terminal: the session is told something is waiting,
+  and `dh_swarm_inbox` hands it over marked VERIFIED (a pinned key), NOT VERIFIED
+  (a good signature from a key not pinned here, which is also how a worker's message
+  looks after its architect moves to another machine), or NOT SIGNED (the user's
+  `follow-up` route), with the sender's own lines marked `|`. What the hub adds, like
+  commit counts, is only the hub's word. This tells a session who wrote a message. It
+  does not make the session safe to prompt: keys are files readable by anything
+  running as the same OS user on that machine, including that machine's auto-yes
+  workers, so it holds against other machines and against text typed into a session,
+  not against code already running as that user.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with

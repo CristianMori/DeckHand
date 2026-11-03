@@ -308,10 +308,14 @@ Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `sess
 | `POST /api/sessions/:id/autoyes` | `{"on":true}` | auto-accept permission prompts (never the plan-mode exit) |
 | `POST /api/sessions/:id/role` | `{"role":"architect"}` or `{"role":null}` | make a session an architect, or plain again; takes effect when it next starts. The user's: 403 for a session, an outside agent or Mimir. A new session takes `role` in `POST /api/sessions`, and is plain if it doesn't say |
 | `POST /api/sessions/:id/workers` | `{"task":"…","name":"…","agentType":"…","model":"…","machine":"…","kind":"subarchitect"}` | `kind` is `worker` (the default) or `subarchitect`: an architect has either, a sub-architect only workers, anything else is 400. Start one for this architect, in its own git worktree and branch, auto-yes on, on `machine` if given (its hub receives the code as a git bundle, and its branch comes back the same way). 400 for a frozen folder or one that isn't a git repository on another machine. The architect itself or the user |
-| `POST /api/sessions/:id/report` | `{"result":"…","failed":false}` | a worker finishes, at most 3000 characters. 409 while it has uncommitted changes, unless `failed`. Stopped shortly after. The worker itself only |
-| `POST /api/sessions/:id/ask-architect` | `{"question":"…"}` | a worker needs a decision. The worker itself only |
-| `POST /api/sessions/:id/follow-up` | `{"task":"…"}` | more work for a worker, brought back first if stopped. Its architect or the user |
-| `POST /api/sessions/:id/remove-worker` | `{"discard":false}` | remove a worker's card, worktree and branch. 409 while its branch is unmerged or its worktree has changes, unless `discard`. Its architect or the user |
+| `POST /api/sessions/:id/report` | `{"env":<signed envelope>}` with `result` (at most 3000 characters), `failed`, `head` | a worker finishes. Signed with its own key by its MCP server. 409 if it isn't, while it has uncommitted changes unless `failed`, or if the branch moved past `head`. Stopped shortly after |
+| `POST /api/sessions/:id/ask-architect` | `{"env":<signed envelope>}` with `question` | a worker needs a decision. Signed with its own key |
+| `POST /api/sessions/:id/lead-message` | `{"env":<signed envelope>}`, type `answer` (`text`), `followup` (`task`) or `remove` (`discard`) | from a worker's lead, on any hub. 409 unless signed by the key that started the worker |
+| `GET /api/sessions/:id/swarm-inbox` | – | `{letters:[{id,text}]}`: what's waiting for this session, marked with how it was verified. The session itself or the user |
+| `POST /api/sessions/:id/swarm-inbox` | `{"read":["id"]}` | those were read, so they go. The session itself or the user |
+| `POST /api/sessions/:id/swarm-message` | `{"packet":{env,facts,branchOf},"branch":true}` | hub to hub: a signed message for a lead, its branch fetched first. 403 for a bad signature |
+| `POST /api/sessions/:id/follow-up` | `{"task":"…"}` | the user: more work for a worker, brought back first if stopped, shown to it as not signed. 403 for a session, which uses `lead-message` |
+| `POST /api/sessions/:id/remove-worker` | `{"discard":false}` | the user: remove a worker's card, worktree and branch. 409 while its branch is unmerged or its worktree has changes, unless `discard`. 403 for a session, which uses `lead-message` |
 | `POST /api/sessions/:id/alerts` | `{"discord":["cristian"]}`, `{"text":[]}`, or both | who this session alerts on each channel; the popup on a card, or the DISCORD and SMS buttons on the terminal header. The user's: 403 for a session, an outside agent or Mimir |
 | `GET /api/alert-recipients` | – | `{discord:[names],text:[names]}`: who can be picked, gathered from the hubs holding each sender. Names only |
 
