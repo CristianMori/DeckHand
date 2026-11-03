@@ -134,6 +134,8 @@ button {
 }
 
 .card-top { display: flex; align-items: center; gap: 8px; }
+/* the name gets the whole first row; the labels go under it, and wrap rather than squeeze it */
+.card-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .card-name {
   font-family: var(--font-display); font-weight: 600; font-size: 14px;
   letter-spacing: 0.06em; color: var(--ink); flex: 1;
