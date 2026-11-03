@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
-import { DATA_DIR } from './config.js';
+import { join } from 'node:path';
+import { DATA_DIR, readSecretFile, warnOnce } from './config.js';
 import { alertPeople, type AttentionEvent } from './needsYou.js';
 import type { DeliverResult } from './sms.js';
 import type { SessionInfo } from './types.js';
@@ -53,20 +53,6 @@ const CURSOR_FILE = join(DATA_DIR, 'email-replies.json');
 
 const oneLine = (s: string) => s.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 
-function readSecret(configured: string): { file: string; secret?: string } {
-  const file = isAbsolute(configured) ? configured : join(DATA_DIR, configured);
-  try {
-    if (!existsSync(file)) {
-      console.warn(`[email] key file not found: ${file}`);
-      return { file };
-    }
-    return { file, secret: readFileSync(file, 'utf8').trim() || undefined };
-  } catch (err) {
-    console.warn(`[email] cannot read ${file}: ${err instanceof Error ? err.message : err}`);
-    return { file };
-  }
-}
-
 interface Sender {
   url: string;
   key: string;
@@ -79,8 +65,8 @@ interface Sender {
 /** Everything sending needs, or nothing: an incomplete block is simply off. */
 function sender(c: EmailConfig | undefined): Sender | undefined {
   if (!c?.url || !c.keyFile || !c.mailboxKeyFile || !c.person) return undefined;
-  const api = readSecret(c.keyFile);
-  const mailbox = readSecret(c.mailboxKeyFile);
+  const api = readSecretFile(c.keyFile, 'email');
+  const mailbox = readSecretFile(c.mailboxKeyFile, 'email');
   if (!api.secret || !mailbox.secret) return undefined;
   return { url: c.url.replace(/\/+$/, ''), key: api.secret, keyPath: api.file, mailboxKey: mailbox.secret, mailboxKeyPath: mailbox.file, person: c.person };
 }
@@ -216,7 +202,7 @@ export async function emailRecipients(config: EmailConfig | undefined, fetcher: 
     const body = (await res.json()) as { people?: { slug?: string; email?: string | null }[] };
     return alertPeople((body.people ?? []).filter((p) => p.email).map((p) => p.slug));
   } catch (err) {
-    console.warn(`[email] cannot list Hermod's people: ${err}`);
+    warnOnce(`[email] cannot list Hermod's people: ${err}`);
     return [s.person];
   }
 }

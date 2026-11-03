@@ -517,31 +517,41 @@ A session that stays waiting past the delay (2 minutes) alerts every connected
 dashboard and the iOS app. Beyond that, each session chooses who is told on
 three outside channels — **Discord**, **SMS** and **email** — from the card's
 right-click menu or the DISCORD / SMS / EMAIL header buttons; nobody by
-default. How to send lives per channel in one hub's `data/attention.json`
-(the full contract is in [docs/automation-api.md](docs/automation-api.md)):
+default. How to send lives in `data/attention.json` on the **one hub that
+sends: vps-node carries all four channels** (APNs push, SMS, Discord, email);
+the full contract is in [docs/automation-api.md](docs/automation-api.md):
 
-- **Discord** — through Hermod's notify API (`"hermod"` block, desktop-master).
-- **SMS** — through hermod-gateway (`"sms"` block, vps-node). With
-  `"replies": true` a text answer is typed back into the asking session.
-- **Email** — through Hermod's notify API, sent as raven@mori.guru. vps-node
-  is the one hub configured, in its `data/attention.json`:
+```jsonc
+// vps-node data/attention.json
+{
+  "apns":   { "keyFile": "AuthKey_XXXXXXXXXX.p8", "keyId": "XXXXXXXXXX", "teamId": "XXXXXXXXXX", "bundleId": "<app bundle id>" },
+  "sms":    { "url": "http://<gateway host>:5181", "tokenFile": "/etc/hermod-gateway/deckhand.token", "to": "cristian", "replies": true },
+  "hermod": { "url": "http://desktop-master:5103", "keyFile": "hermod-notify.key", "person": "cristian" },
+  "email":  { "url": "http://desktop-master:5103", "keyFile": "hermod-notify.key", "mailboxKeyFile": "hermod-mailbox.key", "person": "cristian", "replies": true }
+}
+```
 
-  ```jsonc
-  "email": { "url": "http://desktop-master:5103", "keyFile": "hermod.key", "mailboxKeyFile": "raven.mailbox.key", "person": "cristian", "replies": true }
-  ```
+Every `keyFile`/`tokenFile` is absolute, or relative to the hub's data folder,
+and no secret ever goes in the config itself.
 
-  Two secrets, each in its own file (absolute, or relative to the data
-  folder), never in the config itself, and both given by Cristian only:
-  `keyFile` holds the Hermod API key (`hm_…`, scopes `notify` + `mailbox` —
-  who Deckhand is), `mailboxKeyFile` the raven@ mailbox's own key (`hmb_…`,
-  from Hermod's `/admin/mail` page — what it may send as, shared with other
-  programs). The channel is off unless both files are readable. The `notify`
-  scope also reads `/api/v1/replies`, so replies need no extra scope. With
-  `"replies": true` the hub polls Hermod every 30 seconds; a reply from the
-  configured person lands only on the alert episode it answers (quoted history
-  and the signature stripped first), under the same rules as SMS replies, and
-  an episode that ends without an email answer closes its reply watch on
-  Hermod, so a reply arriving after that alerts Cristian as late.
+- **Discord** — through Hermod's notify API (`"hermod"` block). `keyFile`
+  holds the Hermod API key; an inline `"key"` still works for existing
+  configs, and `keyFile` wins when both are present.
+- **SMS** — through hermod-gateway (`"sms"` block). With `"replies": true` a
+  text answer is typed back into the asking session.
+- **Email** — through Hermod's notify API, sent as raven@mori.guru. Two
+  secrets, each in its own file, both given by Cristian only:
+  `hermod-notify.key` holds the Hermod API key (`hm_…`, scopes `notify` +
+  `mailbox` — who Deckhand is; the same file the Discord block names),
+  `hermod-mailbox.key` the raven@ mailbox's own key (`hmb_…`, from Hermod's
+  `/admin/mail` page — what it may send as, shared with other programs). The
+  channel is off unless both files are readable. The `notify` scope also reads
+  `/api/v1/replies`, so replies need no extra scope. With `"replies": true`
+  the hub polls Hermod every 30 seconds; a reply from the configured person
+  lands only on the alert episode it answers (quoted history and the signature
+  stripped first), under the same rules as SMS replies, and an episode that
+  ends without an email answer closes its reply watch on Hermod, so a reply
+  arriving after that alerts Cristian as late.
 
 ### The `deckhand` CLI
 

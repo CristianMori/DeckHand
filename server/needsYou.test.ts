@@ -265,6 +265,22 @@ test("discord: follows Hermod's notify contract", async () => {
   });
 });
 
+test('discord: the key can live in a file, which wins over the inline key; named but missing is off', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'discord-key-'));
+  const keyFile = join(dir, 'hermod-notify.key');
+  writeFileSync(keyFile, 'hm_from_file\n');
+  const auths: (string | undefined)[] = [];
+  const fetcher = (async (_u: string, init: RequestInit) => {
+    auths.push((init.headers as Record<string, string>).Authorization);
+    return new Response(JSON.stringify({ delivered: true }));
+  }) as unknown as typeof fetch;
+  assert.equal(await sendToDiscord(event, { hermod: { url: 'http://h', key: 'hm_inline', keyFile } }, fetcher), true);
+  assert.deepEqual(auths, ['Bearer hm_from_file']);
+  assert.equal(await sendToDiscord(event, { hermod: { url: 'http://h', key: 'hm_inline', keyFile: join(dir, 'none') } }, fetcher), false, 'keyFile wins even when unreadable');
+  assert.equal(auths.length, 1, 'nothing was sent');
+  assert.deepEqual(await discordRecipients({ hermod: { url: 'http://h', keyFile } }, (async () => new Response(JSON.stringify({ people: [{ slug: 'cristian', discordUserId: '1' }] }))) as unknown as typeof fetch), ['cristian']);
+});
+
 test('discord: a failure or an undeliverable answer is reported, not thrown', async () => {
   const cfg = { hermod: { url: 'http://h', key: 'hm_test' } };
   const down = (async () => {

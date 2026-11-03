@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { existsSync, mkdirSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 
 export const HUB_ROOT = join(import.meta.dirname, '..');
 export const DATA_DIR = process.env.HUB_DATA_DIR || join(HUB_ROOT, 'data');
@@ -24,6 +24,34 @@ export const FLEET_PORT_MIN = 5959;
 export const FLEET_PORT_MAX = 5969;
 
 mkdirSync(DATA_DIR, { recursive: true });
+
+const warned = new Set<string>();
+
+/** For paths hit on every poll or send: the same complaint is said once per hub run. */
+export function warnOnce(message: string) {
+  if (warned.has(message)) return;
+  warned.add(message);
+  console.warn(message);
+}
+
+/**
+ * A secret from its own file — absolute, or relative to the data folder —
+ * never from the config itself. A missing or unreadable file complains once
+ * per run and reads as no secret: whatever needed it is simply off.
+ */
+export function readSecretFile(configured: string, tag: string): { file: string; secret?: string } {
+  const file = isAbsolute(configured) ? configured : join(DATA_DIR, configured);
+  try {
+    if (!existsSync(file)) {
+      warnOnce(`[${tag}] key file not found: ${file}`);
+      return { file };
+    }
+    return { file, secret: readFileSync(file, 'utf8').trim() || undefined };
+  } catch (err) {
+    warnOnce(`[${tag}] cannot read ${file}: ${err instanceof Error ? err.message : err}`);
+    return { file };
+  }
+}
 
 /** Claude Code encodes a project cwd into a transcript folder name: non-alphanumerics become '-'. */
 export function encodeProjectDir(cwd: string): string {

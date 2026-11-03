@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { agentFor } from './agents/index.js';
 import type { ApnsConfig } from './apns.js';
 import { askingText } from './askDetect.js';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, readSecretFile, warnOnce } from './config.js';
 import type { EmailConfig } from './email.js';
 import type { SmsConfig } from './sms.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
@@ -29,7 +29,8 @@ const SENT_KEEP = 1500; // up to three entries an episode, one per channel
 
 interface AttentionConfig {
   delayMs?: number;
-  hermod?: { url?: string; key?: string; person?: string };
+  /** keyFile (absolute, or relative to the data folder) wins over the inline key, which older configs still carry */
+  hermod?: { url?: string; key?: string; keyFile?: string; person?: string };
   apns?: ApnsConfig;
   sms?: SmsConfig;
   email?: EmailConfig;
@@ -307,28 +308,36 @@ export class FleetAttention {
   }
 }
 
+/** The Discord sender, or nothing: the key from keyFile (which wins) or inline, never logged. */
+function hermodSender(config: AttentionConfig): { url: string; key: string } | undefined {
+  const c = config.hermod;
+  if (!c?.url) return undefined;
+  const key = c.keyFile ? readSecretFile(c.keyFile, 'attention').secret : c.key;
+  return key ? { url: c.url.replace(/\/+$/, ''), key } : undefined;
+}
+
 /** Who Hermod can reach on Discord, by name only; its people list says nothing else here. */
 export async function discordRecipients(config = attentionConfig(), fetcher: typeof fetch = fetch): Promise<string[]> {
-  const hermod = config.hermod;
-  if (!hermod?.key || !hermod.url) return [];
+  const hermod = hermodSender(config);
+  if (!hermod) return [];
   try {
-    const res = await fetcher(`${hermod.url.replace(/\/+$/, '')}/api/admin/people`, { signal: AbortSignal.timeout(HERMOD_TIMEOUT_MS) });
+    const res = await fetcher(`${hermod.url}/api/admin/people`, { signal: AbortSignal.timeout(HERMOD_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`answered ${res.status}`);
     const body = (await res.json()) as { people?: { slug?: string; discordUserId?: string | null }[] };
     return alertPeople((body.people ?? []).filter((p) => p.discordUserId).map((p) => p.slug));
   } catch (err) {
-    console.warn(`[attention] cannot list Hermod's people: ${err}`);
-    return alertPeople([hermod.person]);
+    warnOnce(`[attention] cannot list Hermod's people: ${err}`);
+    return alertPeople([config.hermod?.person]);
   }
 }
 
 /** Tell someone on Discord through Hermod. Off without a key in data/attention.json. */
 export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(), fetcher: typeof fetch = fetch, person = config.hermod?.person ?? 'cristian'): Promise<boolean> {
-  const hermod = config.hermod;
-  if (!hermod?.key || !hermod.url) return false;
+  const hermod = hermodSender(config);
+  if (!hermod) return false;
   const what = e.kind === 'permission' ? 'wants approval' : 'has a question';
   try {
-    const res = await fetcher(`${hermod.url.replace(/\/+$/, '')}/api/v1/notify`, {
+    const res = await fetcher(`${hermod.url}/api/v1/notify`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${hermod.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
