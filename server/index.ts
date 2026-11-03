@@ -58,6 +58,7 @@ import {
 } from './agentAccess.js';
 import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
+import { recordSessionRename } from './renameNotice.js';
 import {
   KEYS,
   isSettled,
@@ -160,6 +161,7 @@ for (const rec of loadPersisted()) {
   s.crew = rec.crew;
   // from before messages were signed: nothing there can be verified, and nobody is waiting on it
   s.inbox = rec.inbox?.filter((l) => typeof l === 'object');
+  s.renamed = rec.renamed;
   if (s.worker?.outbox) s.worker.outbox = s.worker.outbox.filter((p) => typeof p === 'object');
   if (rec.alive) toRestore.push(s);
 }
@@ -1445,6 +1447,8 @@ async function renameFolderHere(fromCwd: string, toName: string, phase: RenamePh
   }
   for (const s of manager.sessions.values()) {
     if (normCwd(s.cwd) !== normCwd(fromCwd)) continue;
+    // its conversation still believes the old path: tell it once, when it is next resumed
+    if (agentFor(s).ownsFolder !== false) recordSessionRename(s, { from, to: toName, fromCwd: s.cwd, toCwd });
     s.cwd = toCwd;
     if (s.name === from) s.name = toName;
     manager.emit('change', s);

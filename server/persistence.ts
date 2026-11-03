@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { PERSIST_FILE } from './config.js';
+import type { PendingRename } from './renameNotice.js';
 import type { SessionManager } from './sessionManager.js';
 import type { AlertChannels, CrewPin, SessionRole, SwarmLetter, WorkerLink } from './types.js';
 
@@ -23,6 +24,8 @@ export interface PersistedSession {
   swarmKey?: string;
   crew?: Record<string, CrewPin>;
   inbox?: SwarmLetter[];
+  /** the folder was renamed while the conversation was down; the notice is still owed */
+  renamed?: PendingRename;
   /** when the card entered its current state — keeps the sidebar order across restarts */
   stateSince?: number;
   /** when this file was written; a card alive then is "exited since" this moment */
@@ -60,6 +63,7 @@ export function savePersisted(manager: SessionManager) {
     swarmKey: s.swarmKey,
     crew: s.crew,
     inbox: s.inbox,
+    renamed: s.renamed,
     stateSince: s.stateSince,
     savedAt: now,
   }));

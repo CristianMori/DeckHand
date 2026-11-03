@@ -9,6 +9,7 @@ import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serializ
 import { agentFor, getAgent } from './agents/index.js';
 import { HUB_ROOT } from './config.js';
 import { fleetBriefing, identityEnv, projectFolderOf, type Identity } from './etiquette.js';
+import { takeRenameNotice, type PendingRename } from './renameNotice.js';
 import { ensureSwarmKey } from './swarmKeys.js';
 
 // @xterm packages ship CJS without named ESM exports
@@ -93,6 +94,8 @@ export class HubSession {
   crew?: Record<string, CrewPin>;
   /** signed messages waiting for dh_swarm_inbox */
   inbox?: SwarmLetter[];
+  /** the folder was renamed while this conversation was down — told once, on resume */
+  renamed?: PendingRename;
   /** timestamp of last accepted signal per precedence level */
   lastSignalAt: Record<number, number> = {};
 
@@ -231,7 +234,7 @@ export class SessionManager extends EventEmitter {
     // around both clutters the sidebar and poisons claudeSessionId lookups
     let { alerts, role, worker } = opts;
     let toolUse: Record<string, number> | undefined;
-    let kept: Pick<HubSession, 'swarmKey' | 'crew' | 'inbox'> | undefined;
+    let kept: Pick<HubSession, 'swarmKey' | 'crew' | 'inbox' | 'renamed'> | undefined;
     if (opts.resumeSessionId) {
       for (const [hubId, s] of this.sessions) {
         if (s.claudeSessionId === opts.resumeSessionId && !s.proc) {
@@ -239,7 +242,7 @@ export class SessionManager extends EventEmitter {
           role ??= s.role;
           worker ??= s.worker;
           toolUse = s.toolUse;
-          kept = { swarmKey: s.swarmKey, crew: s.crew, inbox: s.inbox };
+          kept = { swarmKey: s.swarmKey, crew: s.crew, inbox: s.inbox, renamed: s.renamed };
           this.sessions.delete(hubId);
         }
       }
@@ -305,6 +308,10 @@ export class SessionManager extends EventEmitter {
 
   private spawnInto(session: HubSession, initialPrompt: string | undefined, isResume: boolean, command?: string) {
     const adapter = agentFor(session);
+    // the folder was renamed while the conversation was down: the notice goes
+    // in as the initial prompt, so it opens the first turn on its own and can
+    // never merge with a draft someone is typing
+    if (isResume && !initialPrompt && !adapter.outputOnlyStatus) initialPrompt = takeRenameNotice(session);
     const identity: Identity = {
       hubId: session.hubId,
       conversationId: session.claudeSessionId,
