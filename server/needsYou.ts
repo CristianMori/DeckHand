@@ -4,6 +4,7 @@ import { agentFor } from './agents/index.js';
 import type { ApnsConfig } from './apns.js';
 import { askingText } from './askDetect.js';
 import { DATA_DIR } from './config.js';
+import type { EmailConfig } from './email.js';
 import type { SmsConfig } from './sms.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { AlertChannels, Attention, SessionInfo } from './types.js';
@@ -31,6 +32,7 @@ interface AttentionConfig {
   hermod?: { url?: string; key?: string; person?: string };
   apns?: ApnsConfig;
   sms?: SmsConfig;
+  email?: EmailConfig;
 }
 
 /** data/attention.json, read each time so adding a key needs no hub restart. */
@@ -216,7 +218,7 @@ export function alertPeople(value: unknown): string[] {
 /** A missing, old or unreadable setting sends nothing. */
 export function alertChannels(value: unknown): AlertChannels {
   const v = (value ?? {}) as Partial<Record<keyof AlertChannels, unknown>>;
-  return { discord: alertPeople(v.discord), text: alertPeople(v.text) };
+  return { discord: alertPeople(v.discord), text: alertPeople(v.text), email: alertPeople(v.email) };
 }
 
 /**
@@ -264,6 +266,7 @@ export function sendAlert(
     push: (event: AttentionEvent) => unknown;
     discord: (event: AttentionEvent, person: string) => unknown;
     text: (event: AttentionEvent, person: string) => unknown;
+    email: (event: AttentionEvent, person: string) => unknown;
   },
 ) {
   const who = alertChannels(card.alerts);
@@ -273,6 +276,9 @@ export function sendAlert(
   }
   for (const person of who.text) {
     if (ledger.claim(event.episode, `text:${person}`)) void send.text(event, person);
+  }
+  for (const person of who.email) {
+    if (ledger.claim(event.episode, `email:${person}`)) void send.email(event, person);
   }
 }
 

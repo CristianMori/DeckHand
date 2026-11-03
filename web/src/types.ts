@@ -23,8 +23,8 @@ export interface SessionInfo {
   createdAt: number;
   alive: boolean;
   autoYes?: boolean;
-  /** who hears on each channel; absent on a hub too old to have the setting */
-  alerts?: { discord: string[]; text: string[] };
+  /** who hears on each channel; absent on a hub too old to have the setting (email: one too old for that channel) */
+  alerts?: { discord: string[]; text: string[]; email?: string[] };
   machine?: string;
   unreachable?: boolean;
   handoff?: { fromAgent: string; fromSessionId: string; fromMachine: string };

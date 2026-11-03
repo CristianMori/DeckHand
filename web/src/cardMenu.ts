@@ -3,7 +3,7 @@ import type { SessionInfo } from './types';
 
 /**
  * The popup a right click (or a touch long press) on a card opens, and the
- * DISCORD and TEXT header buttons open at their channel. Built from the
+ * DISCORD, SMS and EMAIL header buttons open at their channel. Built from the
  * session's latest card each time something changes, so it stays right while
  * the list re-renders.
  */
@@ -24,9 +24,9 @@ export interface MenuActions {
   setArchitect: (s: SessionInfo, on: boolean) => void;
 }
 
-export type Channel = 'discord' | 'text';
+export type Channel = 'discord' | 'text' | 'email';
 
-const CHANNEL_LABEL: Record<Channel, string> = { discord: 'DISCORD', text: 'SMS' };
+const CHANNEL_LABEL: Record<Channel, string> = { discord: 'DISCORD', text: 'SMS', email: 'EMAIL' };
 
 let root: HTMLElement | null = null;
 let current: { hubId: string; open?: Channel; at: { x: number; y: number }; actions: MenuActions } | null = null;
@@ -80,7 +80,7 @@ function draw() {
     if (!terminal) {
       root.append(item(s.frozen ? 'UNFREEZE' : 'FREEZE', act(a.freeze)));
       root.append(item(`AUTO-YES ${s.autoYes ? 'ON' : 'OFF'}`, () => a.autoYes(s), s.autoYes ? 'on' : ''));
-      if (s.alerts) for (const channel of ['discord', 'text'] as const) appendAlert(root, s, channel);
+      if (s.alerts) for (const channel of ['discord', 'text', 'email'] as const) appendAlert(root, s, channel);
       if (!s.worker) {
         root.append(item(s.role === 'architect' ? 'STOP BEING ARCHITECT' : 'MAKE ARCHITECT', act((x) => a.setArchitect(x, s.role !== 'architect'))));
       }
@@ -137,7 +137,7 @@ export function openCardMenu(hubId: string, at: { x: number; y: number }, action
     recipients = r;
     draw();
   }).catch(() => {
-    recipients = { discord: [], text: [] };
+    recipients = { discord: [], text: [], email: [] };
     draw();
   });
 }

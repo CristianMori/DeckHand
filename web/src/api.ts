@@ -32,6 +32,7 @@ async function json<T>(res: Response): Promise<T> {
 export interface AlertRecipients {
   discord: string[];
   text: string[];
+  email: string[];
 }
 
 export const api = {
@@ -177,7 +178,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ on }),
     }).then((r) => json<{ ok: boolean; autoYes: boolean }>(r)),
-  alerts: (hubId: string, change: { discord?: string[]; text?: string[] }) =>
+  alerts: (hubId: string, change: { discord?: string[]; text?: string[]; email?: string[] }) =>
     fetch(`/api/sessions/${hubId}/alerts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

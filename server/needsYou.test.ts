@@ -279,9 +279,9 @@ test('discord: a failure or an undeliverable answer is reported, not thrown', as
 
 test('alert channels: only a list of valid names counts', () => {
   for (const bad of [undefined, null, 'yes', 1, [], {}, { discord: true, text: 1 }, { discord: 'cristian' }, { discord: [1, null, 'Has Space', '../x'] }]) {
-    assert.deepEqual(alertChannels(bad), { discord: [], text: [] }, JSON.stringify(bad));
+    assert.deepEqual(alertChannels(bad), { discord: [], text: [], email: [] }, JSON.stringify(bad));
   }
-  assert.deepEqual(alertChannels({ discord: ['sara', 'sara', 7, 'cristian'] }), { discord: ['sara', 'cristian'], text: [] });
+  assert.deepEqual(alertChannels({ discord: ['sara', 'sara', 7, 'cristian'], email: ['cristian'] }), { discord: ['sara', 'cristian'], text: [], email: ['cristian'] });
 });
 
 function sendRig(file = join(mkdtempSync(join(tmpdir(), 'alerts-')), 'sent.json')) {
@@ -290,12 +290,13 @@ function sendRig(file = join(mkdtempSync(join(tmpdir(), 'alerts-')), 'sent.json'
     push: () => went.push('push'),
     discord: (_e: AttentionEvent, person: string) => went.push(`discord:${person}`),
     text: (_e: AttentionEvent, person: string) => went.push(`text:${person}`),
+    email: (_e: AttentionEvent, person: string) => went.push(`email:${person}`),
   };
   return { file, went, send, ledger: new SentLedger(file) };
 }
 
 test('a session with nobody chosen sends push only', () => {
-  for (const alerts of [undefined, { discord: [], text: [] }]) {
+  for (const alerts of [undefined, { discord: [], text: [], email: [] }]) {
     const { went, send, ledger } = sendRig();
     sendAlert(event, { alerts }, ledger, send);
     assert.deepEqual(went, ['push']);
@@ -304,24 +305,24 @@ test('a session with nobody chosen sends push only', () => {
 
 test('each channel goes to the people chosen for it', () => {
   const { went, send, ledger } = sendRig();
-  sendAlert(event, { alerts: { discord: ['cristian'], text: ['cristian', 'sara'] } }, ledger, send);
-  assert.deepEqual(went, ['push', 'discord:cristian', 'text:cristian', 'text:sara']);
+  sendAlert(event, { alerts: { discord: ['cristian'], text: ['cristian', 'sara'], email: ['cristian'] } }, ledger, send);
+  assert.deepEqual(went, ['push', 'discord:cristian', 'text:cristian', 'text:sara', 'email:cristian']);
 });
 
 test('someone not chosen is not marked sent; someone told is not told twice, across a restart', () => {
   const first = sendRig();
-  sendAlert(event, { alerts: { discord: ['cristian'], text: [] } }, first.ledger, first.send);
+  sendAlert(event, { alerts: { discord: ['cristian'], text: [], email: [] } }, first.ledger, first.send);
   assert.deepEqual(JSON.parse(readFileSync(first.file, 'utf8')), ['push:e1', 'discord:cristian:e1']);
   const again = sendRig(first.file);
-  sendAlert(event, { alerts: { discord: ['cristian', 'sara'], text: ['sara'] } }, again.ledger, again.send);
-  assert.deepEqual(again.went, ['discord:sara', 'text:sara']);
+  sendAlert(event, { alerts: { discord: ['cristian', 'sara'], text: ['sara'], email: ['cristian'] } }, again.ledger, again.send);
+  assert.deepEqual(again.went, ['discord:sara', 'text:sara', 'email:cristian']);
 });
 
 test('an episode in the old ledger format went out everywhere: nothing goes again', () => {
   const { file, went, send } = sendRig();
   writeFileSync(file, JSON.stringify(['e1']));
   const ledger = new SentLedger(file);
-  sendAlert(event, { alerts: { discord: ['cristian'], text: ['cristian'] } }, ledger, send);
+  sendAlert(event, { alerts: { discord: ['cristian'], text: ['cristian'], email: ['cristian'] } }, ledger, send);
   assert.deepEqual(went, []);
   assert.equal(ledger.has('e1'), true, 'its clear still goes out');
 });
@@ -330,9 +331,9 @@ test('the sender goes by the card as the owner published it with the alert', () 
   const asked = { episode: 'e9', kind: 'question' as const, text: 'Which?', since: 1, alertedAt: Date.now() };
   const { went, send, ledger } = sendRig();
   const fleet = new FleetAttention({ announce: (e, c) => sendAlert(e, c, ledger, send), cleared: () => {} });
-  fleet.scan([card({ machine: 'peer', alerts: { discord: [], text: [] }, attention: { ...asked, alertedAt: undefined } })]);
+  fleet.scan([card({ machine: 'peer', alerts: { discord: [], text: [], email: [] }, attention: { ...asked, alertedAt: undefined } })]);
   assert.deepEqual(went, []);
-  const on = card({ machine: 'peer', alerts: { discord: [], text: ['sara'] }, attention: asked });
+  const on = card({ machine: 'peer', alerts: { discord: [], text: ['sara'], email: [] }, attention: asked });
   fleet.scan([on]);
   fleet.scan([on]);
   assert.deepEqual(went, ['push', 'text:sara']);
@@ -355,7 +356,7 @@ test('discord goes to the person named, and the list holds only reachable names'
 });
 
 test('a new card has nobody; a card moved here takes the choice it is given', () => {
-  assert.deepEqual(new HubSession({ cwd: '/x', agentType: 'claude' }).info().alerts, { discord: [], text: [] });
-  const chosen = { discord: ['cristian'], text: [] };
+  assert.deepEqual(new HubSession({ cwd: '/x', agentType: 'claude' }).info().alerts, { discord: [], text: [], email: [] });
+  const chosen = { discord: ['cristian'], text: [], email: [] };
   assert.deepEqual(new HubSession({ cwd: '/x', agentType: 'claude', alerts: chosen }).info().alerts, chosen);
 });

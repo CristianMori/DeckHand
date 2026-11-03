@@ -83,7 +83,7 @@ export class HubSession {
   /** waiting on the user right now (set by needsYou.ts) */
   attention?: SessionInfo['attention'];
   /** who this session alerts on Discord and by text; nobody until the user picks them */
-  alerts: AlertChannels = { discord: [], text: [] };
+  alerts: AlertChannels = { discord: [], text: [], email: [] };
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;

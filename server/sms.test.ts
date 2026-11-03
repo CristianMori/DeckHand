@@ -252,7 +252,7 @@ test('typing: Enter is not pressed if the session moved on while the text went i
 test('replies: a text already sent is still answered after its channel is turned off', async () => {
   const gw = await fakeGateway();
   gw.state.replies.push(reply(1));
-  const { replies, delivered } = poller({ ...gw.config, replies: true }, [card({ alerts: { discord: [], text: [] } })]);
+  const { replies, delivered } = poller({ ...gw.config, replies: true }, [card({ alerts: { discord: [], text: [], email: [] } })]);
   await replies.poll();
   assert.equal(delivered.length, 1);
 });

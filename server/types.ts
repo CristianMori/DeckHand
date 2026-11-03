@@ -153,6 +153,7 @@ export interface SwarmLetter {
 export interface AlertChannels {
   discord: string[];
   text: string[];
+  email: string[];
 }
 
 /** A session waiting on the user: one per waiting episode. */

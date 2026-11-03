@@ -33,6 +33,7 @@ const el = {
   autoYesBtn: document.getElementById('autoyes-btn') as HTMLButtonElement,
   discordBtn: document.getElementById('discord-btn') as HTMLButtonElement,
   textBtn: document.getElementById('text-btn') as HTMLButtonElement,
+  emailBtn: document.getElementById('email-btn') as HTMLButtonElement,
   frozenBtn: document.getElementById('frozen-btn') as HTMLButtonElement,
   soundToggle: document.getElementById('sound-toggle') as HTMLButtonElement,
   newBtn: document.getElementById('new-session-btn') as HTMLButtonElement,
@@ -306,11 +307,12 @@ function render() {
       for (const [btn, label, people] of [
         [el.discordBtn, 'DISCORD', alerts?.discord],
         [el.textBtn, 'SMS', alerts?.text],
+        [el.emailBtn, 'EMAIL', alerts?.email],
       ] as const) {
         btn.hidden = !alerts;
         btn.textContent = `${label} ${people?.length ? 'ON' : 'OFF'}`;
         btn.classList.toggle('active', !!people?.length);
-        btn.title = people?.length ? `Alerts ${people.join(', ')}. Click to change.` : `Choose who is alerted by ${label === 'SMS' ? 'SMS' : 'Discord'}`;
+        btn.title = people?.length ? `Alerts ${people.join(', ')}. Click to change.` : `Choose who is alerted by ${{ DISCORD: 'Discord', SMS: 'SMS', EMAIL: 'email' }[label]}`;
       }
     }
   }
@@ -491,6 +493,7 @@ function openAlertMenu(btn: HTMLButtonElement, channel: Channel) {
 }
 el.discordBtn.onclick = () => openAlertMenu(el.discordBtn, 'discord');
 el.textBtn.onclick = () => openAlertMenu(el.textBtn, 'text');
+el.emailBtn.onclick = () => openAlertMenu(el.emailBtn, 'email');
 
 // iOS: fixed overlays don't shrink when the on-screen keyboard opens — track
 // the visual viewport so the terminal panel always ends above the keyboard

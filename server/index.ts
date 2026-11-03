@@ -19,6 +19,7 @@ import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
 import { NeedsYou, FleetAttention, SentLedger, alertChannels, alertPeople, attentionConfig, attentionEvent, discordRecipients, sendAlert, sendToDiscord } from './needsYou.js';
 import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
+import { EmailReplies, emailRecipients, emailReplyPrompt, sendEmail } from './email.js';
 import { SmsReplies, sendText, textRecipients, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
@@ -1077,17 +1078,17 @@ app.post('/api/sessions/:id/autoyes', sessionAction((id, req, res) => {
   res.json({ ok: true, autoYes: session.autoYes });
 }));
 
-// Who a session alerts on Discord and by text. Each costs or interrupts, so it
-// is the user's to choose, from the dashboard: not a session's or an agent's.
+// Who a session alerts on Discord, by text and by email. Each costs or interrupts,
+// so it is the user's to choose, from the dashboard: not a session's or an agent's.
 app.post('/api/sessions/:id/alerts', sessionAction((id, req, res) => {
   if (/^(session:|gateway:|mimir)/i.test(currentTrace()?.caller ?? '')) {
     return res.status(403).json({ error: 'alert channels are chosen by the user in the dashboard' });
   }
-  const { discord, text } = req.body ?? {};
+  const { discord, text, email } = req.body ?? {};
   const isList = (v: unknown) => v === undefined || (Array.isArray(v) && alertPeople(v).length === v.length);
-  if (!isList(discord) || !isList(text)) return res.status(400).json({ error: 'discord and text must be lists of names' });
+  if (!isList(discord) || !isList(text) || !isList(email)) return res.status(400).json({ error: 'discord, text and email must be lists of names' });
   const session = manager.sessions.get(id)!;
-  session.alerts = { discord: discord ?? session.alerts.discord, text: text ?? session.alerts.text };
+  session.alerts = { discord: discord ?? session.alerts.discord, text: text ?? session.alerts.text, email: email ?? session.alerts.email };
   manager.emit('change', session);
   res.json({ ok: true, alerts: session.alerts });
 }));
@@ -1294,8 +1295,8 @@ app.post('/api/sessions/:id/remove-worker', sessionAction(async (id, req, res) =
 // it, and those live on different hubs, so the answer is gathered from the fleet.
 async function localAlertRecipients() {
   const config = attentionConfig();
-  const [discord, text] = await Promise.all([discordRecipients(config), textRecipients(config.sms)]);
-  return { discord, text };
+  const [discord, text, email] = await Promise.all([discordRecipients(config), textRecipients(config.sms), emailRecipients(config.email)]);
+  return { discord, text, email };
 }
 app.get('/api/alert-recipients', async (req, res) => {
   const mine = await localAlertRecipients();
@@ -1309,7 +1310,7 @@ app.get('/api/alert-recipients', async (req, res) => {
     }
   }));
   const merged = (channel: keyof typeof mine) => alertPeople([...mine[channel], ...peers.flatMap((p) => p[channel] ?? [])]).sort();
-  res.json({ discord: merged('discord'), text: merged('text') });
+  res.json({ discord: merged('discord'), text: merged('text'), email: merged('email') });
 });
 
 // The agent keeps its transcript outside the project folder, and its own
@@ -1793,19 +1794,20 @@ const swarm = new Swarm(manager, {
 });
 setInterval(() => void swarm.tick(), 3000).unref();
 
-async function answerFromText(session: HubSession, episode: unknown, text: string): Promise<string | undefined> {
+async function answerFromText(session: HubSession, episode: unknown, text: string, via: 'text' | 'email' = 'text'): Promise<string | undefined> {
   const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));
   const before = refusal();
   if (before) return before;
   needsYou.promptFrom(session, 'text-reply', false);
-  const typed = await typePrompt(manager, session, textReplyPrompt(text), () => !refusal());
-  return typed ? undefined : 'the session moved on while the text went in';
+  const prompt = via === 'email' ? emailReplyPrompt(text) : textReplyPrompt(text);
+  const typed = await typePrompt(manager, session, prompt, () => !refusal());
+  return typed ? undefined : `the session moved on while the ${via} went in`;
 }
 
 app.post('/api/sessions/:id/text-reply', sessionAction(async (id, req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (!text.trim()) return res.status(400).json({ error: 'text required' });
-  const refused = await answerFromText(manager.sessions.get(id)!, req.body?.episode, text);
+  const refused = await answerFromText(manager.sessions.get(id)!, req.body?.episode, text, req.body?.via === 'email' ? 'email' : 'text');
   if (refused) return res.status(409).json({ error: refused });
   res.json({ ok: true });
 }));
@@ -2559,8 +2561,8 @@ federation.on('alert', (alert: PeerAlert) => {
 
 // A session still waiting on the user after the delay: one event per waiting
 // episode, from whichever hub owns it, to every dashboard and app connected
-// here, to push from the hub with an APNs key, and to Discord and text from the
-// hubs configured for them when the session has that channel on.
+// here, to push from the hub with an APNs key, and to Discord, text and email
+// from the hubs configured for them when the session has that channel on.
 const sentAttention = new SentLedger();
 const fleetAttention = new FleetAttention({
   announce: (event, card) => {
@@ -2569,6 +2571,7 @@ const fleetAttention = new FleetAttention({
       push: (e) => apns.sendAttention(e),
       discord: (e, person) => sendToDiscord(e, attentionConfig(), fetch, person),
       text: (e, person) => sendText(e, attentionConfig().sms, fetch, person),
+      email: (e, person) => sendEmail(e, attentionConfig().email, fetch, person),
     });
   },
   cleared: (event) => {
@@ -2600,6 +2603,29 @@ const smsReplies = new SmsReplies({
   },
 });
 setInterval(() => void smsReplies.poll(), 30_000).unref();
+const emailReplies = new EmailReplies({
+  config: () => attentionConfig().email,
+  sessions: mergedList,
+  deliver: async (card: SessionInfo, answer: { episode: string; text: string }): Promise<DeliverResult> => {
+    const body = { episode: answer.episode, text: answer.text, via: 'email' };
+    const local = manager.sessions.get(card.hubId);
+    if (local) {
+      const refused = await answerFromText(local, body.episode, body.text, 'email');
+      return refused ? { refused } : { delivered: true };
+    }
+    const peer = federation.peerBySession(card.hubId);
+    if (!peer) return { retry: `no link to ${card.machine ?? 'its hub'}` };
+    try {
+      const out = await federation.forward(peer, `/api/sessions/${card.hubId}/text-reply`, { method: 'POST', body });
+      if (out.status === 200) return { delivered: true };
+      const why = (out.body as { error?: string })?.error ?? `answered ${out.status}`;
+      return out.status >= 500 ? { retry: why } : { refused: why };
+    } catch (err) {
+      return { retry: String(err) };
+    }
+  },
+});
+setInterval(() => void emailReplies.poll(), 30_000).unref();
 manager.on('change', scanAttention);
 federation.on('change', scanAttention);
 setInterval(scanAttention, 15_000).unref();

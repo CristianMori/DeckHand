@@ -511,6 +511,34 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
 - **ADMIN** — per-machine version, build, uptime; check for updates; UPDATE
   and RESTART buttons that work across the fleet from any dashboard.
 
+### Alert channels
+
+A session that stays waiting past the delay (2 minutes) alerts every connected
+dashboard and the iOS app. Beyond that, each session chooses who is told on
+three outside channels — **Discord**, **SMS** and **email** — from the card's
+right-click menu or the DISCORD / SMS / EMAIL header buttons; nobody by
+default. How to send lives per channel in one hub's `data/attention.json`
+(the full contract is in [docs/automation-api.md](docs/automation-api.md)):
+
+- **Discord** — through Hermod's notify API (`"hermod"` block, desktop-master).
+- **SMS** — through hermod-gateway (`"sms"` block, vps-node). With
+  `"replies": true` a text answer is typed back into the asking session.
+- **Email** — through Hermod's notify API, sent from the mailbox Hermod maps
+  to Deckhand's key (raven@mori.guru). vps-node is the one hub configured, in
+  its `data/attention.json`:
+
+  ```jsonc
+  "email": { "url": "http://desktop-master:5103", "keyFile": "hermod-notify.key", "person": "cristian", "replies": true }
+  ```
+
+  `keyFile` (absolute, or relative to the data folder) holds a Hermod API key
+  with the `notify` scope — minted by Cristian only, and mapped to the
+  raven@mori.guru mailbox on Hermod's `/admin/mail` page. The same scope reads
+  `/api/v1/replies`, so replies need no extra scope. With `"replies": true`
+  the hub polls Hermod every 30 seconds; a reply from the configured person
+  lands only on the alert episode it answers (quoted history and the signature
+  stripped first), under the same rules as SMS replies.
+
 ### The `deckhand` CLI
 
 Put `cli/` on your PATH (`hubclaude` remains as a legacy alias).
@@ -557,7 +585,7 @@ GET  /api/sessions/:id/screen[?scrollback=200][&format=ansi]    → the terminal
 GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …] oldest first
 GET  /api/sessions/:id                                          → card data
 POST /api/sessions/:id/kill | /resume | /restart | /remove | /autoyes {"on":true}
-POST /api/sessions/:id/alerts {"discord":["cristian"],"text":[]}
+POST /api/sessions/:id/alerts {"discord":["cristian"],"text":[],"email":[]}
 ```
 
 Rules of the road:
