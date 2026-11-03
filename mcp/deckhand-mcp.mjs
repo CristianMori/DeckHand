@@ -288,7 +288,7 @@ const TOOLS = [
   },
   {
     name: 'dh_send_keys',
-    description: 'Send keystrokes to a session\'s TUI (answer permission/question menus, cancel a turn, run slash commands). keys = comma-separated named keys and/or literal strings in order, e.g. "down,enter" or "y" or "/compact,enter". Named: enter esc tab backspace up down left right ctrl-c ctrl-d ctrl-u shift-tab.',
+    description: 'Send keystrokes to a session\'s TUI (answer permission/question menus, cancel a turn, run slash commands). keys = comma-separated named keys and/or literal strings in order, e.g. "down,enter" or "y" or "/compact,enter". Named (any case): enter/return esc/escape tab backspace del/delete up down left right ctrl-c ctrl-d ctrl-u shift-tab.',
     schema: { hubId: S('session hub id'), keys: S('comma-separated keys') },
     required: ['hubId', 'keys'],
     run: async ({ hubId, keys }) => {

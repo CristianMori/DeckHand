@@ -22,10 +22,13 @@ export function isSettled(session: HubSession): boolean {
 /** Named keys a script may send instead of raw escape sequences. */
 export const KEYS: Record<string, string> = {
   enter: '\r',
+  return: '\r',
   esc: '\x1b',
   escape: '\x1b',
   tab: '\t',
   backspace: '\x7f',
+  del: '\x1b[3~',
+  delete: '\x1b[3~',
   up: '\x1b[A',
   down: '\x1b[B',
   left: '\x1b[D',
@@ -35,6 +38,9 @@ export const KEYS: Record<string, string> = {
   'ctrl-u': '\x15',
   'shift-tab': '\x1b[Z',
 };
+
+/** A named key (any case) as its escape sequence; anything else is typed literally. */
+export const keyData = (k: string) => KEYS[k.toLowerCase()] ?? k;
 
 /** Type a prompt into a live session's composer and submit it. False: mayEnter said no. */
 export async function typePrompt(manager: SessionManager, session: HubSession, text: string, mayEnter: () => boolean = () => true) {

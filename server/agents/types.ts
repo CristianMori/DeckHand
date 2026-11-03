@@ -26,6 +26,8 @@ export interface BuildArgsInput {
   mcp?: { name: string; command: string; args: string[]; env: Record<string, string> };
   /** tools of that server that need no permission prompt, where the engine has such a setting */
   alwaysAllow?: string[];
+  /** project .mcp.json servers the session's lead enabled; the rest are disabled up front, so the first-run dialog can't appear (workers) */
+  mcpChoices?: { enableAll: boolean; enabled: string[] };
 }
 
 export interface TranscriptRef {
@@ -111,6 +113,8 @@ export interface AgentAdapter {
   acceptKeystroke: string;
   /** prompts auto-yes must leave to a human (screen text test) */
   isProtectedPrompt?(screen: string): boolean;
+  /** a startup dialog on screen that blocks the engine before any hook fires, named for the stall notice */
+  startupDialog?(screen: string): string | undefined;
 
   transcript?: TranscriptOps;
 

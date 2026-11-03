@@ -337,6 +337,8 @@ export class SessionManager extends EventEmitter {
       briefing: fleetBriefing(identity),
       // reading its own inbox asks nobody's leave: a report must not wait on a permission prompt
       alwaysAllow: session.role ? ['mcp__deckhand__dh_swarm_inbox'] : undefined,
+      // a worker runs with the project MCP servers its lead enabled, decided up front
+      mcpChoices: session.worker?.mcpChoices,
       // the node running the hub runs the server too — no PATH lookup in a service session
       // identity goes in explicitly: Codex does not hand its own environment to MCP servers
       mcp: { name: 'deckhand', command: process.execPath, args: [join(HUB_ROOT, 'mcp', 'deckhand-mcp.mjs')], env: { ...identityEnv(identity), ...(swarmKeyFile ? { DECKHAND_SWARM_KEY: swarmKeyFile } : {}) } },

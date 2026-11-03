@@ -410,6 +410,10 @@ export const codexAdapter: AgentAdapter = {
     return null;
   },
   acceptKeystroke: '\r',
+  // Codex has no project MCP dialog (MCP servers come from config.toml, and a
+  // project's own .codex/config.toml is silently skipped until trusted — which
+  // ensureTrusted records up front). Only the trust prompt can block startup.
+  startupDialog: (screen) => (/Do you trust the contents of this directory\?/i.test(screen) ? "Codex's folder trust dialog" : undefined),
 
   transcript: {
     file(cwd, sessionId) {

@@ -104,6 +104,8 @@ export interface WorkerLink {
   nudgedAt?: number;
   /** stateSince of the last prompt already passed to the architect */
   forwardedWait?: number;
+  /** project .mcp.json servers its lead enabled — written into its settings on every spawn */
+  mcpChoices?: { enableAll: boolean; enabled: string[] };
   /** the public key of who leads it, pinned when it was started: only that key can tell it anything */
   leadKey?: string;
   /** ids of signed messages already taken from its lead, so none is taken twice */

@@ -133,7 +133,7 @@ function repo() {
   return { dir, git };
 }
 
-function harness() {
+function harness(stuckAt?: (s: HubSession) => string | undefined) {
   const manager = Object.assign(new EventEmitter(), {
     sessions: new Map<string, HubSession>(),
     create(opts: { cwd: string; name: string; role: string; worker: WorkerLink; agentType: string }) {
@@ -156,6 +156,7 @@ function harness() {
     typePrompt: async (s, text) => void typed.push({ to: s.hubId, text }),
     promptFrom: (_s, caller) => void asked.push(caller),
     lastReply: async () => 'it said this',
+    stuckAt,
     save() {},
   });
   return { manager, swarm, typed, asked };
@@ -325,6 +326,39 @@ test('a stalled worker tells the architect what it last said', async () => {
   manager.sessions.set('w1', aMember(architect, 'w1', { nudgedAt: now - 120_000 }, { state: 'IDLE', stateSince: now - 60_000 }));
   await swarm.tick(now);
   assert.match(swarm.inboxOf(architect)[0].text, /^VERIFIED: from the hub about worker "w1"[\s\S]*it said this/);
+  assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
+});
+
+test('a worker inherits the project MCP servers its lead enabled', async () => {
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  try {
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { alpha: {}, beta: {} } }));
+    mkdirSync(join(dir, '.claude'));
+    writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ enabledMcpjsonServers: ['alpha'] }));
+    const architect = aLead({ cwd: dir, agentType: 'claude' });
+    manager.sessions.set('lead', architect);
+    const { session } = await swarm.start(architect, { task: 'x', name: 'w' });
+    assert.deepEqual(session!.worker?.mcpChoices, { enableAll: false, enabled: ['alpha'] });
+    // a sub-architect passes its own inherited choice on, without files of its own
+    Object.assign(session!, { claudeSessionId: 'sub-conv', role: 'subarchitect' });
+    const second = await swarm.start(session!, { task: 'y', name: 'w2' });
+    assert.deepEqual(second.session!.worker?.mcpChoices, { enableAll: false, enabled: ['alpha'] });
+    for (const s of [second.session, session]) if (s?.worker?.worktree) rmSync(s.worker.worktree, { recursive: true, force: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a worker stuck at a startup dialog is reported with what blocks it, not nudged', async () => {
+  const { manager, swarm, typed } = harness((s) => (s.hubId === 'w1' ? 'Claude\'s "2 new MCP servers found" project dialog' : undefined));
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const now = Date.now();
+  manager.sessions.set('w1', aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: now - 60_000 }));
+  await swarm.tick(now);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // no nudge typed into the dialog
+  assert.match(swarm.inboxOf(architect)[0].text, /stuck at Claude's "2 new MCP servers found" project dialog[\s\S]*dh_send_keys/);
   assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
 });
 

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { leadMcpChoices, type McpChoices } from './agents/claude.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
 import { osName, projectFolderOf, windowsUnsafeNames } from './etiquette.js';
@@ -289,6 +290,8 @@ export interface HostWorker {
   kind?: 'worker' | 'subarchitect';
   baseFolder: string;
   author?: { name: string; email: string };
+  /** project .mcp.json servers the lead enabled, read on its own machine */
+  mcpChoices?: McpChoices;
   /** the public key of who leads it */
   leadKey: string;
 }
@@ -319,6 +322,8 @@ export class Swarm {
       /** the prompt coming: the sender answers a worker's questions, the user an architect's */
       promptFrom: (session: HubSession, caller: string, queued: boolean) => void;
       lastReply: (session: HubSession) => Promise<string | undefined>;
+      /** a startup dialog on the session's screen, blocking the engine (named for the stall notice) */
+      stuckAt?: (session: HubSession) => string | undefined;
       save: () => void;
       fleet?: SwarmFleet;
       /** every session in the fleet: a session's workers can be on other machines */
@@ -326,6 +331,11 @@ export class Swarm {
     },
   ) {
     manager.on('removed', (s: HubSession) => void this.tidyAfterRemoval(s));
+  }
+
+  /** The project MCP servers the lead runs with: its own inherited choice, or what it recorded on disk. */
+  private leadChoices(lead: HubSession): McpChoices {
+    return lead.worker?.mcpChoices ?? leadMcpChoices(lead.cwd);
   }
 
   workersOf(architect: HubSession): HubSession[] {
@@ -350,6 +360,7 @@ export class Swarm {
     if (opts.machine && opts.machine !== this.deps.fleet?.self) return this.startElsewhere(architect, { ...opts, task, name }, opts.machine);
     const tree = await createWorktree(architect.cwd, name);
     if (!tree && kind === 'subarchitect') throw new Error('a sub-architect works on a branch of its own, and this folder is not a git repository');
+    const mcpChoices = this.leadChoices(architect);
     const worker: WorkerLink = {
       architect: architect.claudeSessionId,
       architectName: architect.name,
@@ -361,6 +372,7 @@ export class Swarm {
       repo: tree?.repo,
       branch: tree?.branch,
       baseCommit: tree?.baseCommit,
+      mcpChoices,
       leadKey: architect.swarmKey,
       status: 'working',
       startedAt: Date.now(),
@@ -422,6 +434,7 @@ export class Swarm {
       kind: opts.kind,
       baseFolder: architect.cwd,
       author: author && { name: author[0], email: author[1] },
+      mcpChoices: this.leadChoices(architect),
       leadKey: architect.swarmKey!,
     };
     const info = await ask('/api/worker-host/start', host);
@@ -458,6 +471,7 @@ export class Swarm {
         repo,
         branch: tree.branch,
         baseCommit: h.baseCommit,
+        mcpChoices: h.mcpChoices,
         leadKey: h.leadKey,
         status: 'working',
         startedAt: Date.now(),
@@ -710,6 +724,13 @@ export class Swarm {
     setTimeout(() => void this.dropWorktree(w, false), s.proc ? 4000 : 0);
   }
 
+  /** It never got to work: a startup dialog nobody is at the keyboard for is on its screen. */
+  private stuckAtDialog(s: HubSession, dialog: string) {
+    s.worker!.status = 'stalled';
+    this.deps.save();
+    return this.notice(s, `it is stuck at ${dialog}, which auto-yes can't answer. dh_read_screen shows it; dh_send_keys answers it (esc usually dismisses it).`);
+  }
+
   /** The hub's own word about a worker. Signed with its key, so it is taken only from its hub. */
   private notice(worker: HubSession, text: string) {
     const w = worker.worker!;
@@ -810,12 +831,18 @@ export class Swarm {
       case 'waiting':
         w.forwardedWait = s.stateSince;
         return this.notice(s, `it is stuck at a prompt: ${s.detail ?? s.state}${s.lastTool ? ` (${s.lastTool.summary})` : ''}. dh_read_screen shows it; dh_send_keys or dh_send_prompt answers it.`);
-      case 'nudge':
+      case 'nudge': {
+        // a nudge typed into a startup dialog goes nowhere: say what blocks it instead
+        const dialog = this.deps.stuckAt?.(s);
+        if (dialog) return this.stuckAtDialog(s, dialog);
         w.nudgedAt = now;
         this.deps.promptFrom(s, 'session:architect', false);
         await this.deps.typePrompt(s, WORKER_NUDGE);
         return;
+      }
       case 'stalled': {
+        const dialog = this.deps.stuckAt?.(s);
+        if (dialog) return this.stuckAtDialog(s, dialog);
         w.status = 'stalled';
         const said = await this.deps.lastReply(s).catch(() => undefined);
         return this.notice(s, `it stopped working without reporting, even when reminded. It last said:\n${(said ?? '(nothing readable)').slice(0, REPORT_MAX)}`);

@@ -60,8 +60,8 @@ import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import { recordSessionRename } from './renameNotice.js';
 import {
-  KEYS,
   isSettled,
+  keyData,
   lastExchanges,
   replyTo,
   screenText,
@@ -1764,6 +1764,13 @@ const swarm = new Swarm(manager, {
   typePrompt: (session, text) => typePrompt(manager, session, text),
   promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
   lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
+  stuckAt: (session) => {
+    try {
+      return agentFor(session).startupDialog?.(screenText(session));
+    } catch {
+      return undefined; // mirror mid-resize
+    }
+  },
   save: () => savePersisted(manager),
   fleetSessions: () => mergedList(),
   fleet: {
@@ -1825,7 +1832,7 @@ app.post('/api/sessions/:id/keys', sessionAction((id, req, res) => {
   let data = typeof req.body?.data === 'string' ? req.body.data : '';
   for (const k of keys) {
     if (typeof k !== 'string') continue;
-    data += KEYS[k.toLowerCase()] ?? k;
+    data += keyData(k);
   }
   if (!data) return res.status(400).json({ error: 'keys or data required' });
   manager.write(id, data);

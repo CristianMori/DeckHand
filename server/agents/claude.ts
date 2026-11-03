@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { DATA_DIR } from '../config.js';
+import { dirname, join } from 'node:path';
+import { DATA_DIR, warnOnce } from '../config.js';
 import {
   CLAUDE_PROJECTS_DIR,
   CLAUDE_SESSIONS_DIR,
@@ -166,6 +166,84 @@ function ensureTrusted(cwd: string) {
   renameSync(tmp, file);
 }
 
+/** Which project .mcp.json servers a folder's sessions have enabled. */
+export interface McpChoices {
+  enableAll: boolean;
+  enabled: string[];
+}
+
+/**
+ * Where Claude records a project's MCP choice: the project's
+ * .claude/settings.local.json or settings.json (enabledMcpjsonServers /
+ * disabledMcpjsonServers / enableAllProjectMcpServers), and ~/.claude.json
+ * under projects[<folder>]. Merged the way Claude merges them: enabled is the
+ * union minus everything any source disables; enableAll from any source wins.
+ */
+export function leadMcpChoices(folder: string, home = homedir()): McpChoices {
+  const read = (file: string): Record<string, unknown> => {
+    try {
+      return JSON.parse(readFileSync(file, 'utf8'));
+    } catch {
+      return {};
+    }
+  };
+  const sources = [read(join(folder, '.claude', 'settings.local.json')), read(join(folder, '.claude', 'settings.json'))];
+  const projects = (read(join(home, '.claude.json')).projects ?? {}) as Record<string, Record<string, unknown>>;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const hit = Object.keys(projects).find((k) => norm(k) === norm(folder));
+  if (hit) sources.push(projects[hit]);
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const enabled = new Set(sources.flatMap((s) => list(s.enabledMcpjsonServers)));
+  for (const s of sources) for (const name of list(s.disabledMcpjsonServers)) enabled.delete(name);
+  return { enableAll: sources.some((s) => s.enableAllProjectMcpServers === true), enabled: [...enabled] };
+}
+
+/** Server names in the project's .mcp.json, looked for from cwd up to the repository root. */
+export function projectMcpServers(cwd: string): string[] {
+  for (let dir = cwd, i = 0; i < 50; i++) {
+    const file = join(dir, '.mcp.json');
+    if (existsSync(file)) {
+      try {
+        const doc = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: Record<string, unknown> };
+        return Object.keys(doc.mcpServers ?? {});
+      } catch {
+        return []; // malformed: Claude ignores it too
+      }
+    }
+    if (existsSync(join(dir, '.git'))) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return [];
+}
+
+/**
+ * The settings file a session starts with. A worker in a fresh worktree is a
+ * new, unapproved project to Claude, and its ".mcp.json servers found" dialog
+ * has nobody at the keyboard — so the worker's settings decide every server in
+ * the worktree's .mcp.json up front, from the choice its lead recorded: the
+ * same servers enabled, every other one disabled, nothing left to ask about.
+ */
+function settingsFor(sessionId: string, cwd: string, choices?: McpChoices): string {
+  const servers = choices ? projectMcpServers(cwd) : [];
+  if (!choices || !servers.length) return HOOKS_JSON;
+  const enabled = servers.filter((s) => choices.enableAll || choices.enabled.includes(s));
+  if (!enabled.length) {
+    warnOnce(`[claude] ${cwd}: its lead recorded no project MCP choice, so all ${servers.length} servers in .mcp.json are disabled for this session`);
+  }
+  let hooks: Record<string, unknown> = {};
+  try {
+    hooks = JSON.parse(readFileSync(HOOKS_JSON, 'utf8'));
+  } catch {
+    /* hooks not materialized yet (tests) */
+  }
+  const file = join(MCP_DIR, `${sessionId.replace(/[^\w-]/g, '_')}-settings.json`);
+  mkdirSync(MCP_DIR, { recursive: true });
+  writeFileSync(file, JSON.stringify({ ...hooks, enabledMcpjsonServers: enabled, disabledMcpjsonServers: servers.filter((s) => !enabled.includes(s)) }, null, 2));
+  return file;
+}
+
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   label: 'Claude Code',
@@ -181,7 +259,7 @@ export const claudeAdapter: AgentAdapter = {
     }
   },
 
-  buildArgs({ sessionId, resume, name, model, permissionMode, initialPrompt, briefing, mcp, alwaysAllow }) {
+  buildArgs({ sessionId, resume, name, cwd, model, permissionMode, initialPrompt, briefing, mcp, alwaysAllow, mcpChoices }) {
     const args: string[] = [];
     if (mcp) {
       // the hub's MCP server rides along as an extra server; the project's own
@@ -196,7 +274,7 @@ export const claudeAdapter: AgentAdapter = {
     }
     if (resume) args.push('--resume', sessionId);
     else args.push('--session-id', sessionId);
-    args.push('-n', name, '--settings', HOOKS_JSON);
+    args.push('-n', name, '--settings', settingsFor(sessionId, cwd, mcpChoices));
     if (alwaysAllow?.length) args.push('--allowedTools', alwaysAllow.join(','));
     if (permissionMode) args.push('--permission-mode', permissionMode);
     if (model) args.push('--model', model);
@@ -263,6 +341,13 @@ export const claudeAdapter: AgentAdapter = {
   },
   acceptKeystroke: '\r',
   isProtectedPrompt: (screen) => PLAN_EXIT_MARKER.test(screen),
+  startupDialog: (screen) => {
+    const mcp = screen.match(/(?:\d+ )?new MCP servers? found/i);
+    if (mcp) return `Claude's "${mcp[0]}" project dialog`;
+    if (/Do you trust the files in this folder\?/i.test(screen)) return "Claude's folder trust dialog";
+    if (/Select login method|Sign in to Claude/i.test(screen)) return "Claude's login screen";
+    return undefined;
+  },
 
   transcript: {
     file: (cwd, sessionId) => join(CLAUDE_PROJECTS_DIR, encodeProjectDir(cwd), `${sessionId}.jsonl`),
