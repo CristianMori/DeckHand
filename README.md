@@ -523,21 +523,25 @@ default. How to send lives per channel in one hub's `data/attention.json`
 - **Discord** — through Hermod's notify API (`"hermod"` block, desktop-master).
 - **SMS** — through hermod-gateway (`"sms"` block, vps-node). With
   `"replies": true` a text answer is typed back into the asking session.
-- **Email** — through Hermod's notify API, sent from the mailbox Hermod maps
-  to Deckhand's key (raven@mori.guru). vps-node is the one hub configured, in
-  its `data/attention.json`:
+- **Email** — through Hermod's notify API, sent as raven@mori.guru. vps-node
+  is the one hub configured, in its `data/attention.json`:
 
   ```jsonc
-  "email": { "url": "http://desktop-master:5103", "keyFile": "hermod-notify.key", "person": "cristian", "replies": true }
+  "email": { "url": "http://desktop-master:5103", "keyFile": "hermod.key", "mailboxKeyFile": "raven.mailbox.key", "person": "cristian", "replies": true }
   ```
 
-  `keyFile` (absolute, or relative to the data folder) holds a Hermod API key
-  with the `notify` scope — minted by Cristian only, and mapped to the
-  raven@mori.guru mailbox on Hermod's `/admin/mail` page. The same scope reads
-  `/api/v1/replies`, so replies need no extra scope. With `"replies": true`
-  the hub polls Hermod every 30 seconds; a reply from the configured person
-  lands only on the alert episode it answers (quoted history and the signature
-  stripped first), under the same rules as SMS replies.
+  Two secrets, each in its own file (absolute, or relative to the data
+  folder), never in the config itself, and both given by Cristian only:
+  `keyFile` holds the Hermod API key (`hm_…`, scopes `notify` + `mailbox` —
+  who Deckhand is), `mailboxKeyFile` the raven@ mailbox's own key (`hmb_…`,
+  from Hermod's `/admin/mail` page — what it may send as, shared with other
+  programs). The channel is off unless both files are readable. The `notify`
+  scope also reads `/api/v1/replies`, so replies need no extra scope. With
+  `"replies": true` the hub polls Hermod every 30 seconds; a reply from the
+  configured person lands only on the alert episode it answers (quoted history
+  and the signature stripped first), under the same rules as SMS replies, and
+  an episode that ends without an email answer closes its reply watch on
+  Hermod, so a reply arriving after that alerts Cristian as late.
 
 ### The `deckhand` CLI
 

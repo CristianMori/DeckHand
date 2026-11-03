@@ -19,7 +19,7 @@ import { StatusEngine } from './statusEngine.js';
 import { hookBus, makeHookHandler } from './hooksReceiver.js';
 import { NeedsYou, FleetAttention, SentLedger, alertChannels, alertPeople, attentionConfig, attentionEvent, discordRecipients, sendAlert, sendToDiscord } from './needsYou.js';
 import { ApnsSender, PushDevices, validDeviceToken } from './apns.js';
-import { EmailReplies, emailRecipients, emailReplyPrompt, sendEmail } from './email.js';
+import { EmailReplies, EmailWatches, closeEmailWatch, emailRecipients, emailReplyPrompt, sendEmail } from './email.js';
 import { SmsReplies, sendText, textRecipients, textReplyPrompt, textReplyRefusal, type DeliverResult, type GatewayReply } from './sms.js';
 import { detailOf, startEvenBridge, summarizeTool } from './evenBridge.js';
 import { startStatusFileWatcher } from './statusFileWatcher.js';
@@ -2564,6 +2564,7 @@ federation.on('alert', (alert: PeerAlert) => {
 // here, to push from the hub with an APNs key, and to Discord, text and email
 // from the hubs configured for them when the session has that channel on.
 const sentAttention = new SentLedger();
+const emailWatches = new EmailWatches();
 const fleetAttention = new FleetAttention({
   announce: (event, card) => {
     broadcastAlert(event);
@@ -2571,12 +2572,14 @@ const fleetAttention = new FleetAttention({
       push: (e) => apns.sendAttention(e),
       discord: (e, person) => sendToDiscord(e, attentionConfig(), fetch, person),
       text: (e, person) => sendText(e, attentionConfig().sms, fetch, person),
-      email: (e, person) => sendEmail(e, attentionConfig().email, fetch, person),
+      email: (e, person) => sendEmail(e, attentionConfig().email, fetch, person, emailWatches),
     });
   },
   cleared: (event) => {
     broadcastAlert(event);
     if (sentAttention.has(event.episode)) void apns.sendCleared(event);
+    // ended without an email answer (the poller takes answered watches first)
+    void closeEmailWatch(event.episode, attentionConfig().email, emailWatches);
   },
 });
 const scanAttention = () => fleetAttention.scan(mergedList());
@@ -2606,6 +2609,7 @@ setInterval(() => void smsReplies.poll(), 30_000).unref();
 const emailReplies = new EmailReplies({
   config: () => attentionConfig().email,
   sessions: mergedList,
+  watches: emailWatches,
   deliver: async (card: SessionInfo, answer: { episode: string; text: string }): Promise<DeliverResult> => {
     const body = { episode: answer.episode, text: answer.text, via: 'email' };
     const local = manager.sessions.get(card.hubId);

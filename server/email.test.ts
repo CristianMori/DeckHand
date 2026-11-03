@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { EmailReplies, emailRecipients, emailReplyPrompt, emailSubject, sendEmail, stripQuotedEmail, type EmailConfig, type HermodReply } from './email.js';
+import { EmailReplies, EmailWatches, closeEmailWatch, emailRecipients, emailReplyPrompt, emailSubject, sendEmail, stripQuotedEmail, type EmailConfig, type HermodReply } from './email.js';
 import type { AttentionEvent } from './needsYou.js';
 import type { DeliverResult } from './sms.js';
 import type { SessionInfo } from './types.js';
@@ -13,10 +13,25 @@ import type { SessionInfo } from './types.js';
 const dir = mkdtempSync(join(tmpdir(), 'deckhand-email-'));
 const keyFile = join(dir, 'hermod.key');
 writeFileSync(keyFile, 'hm_test\n');
+const mailboxKeyFile = join(dir, 'raven.mailbox.key');
+writeFileSync(mailboxKeyFile, 'hmb_test\n');
 const servers: Server[] = [];
 after(() => servers.forEach((s) => s.close()));
 
-/** A stand-in for Hermod, keeping the notify and replies contract its source documents. */
+/** The last console.warn lines a run produced, with the console put back after. */
+async function warnsOf(run: () => Promise<void>): Promise<string[]> {
+  const warned: string[] = [];
+  const real = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args.join(' '));
+  try {
+    await run();
+  } finally {
+    console.warn = real;
+  }
+  return warned;
+}
+
+/** A stand-in for Hermod, keeping the notify, replies and close contract its source documents. */
 async function fakeHermod(answer: { status?: number; body?: unknown } = {}) {
   const calls: { method?: string; path?: string; auth?: string; body?: Record<string, unknown> }[] = [];
   const state = { replies: [] as HermodReply[] };
@@ -33,15 +48,21 @@ async function fakeHermod(answer: { status?: number; body?: unknown } = {}) {
         const page = state.replies.filter((r) => r.inboundId > since).slice(0, limit);
         return res.end(JSON.stringify({ replies: page, latestId: page.at(-1)?.inboundId ?? since }));
       }
+      if (/^\/api\/v1\/sends\/\d+\/close$/.test(url.pathname)) {
+        return res.end(JSON.stringify({ ledgerId: Number(url.pathname.split('/')[4]), replyState: 'closed' }));
+      }
       res.statusCode = answer.status ?? 200;
       res.end(JSON.stringify(answer.body ?? { delivered: true, deferred: false, channel: 'email', ledgerId: 41 }));
     });
   });
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const config: EmailConfig = { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`, keyFile, person: 'cristian' };
+  const config: EmailConfig = { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`, keyFile, mailboxKeyFile, person: 'cristian' };
   return { calls, state, config };
 }
+
+let watchFiles = 0;
+const watches = () => new EmailWatches(join(dir, `watches-${watchFiles++}.json`));
 
 const event = (over: Partial<AttentionEvent> = {}) =>
   ({ type: 'attention', episode: 'abcd1234-1', kind: 'question', text: 'Which one?', since: 1, name: 'RavenAgents', machine: 'mac', hubId: 'abcd1234', conversationId: 'c', state: 'IDLE', ...over }) as AttentionEvent;
@@ -51,22 +72,32 @@ test('subject: short, the session name and what it needs', () => {
   assert.equal(emailSubject(event({ kind: 'permission', machine: undefined })), 'RavenAgents wants approval');
 });
 
-test("send: follows Hermod's notify contract, the episode as correlationId, and no reply deadline", async () => {
+test("send: follows Hermod's notify contract — the mailbox key chooses email, the episode is the correlationId, no reply deadline", async () => {
   const { calls, config } = await fakeHermod();
   assert.equal(await sendEmail(event(), config), true);
   assert.deepEqual(calls, [{
     method: 'POST', path: '/api/v1/notify', auth: 'Bearer hm_test',
     body: {
-      person: 'cristian', channel: 'email', subject: 'RavenAgents on mac has a question',
-      message: 'Which one?', operation: 'deckhand-attention', correlationId: 'abcd1234-1',
+      person: 'cristian', subject: 'RavenAgents on mac has a question',
+      message: 'Which one?', operation: 'deckhand-alert', correlationId: 'abcd1234-1', mailboxKey: 'hmb_test',
     },
   }]);
-  assert.ok(!('replyDeadlineSeconds' in calls[0].body!) && !('expectReply' in calls[0].body!));
+  for (const absent of ['channel', 'replyDeadlineSeconds', 'expectReply']) assert.ok(!(absent in calls[0].body!), absent);
 });
 
-test('send: off without a complete block or a key file, and nothing is called', async () => {
+test('send: expectReply goes out only when replies are on, and the watch is remembered by its ledgerId', async () => {
   const { calls, config } = await fakeHermod();
-  for (const off of [undefined, {}, { ...config, url: undefined }, { ...config, person: undefined }, { ...config, keyFile: undefined }, { ...config, keyFile: join(dir, 'none') }]) {
+  const w = watches();
+  assert.equal(await sendEmail(event(), { ...config, replies: true }, fetch, undefined, w), true);
+  assert.equal(calls[0].body!.expectReply, true);
+  assert.ok(!('replyDeadlineSeconds' in calls[0].body!));
+  assert.equal(w.take('abcd1234-1'), 41);
+  assert.equal(w.take('abcd1234-1'), undefined, 'taken is forgotten');
+});
+
+test('send: off without a complete block or either key file, and nothing is called', async () => {
+  const { calls, config } = await fakeHermod();
+  for (const off of [undefined, {}, { ...config, url: undefined }, { ...config, person: undefined }, { ...config, keyFile: undefined }, { ...config, mailboxKeyFile: undefined }, { ...config, keyFile: join(dir, 'none') }, { ...config, mailboxKeyFile: join(dir, 'none') }]) {
     assert.equal(await sendEmail(event(), off), false);
   }
   assert.equal(calls.length, 0);
@@ -81,6 +112,30 @@ test('send: a refusal, an undelivered answer or a dead Hermod is reported, not t
   const deferred = await fakeHermod({ body: { delivered: false, deferred: true } });
   assert.equal(await sendEmail(event(), deferred.config), true);
   assert.equal(await sendEmail(event(), { ...deferred.config, url: 'http://127.0.0.1:9' }), false);
+});
+
+test('send: a 403 names the API key file, an unknown mailbox key its file, and no warning carries a secret', async () => {
+  const flagless = await fakeHermod({ status: 403, body: { error: "This key lacks the 'mailbox' flag — a mailbox key alone opens nothing." } });
+  const rotated = await fakeHermod({ status: 400, body: { error: 'Unknown mailbox key.' } });
+  const warned = await warnsOf(async () => {
+    assert.equal(await sendEmail(event(), flagless.config), false);
+    assert.equal(await sendEmail(event(), rotated.config), false);
+  });
+  assert.equal(warned.length, 2);
+  assert.ok(warned[0].includes(keyFile) && /mailbox flag/.test(warned[0]), warned[0]);
+  assert.ok(warned[1].includes(mailboxKeyFile) && /wrong or was rotated/.test(warned[1]), warned[1]);
+  for (const line of warned) assert.ok(!line.includes('hm_test') && !line.includes('hmb_test'), 'no secret in a log line');
+});
+
+test('watches: an episode that ends unanswered closes its watch once; an answered or unknown one closes nothing', async () => {
+  const hm = await fakeHermod();
+  const w = watches();
+  w.remember('ep1', 41);
+  await closeEmailWatch('ep1', hm.config, w);
+  await closeEmailWatch('ep1', hm.config, w);
+  await closeEmailWatch('never-sent', hm.config, w);
+  assert.deepEqual(hm.calls.map((c) => `${c.method} ${c.path}`), ['POST /api/v1/sends/41/close']);
+  assert.equal(hm.calls[0].auth, 'Bearer hm_test');
 });
 
 test('send: the email goes to the person the session chose', async () => {
@@ -121,7 +176,7 @@ const reply = (inboundId: number, over: Partial<HermodReply> = {}): HermodReply 
   ({ inboundId, atUtc: new Date().toISOString(), channel: 'email', person: 'cristian', text: 'the blue one', ledgerId: 41, correlationId: 'ep1', matchedAskId: null, replyState: 'waiting', ...over });
 
 let files = 0;
-function poller(config: EmailConfig, sessions: SessionInfo[], result: () => DeliverResult = () => ({ delivered: true }), file = join(dir, `cursor-${files++}.json`), now?: () => number) {
+function poller(config: EmailConfig, sessions: SessionInfo[], result: () => DeliverResult = () => ({ delivered: true }), file = join(dir, `cursor-${files++}.json`), now?: () => number, w?: EmailWatches) {
   const delivered: { episode: string; text: string }[] = [];
   const replies = new EmailReplies({
     config: () => config,
@@ -131,6 +186,7 @@ function poller(config: EmailConfig, sessions: SessionInfo[], result: () => Deli
       if ('delivered' in out) delivered.push(a);
       return out;
     },
+    watches: w,
     file,
     now,
   });
@@ -146,13 +202,16 @@ test('replies: off by default, Hermod is not even asked', async () => {
   assert.equal(delivered.length, 0);
 });
 
-test('replies: the waiting episode gets the stripped words, and the cursor survives a restart', async () => {
+test('replies: the waiting episode gets the stripped words, its watch needs no close, and the cursor survives a restart', async () => {
   const hm = await fakeHermod();
   hm.state.replies.push(reply(7, { text: 'the blue one\n\nOn Mon, Raven wrote:\n> Which one?' }));
   const config = { ...hm.config, replies: true };
-  const first = poller(config, [card()]);
+  const w = watches();
+  w.remember('ep1', 41);
+  const first = poller(config, [card()], undefined, undefined, undefined, w);
   await first.replies.poll();
   assert.deepEqual(first.delivered, [{ episode: 'ep1', text: 'the blue one' }]);
+  assert.equal(w.take('ep1'), undefined, 'the reply answered: the watch was taken, so an episode end closes nothing');
   assert.equal(hm.calls[0].path, '/api/v1/replies?since=0&limit=50');
   assert.equal(hm.calls[0].auth, 'Bearer hm_test');
   const second = poller(config, [card()], undefined, first.file);
