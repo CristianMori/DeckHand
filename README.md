@@ -289,8 +289,10 @@ and how to behave towards the others.
   phone. The architect merges, then `dh_remove_worker` takes the card, worktree
   and branch; `dh_worker_followup` brings a stopped worker back with its
   context. Roles are in the instructions given at launch, which compaction
-  doesn't touch; an edit to code by an architect gets a warning but goes through,
-  and only the edit tools are seen, not a shell command. API spawns stay plain
+  doesn't touch; an architect's first attempt to edit a code file is refused with
+  a reminder to delegate — retrying the same edit within ten minutes goes
+  through, still with a warning — and only the edit tools are seen, not a shell
+  command. API spawns stay plain
   unless they pass `role`. VIEW SWARM on a card's menu shows the architect, each
   worker's instruction, state, result, branch and tool counts.
   A worker can run on any fleet machine (`machine`), with nothing shared between

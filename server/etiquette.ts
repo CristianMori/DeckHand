@@ -9,6 +9,9 @@ import type { SessionInfo, SessionRole, WorkerLink } from './types.js';
  *  Level 1: every spawned session is told who it is and the rules (briefing).
  *  Level 2: an edit into a folder owned by another live session gets a warning
  *           back through the agent's own hook output. Nothing is blocked.
+ *  Level 3: an architect's first attempt to edit a code file in its own folder
+ *           is refused; retrying the same file within ten minutes goes through,
+ *           with a warning (architectEditDecision).
  */
 
 export interface Identity {
@@ -37,7 +40,7 @@ Fleet memory is shared by every session on every machine (dh_remember, dh_recall
 export const ARCHITECT_RULES = `Your role: ARCHITECT of this project. You stay with the user for a long time, so your context is the scarce thing. Spend it on understanding, not on detail you will forget.
 
 You do: discuss design and decisions with the user, know the whole architecture, keep the repository in order (review and merge work, commit, publish where the project says to), and keep the documentation true.
-You delegate: writing and debugging code, research, reading through many files, running builds and long test runs, anything whose detail stops mattering once its result is known. A small fix of a line or two is yours if a worker would be silly.
+You delegate: writing and debugging code, research, reading through many files, running builds and long test runs, anything whose detail stops mattering once its result is known. A small fix of a line or two is yours if a worker would be silly — the hub holds you to that: your first attempt to edit a code file is refused, and only trying the same edit again within ten minutes lets it through, with a warning. Documentation you edit freely.
 
 How to delegate:
 - dh_start_worker gives a task to a new worker session, in its own git worktree and branch off your current commit. Commit first: uncommitted work is not in its checkout. The worker knows nothing but what you write, so state the goal, the constraints, what you have ruled out, and what the result must contain.
@@ -120,12 +123,44 @@ export function windowsUnsafeNames(files: string[]): string[] {
   return [...bad];
 }
 
-/** Etiquette for an architect editing code in its own folder: it may, but it is told. */
-export function architectEditWarning(cwd: string, files: string[]): string | null {
+/** How long a refusal is remembered: a retry on the same file inside this window goes through. */
+export const ARCHITECT_RETRY_WINDOW_MS = 10 * 60_000;
+
+export interface ArchitectEditVerdict {
+  decision: 'deny' | 'warn';
+  message: string;
+}
+
+/**
+ * Etiquette for an architect editing code in its own folder: the first attempt
+ * on a file is refused, and a deliberate retry on the same file by the same
+ * session within ARCHITECT_RETRY_WINDOW_MS goes through, still with a warning.
+ * Pure: the caller owns `attempts` ("<sessionId>|<file>" → time of the
+ * refusal), so the logic can be tested without a hub.
+ */
+export function architectEditDecision(
+  attempts: Map<string, number>,
+  sessionId: string,
+  cwd: string,
+  files: string[],
+  now: number = Date.now(),
+): ArchitectEditVerdict | null {
   const root = resolve(cwd).toLowerCase() + sep;
   const file = files.find((f) => resolve(f).toLowerCase().startsWith(root) && !isDocPath(f));
   if (!file) return null;
-  return `Deckhand: you are the architect and ${file} is code. Unless this is a line or two, delegate it with dh_start_worker: detail you take in here crowds out the design you are here to hold.`;
+  for (const [k, t] of attempts) if (now - t > ARCHITECT_RETRY_WINDOW_MS) attempts.delete(k);
+  const key = `${sessionId}|${resolve(file).toLowerCase()}`;
+  if (attempts.has(key)) {
+    return {
+      decision: 'warn',
+      message: `Deckhand: you are the architect and ${file} is code; this retry goes through. Unless it really is a line or two, delegate it with dh_start_worker: detail you take in here crowds out the design you are here to hold.`,
+    };
+  }
+  attempts.set(key, now);
+  return {
+    decision: 'deny',
+    message: `Deckhand refused this edit (${file}): you are the architect, delegate this with dh_start_worker. If this really is a line or two, try the same edit again and it will go through.`,
+  };
 }
 
 export function fleetBriefing(id: Identity): string {

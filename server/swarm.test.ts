@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { architectEditWarning, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
+import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
@@ -71,14 +71,41 @@ test('an asking worker waits for its answer without being reminded', () => {
   assert.deepEqual(workerStep(link({ status: 'asking', askedAt: NOW - 60_000 }), live('WORKING', 1000), NOW), { do: 'resume-tracking' });
 });
 
-test('documentation is the architect\'s, code gets a warning, and elsewhere is not its business', () => {
+test('documentation is the architect\'s, code is refused, and elsewhere is not its business', () => {
   assert.ok(isDocPath('D:/p/lead/docs/ARCHITECTURE.md'));
   assert.ok(isDocPath('D:\\p\\lead\\README.md'));
   assert.ok(isDocPath('D:/p/lead/docs/diagram.svg'));
   assert.ok(!isDocPath('D:/p/lead/server/index.ts'));
-  assert.equal(architectEditWarning('D:/p/lead', ['D:/p/lead/README.md']), null);
-  assert.equal(architectEditWarning('D:/p/lead', ['D:/elsewhere/scratch.ts']), null);
-  assert.match(architectEditWarning('D:/p/lead', ['D:/p/lead/server/index.ts']) ?? '', /dh_start_worker/);
+  const attempts = new Map<string, number>();
+  assert.equal(architectEditDecision(attempts, 'arch', 'D:/p/lead', ['D:/p/lead/README.md'], NOW), null);
+  assert.equal(architectEditDecision(attempts, 'arch', 'D:/p/lead', ['D:/elsewhere/scratch.ts'], NOW), null);
+  const first = architectEditDecision(attempts, 'arch', 'D:/p/lead', ['D:/p/lead/server/index.ts'], NOW);
+  assert.equal(first?.decision, 'deny');
+  assert.match(first?.message ?? '', /dh_start_worker/);
+  assert.match(first?.message ?? '', /try the same edit again/);
+});
+
+test('an architect\'s retry on the same file goes through, anything else is refused again', () => {
+  const attempts = new Map<string, number>();
+  const edit = (sessionId: string, file: string, at: number) =>
+    architectEditDecision(attempts, sessionId, 'D:/p/lead', [file], at);
+
+  assert.equal(edit('arch', 'D:/p/lead/server/index.ts', NOW)?.decision, 'deny');
+  // same session, same file, inside the window: through, with the warning
+  const retry = edit('arch', 'D:/p/lead/server/index.ts', NOW + 60_000);
+  assert.equal(retry?.decision, 'warn');
+  assert.match(retry?.message ?? '', /dh_start_worker/);
+  // another file, another session: each gets its own refusal
+  assert.equal(edit('arch', 'D:/p/lead/server/other.ts', NOW + 60_000)?.decision, 'deny');
+  assert.equal(edit('arch2', 'D:/p/lead/server/index.ts', NOW + 60_000)?.decision, 'deny');
+  // past the window the refusal is forgotten: refused again, then through again
+  const late = NOW + ARCHITECT_RETRY_WINDOW_MS + 61_000;
+  assert.equal(edit('arch', 'D:/p/lead/server/index.ts', late)?.decision, 'deny');
+  assert.equal(edit('arch', 'D:/p/lead/server/index.ts', late + 1000)?.decision, 'warn');
+  // on Windows the file is remembered whatever the separators or case
+  if (process.platform === 'win32') {
+    assert.equal(edit('arch', 'D:\\p\\lead\\SERVER\\index.ts', late + 2000)?.decision, 'warn');
+  }
 });
 
 test('each role is briefed with its own rules, a plain session with neither', () => {

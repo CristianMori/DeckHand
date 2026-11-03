@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { agentFor, listAgents } from './agents/index.js';
 import type { HookPayload } from './agents/types.js';
-import { architectEditWarning, editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
+import { architectEditDecision, editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
 import { normCwd } from './transcriptIo.js';
@@ -22,15 +22,20 @@ export const hookBus = new EventEmitter<{ hook: [HubSession, string, HookPayload
  * freshly spawned, still-unbound session of that agent claims it.
  *
  * Replies are normally an empty 204 so hooks never slow the agent down. The
- * one exception is fleet etiquette: a PreToolUse edit into a folder owned by
- * another live session gets a JSON warning back, which both Claude Code and
- * Codex surface to the agent (additionalContext) and the user (systemMessage).
+ * one exception is fleet etiquette on PreToolUse: an edit into a folder owned
+ * by another live session gets a JSON warning back, which both Claude Code and
+ * Codex surface to the agent (additionalContext) and the user (systemMessage);
+ * and an architect's first attempt to edit code in its own folder is refused
+ * with permissionDecision "deny", which both Claude Code and Codex honour —
+ * a retry on the same file within ten minutes goes through with a warning.
  */
 export function makeHookHandler(
   manager: SessionManager,
   engine: StatusEngine,
   fleetSessions: () => SessionInfo[],
 ) {
+  // refused architect edits, "<sessionId>|<file>" → when; a retry goes through
+  const architectAttempts = new Map<string, number>();
   return (req: Request, res: Response) => {
     const event = String(req.query.event ?? '');
     const agentId = typeof req.query.agent === 'string' ? req.query.agent : undefined;
@@ -72,20 +77,37 @@ export function makeHookHandler(
     const sig = agentFor(session).mapHookEvent(event, body);
     if (sig) engine.signal(session, SIG_HOOK, sig.state, sig.detail);
 
-    // etiquette level 2: warn on edits into another live session's folder
+    // etiquette level 2: warn on edits into another live session's folder;
+    // level 3: refuse an architect's first attempt to edit code itself
     if (event === 'PreToolUse') {
       try {
         // a worker with no worktree of its own works in its architect's folder by design
         const sharesFolder = session.worker && !session.worker.worktree;
-        const warning =
-          (sharesFolder ? null : ownershipCheck(session.claudeSessionId, body, fleetSessions())) ??
-          (session.role === 'architect' || session.role === 'subarchitect' ? architectEditWarning(session.cwd, editedPaths(body.tool_name, body.tool_input, body.cwd)) : null);
+        const warning = sharesFolder ? null : ownershipCheck(session.claudeSessionId, body, fleetSessions());
         if (warning) {
           console.log(`[etiquette] ${session.name}: ${warning.slice(0, 120)}…`);
           return res.json({
             systemMessage: warning,
             hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: warning },
           });
+        }
+        if (session.role === 'architect' || session.role === 'subarchitect') {
+          const verdict = architectEditDecision(
+            architectAttempts,
+            session.claudeSessionId,
+            session.cwd,
+            editedPaths(body.tool_name, body.tool_input, body.cwd),
+          );
+          if (verdict) {
+            console.log(`[etiquette] ${session.name} (${verdict.decision}): ${verdict.message.slice(0, 120)}…`);
+            return res.json({
+              systemMessage: verdict.message,
+              hookSpecificOutput:
+                verdict.decision === 'deny'
+                  ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: verdict.message }
+                  : { hookEventName: 'PreToolUse', additionalContext: verdict.message },
+            });
+          }
         }
       } catch {
         /* never let etiquette break a hook */
