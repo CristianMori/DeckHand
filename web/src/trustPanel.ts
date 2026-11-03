@@ -35,7 +35,7 @@ export async function renderTrustPanel(el: HTMLElement): Promise<void> {
   const agents = [...new Set([...(mimir?.agents ?? []).map((a) => a.id.toLowerCase()), ...trust.grants.map((g) => g.agent)])].sort();
 
   el.innerHTML = `
-    <div class="tr-note">Enrolling in Mimir grants nothing. An agent sees, reads or prompts only what is granted here — checked by the hub, before any session sees the request.</div>
+    <div class="tr-note">Enrolling in Mimir grants nothing. An agent reaches only architects, and only those granted here — checked by the hub, before any session sees the request. Other sessions and workers don't exist for it.</div>
     <div class="tr-list" id="tr-list"></div>
     <div class="tr-legacy" id="tr-legacy"></div>
     <div class="tr-form">
@@ -49,7 +49,8 @@ export async function renderTrustPanel(el: HTMLElement): Promise<void> {
       <select id="tr-where">
         <option value="*">every folder</option>
         <optgroup label="folder">${folders.map((f) => `<option value="f:${esc(f.folder)}">${esc(f.folder)}</option>`).join('')}</optgroup>
-        <optgroup label="one session">${agentSessions
+        <optgroup label="one architect">${agentSessions
+          .filter((s) => s.role === 'architect')
           .map((s) => `<option value="s:${esc(s.claudeSessionId)}">${esc(s.name)} · ${esc(s.machine ?? '')}</option>`)
           .join('')}</optgroup>
       </select>

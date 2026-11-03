@@ -600,7 +600,10 @@ no gateway; the seam is three calls:
   `X-Deckhand-Caller: gateway:<agent>` with the delegate key
   (`data/delegate.key` on desktop-master) in `X-Deckhand-Delegate-Key`.
   The hub decides what that agent may reach **before** the request goes near a
-  session (`server/agentAccess.ts`), deny by default:
+  session (`server/agentAccess.ts`), deny by default. An agent only ever reaches
+  **architects**: plain sessions, sub-architects, workers and terminals answer
+  404 and aren't listed, whatever the grant says, so nothing from outside lands
+  on a session that runs with nobody approving. Within that:
 
   | grant | the agent may |
   |---|---|
@@ -609,7 +612,8 @@ no gateway; the seam is three calls:
   | `observe` | + exchanges, screen, wait |
   | `interact` | + prompt; read and write project memories of that folder |
 
-  Grants cover a project folder, every folder (`*`), or one conversation. A
+  Grants cover the architects of a project folder, of every folder (`*`), or one
+  conversation. MAKE ARCHITECT on a card puts a session within reach. A
   folder grant matches the session's *project* — the top folder under its
   hub's projects root, stamped on the session by the owning hub — so it covers
   everything inside that project and never a same-named folder elsewhere;
@@ -630,7 +634,7 @@ no gateway; the seam is three calls:
   cannot be forgotten except from the panel. Older plain-memory trust entries
   are listed there, unenforced, with a one-click convert. Prompts still arrive
   stamped `[Deckhand gateway, client <id>] [via Mimir, …]` and sessions apply
-  the trust rule as a second layer. Terminals are never reachable.
+  the trust rule as a second layer.
 - **ADMIN and AUDIT show Mimir's view of the agents** (`GET /api/mimir/agents`
   → Mimir's `/api/v1/agents`): enrolled agents, live or not, open tasks, last
   messages, and pending access requests, which are accepted on Mimir's

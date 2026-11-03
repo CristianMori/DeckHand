@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { architectEditWarning, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
 import type { HubSession, SessionManager } from './sessionManager.js';
+import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
 import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
@@ -298,6 +299,11 @@ test('a stalled worker tells the architect what it last said', async () => {
   await swarm.tick(now);
   assert.match(swarm.inboxOf(architect)[0].text, /^VERIFIED: from the hub about worker "w1"[\s\S]*it said this/);
   assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
+});
+
+test('an outside agent can reach an architect, and nothing else', () => {
+  assert.equal(reachableByAgents({ role: 'architect' }), true);
+  for (const role of ['subarchitect', 'worker', undefined]) assert.equal(reachableByAgents({ role }), false);
 });
 
 test('an envelope holds only as signed, whatever order its keys arrive in', () => {

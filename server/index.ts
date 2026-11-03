@@ -277,8 +277,8 @@ app.use(
 );
 
 // Outside agents — calls Mimir makes on their behalf (caller gateway:<agent>).
-// Deny by default: an agent sees, reads or prompts only the sessions its
-// grants cover (agentAccess.ts), decided here before any session is touched.
+// Deny by default: an agent sees, reads or prompts only architects, and only
+// those its grants cover (agentAccess.ts), decided here before any session is touched.
 // A session with no grant answers 404, so its existence does not leak.
 function sessionInfoById(id: string): SessionInfo | undefined {
   const local = manager.sessions.get(id) ?? manager.byClaudeSessionId(id) ?? byConversationPrefix(id);

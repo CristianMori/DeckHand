@@ -24,6 +24,10 @@ import { TRUST_ORIGIN, trustEntries, type Memory } from './fleetMemory.js';
  *   observe   + exchanges, screen, wait
  *   interact  + prompt (and project memories in that folder)
  *
+ * Whatever the grant says, an agent only ever reaches architects. The rest of
+ * the fleet doesn't exist for it: an architect decides what its workers do, and
+ * a worker runs unattended, so nothing from outside may land there.
+ *
  * Calls on an agent's behalf come from Mimir with X-Deckhand-Caller
  * gateway:<agent> and the delegate key (data/delegate.key, read by Mimir on
  * this machine) in X-Deckhand-Delegate-Key. A hub that forwards such a call
@@ -72,6 +76,9 @@ export function grantsFor(agent: string): Grant[] {
   return allGrants().filter((g) => g.agent === a);
 }
 
+/** The one kind of session an outside agent can reach, grant permitting. */
+export const reachableByAgents = (session: { role?: string }) => session.role === 'architect';
+
 /**
  * The strongest access any of the agent's grants gives on this session; null = none.
  * A folder grant matches the session's project — the top folder under its
@@ -81,7 +88,8 @@ export function grantsFor(agent: string): Grant[] {
  * identity (sync, resume, handoff and rename all key on them). A session
  * outside any projects root has no project: only * or a session grant reaches it.
  */
-export function accessTo(agent: string, session: { project?: string | null; claudeSessionId?: string }): Access | null {
+export function accessTo(agent: string, session: { project?: string | null; claudeSessionId?: string; role?: string }): Access | null {
+  if (!reachableByAgents(session)) return null;
   const project = (session.project ?? '').toLowerCase();
   const conv = session.claudeSessionId ?? '';
   let best: Access | null = null;
@@ -146,7 +154,7 @@ export function grantMemory(g: { agent: string; access: Access; folders: string[
     g.folders === '*' ? 'every folder' : g.folders.length ? `folder${g.folders.length > 1 ? 's' : ''} ${g.folders.join(', ')}` : '',
     g.sessions.length ? `session${g.sessions.length > 1 ? 's' : ''} ${(g.sessionNames?.length ? g.sessionNames : g.sessions.map((s) => s.slice(0, 8))).join(', ')}` : '',
   ].filter(Boolean).join(' and ');
-  const verb = g.access === 'interact' ? 'may read and prompt' : g.access === 'observe' ? 'may read (not prompt)' : 'may see (not read or prompt)';
+  const verb = g.access === 'interact' ? 'may read and prompt the architects of' : g.access === 'observe' ? 'may read (not prompt) the architects of' : 'may see (not read or prompt) the architects of';
   const fact = `TRUSTED AGENT: ${g.agent} ${verb} ${where}. Enforced by the hub; granted by the user in the TRUST panel.${g.note ? ` ${g.note}` : ''}`;
   const tags = [
     'trusted-agent',
