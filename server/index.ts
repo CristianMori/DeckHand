@@ -2949,4 +2949,12 @@ function listen(port: number, attemptsLeft: number) {
   });
 }
 
-listen(DEFAULT_PORT, 10);
+// The hub's moving parts, for the HTTP-level test harness (hub.http.test.ts):
+// the Express app with every gate wired, the HTTP server with its upgrade
+// handler, and the pieces the tests drive directly. HUB_LISTEN=0 (set only by
+// tests, together with a temporary HUB_DATA_DIR) skips the listen() below so
+// the harness can listen on an ephemeral port itself; everything else about
+// loading this module — routes, gates, middleware — is identical to the real hub.
+export { app, httpServer, manager, needsYou, swarm };
+
+if (process.env.HUB_LISTEN !== '0') listen(DEFAULT_PORT, 10);
