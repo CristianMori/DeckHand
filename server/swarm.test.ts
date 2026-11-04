@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,7 +11,7 @@ import { peerWithLiveSession } from './federation.js';
 import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
-import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, changedFiles, createWorktree, gitTimeoutMs, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -691,6 +691,88 @@ test('a commit travels to a mirror and a branch comes back, with nothing else sh
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a base that is an ancestor of a head the mirror holds needs no bundle, and the round trip still works', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-far-'));
+  try {
+    const mirror = await projectMirror('demo', root);
+    const first = git('rev-parse', 'HEAD').trim();
+    writeFileSync(join(dir, 'b.txt'), 'b\n');
+    git('add', '.');
+    git('commit', '-qm', 'second');
+    const second = git('rev-parse', 'HEAD').trim();
+    await receiveCommit(mirror, (await bundleCommit(dir, second, []))!);
+    // the next worker starts from the older commit: its objects travelled inside `second`
+    assert.equal(await bundleCommit(dir, first, [second]), undefined);
+    // and a worker there can still branch from it and come back
+    const worktree = join(root, 'w-old');
+    execFileSync('git', ['-C', mirror, 'worktree', 'add', '-q', '-b', 'worker/old', worktree, first]);
+    writeFileSync(join(worktree, 'c.txt'), 'c\n');
+    execFileSync('git', ['-C', worktree, 'add', '.']);
+    execFileSync('git', ['-C', worktree, '-c', 'user.name=w', '-c', 'user.email=w@w', 'commit', '-qm', 'c']);
+    await receiveBranch(dir, 'worker/old', await bundleBranch(mirror, 'worker/old', first));
+    assert.equal(git('log', '--format=%s', '-1', 'worker/old').trim(), 'c');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('non-ASCII names come back from git as they are, so Windows safety judges the real name', async () => {
+  const { dir } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    const t = await createWorktree(dir, 'uni', root);
+    writeFileSync(join(t!.worktree, 'héllo-ö.txt'), 'x\n');
+    execFileSync('git', ['-C', t!.worktree, 'add', '.']);
+    execFileSync('git', ['-C', t!.worktree, 'commit', '-qm', 'uni']);
+    const names = await changedFiles(t!);
+    assert.deepEqual(names, ['héllo-ö.txt']);
+    assert.deepEqual(windowsUnsafeNames(names), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('worktree, bundle and fetch get minutes; quick queries keep failing fast', () => {
+  assert.equal(gitTimeoutMs(['worktree', 'add', '-b', 'worker/x', 'd', 'abc']), 300_000);
+  assert.equal(gitTimeoutMs(['fetch', '-q', 'file.bundle']), 300_000);
+  assert.equal(gitTimeoutMs(['bundle', 'create', '-q', 'f', 'ref']), 300_000);
+  assert.equal(gitTimeoutMs(['status', '--porcelain']), 30_000);
+  assert.equal(gitTimeoutMs(['rev-parse', 'HEAD']), 30_000);
+});
+
+test('a 40 KB task travels as a file, and the command line carries the task once at most', async () => {
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const id = (s: HubSession) => ({ hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: s.cwd, hubUrl: 'u', role: 'worker' as const, worker: s.worker });
+  const promptOf = (s: HubSession) => (s as unknown as { initialPrompt?: string }).initialPrompt ?? '';
+  const short = (await swarm.start(architect, { task: 'add b', name: 'small' })).session!;
+  const task = `the first line\n${'x'.repeat(40_000)}`;
+  const long = (await swarm.start(architect, { task, name: 'long' })).session!;
+  try {
+    // a short task rides in the briefing alone; the first prompt only points there
+    assert.equal(short.worker!.taskFile, undefined);
+    assert.match(fleetBriefing(id(short)), /add b/);
+    assert.doesNotMatch(promptOf(short), /add b/);
+    // a long one lives on disk, named by briefing and prompt, and the spawn line stays under Windows' ~32k
+    const file = long.worker!.taskFile!;
+    assert.ok(file && existsSync(file));
+    assert.equal(readFileSync(file, 'utf8'), task);
+    const briefing = fleetBriefing(id(long));
+    assert.ok(!briefing.includes('xxxx') && !promptOf(long).includes('xxxx'));
+    assert.ok(briefing.includes(file) && promptOf(long).includes(file));
+    assert.ok(briefing.length + promptOf(long).length < 32_000, `spawn line would be ${briefing.length + promptOf(long).length}`);
+  } finally {
+    for (const s of [short, long]) if (s.worker?.worktree) rmSync(s.worker.worktree, { recursive: true, force: true });
+    if (long.worker?.taskFile) rmSync(long.worker.taskFile, { force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

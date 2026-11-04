@@ -40,12 +40,19 @@ import type { CrewPin, SessionRole, SwarmEnvelope, SwarmLetter, SwarmLetterKind,
  */
 
 const run = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await run('git', ['-C', cwd, ...args], { timeout: 30_000, windowsHide: true })).stdout.trim();
+/** Quick queries fail fast; worktree, bundle and fetch walk whole repositories, minutes on a big one. */
+export const gitTimeoutMs = (args: string[]) => (['worktree', 'bundle', 'fetch'].includes(args[0]) ? 300_000 : 30_000);
+// quotepath off: non-ASCII file names come back as they are, not quoted with octal escapes
+const git = async (cwd: string, ...args: string[]) =>
+  (await run('git', ['-C', cwd, '-c', 'core.quotepath=false', ...args], { timeout: gitTimeoutMs(args), windowsHide: true })).stdout.trim();
 const gitOk = (cwd: string, ...args: string[]) => git(cwd, ...args).then(() => true, () => false);
 
 /** A report is what the architect needs, not the story. The transcript holds the rest. */
 export const REPORT_MAX = 3000;
-const TASK_MAX = 20_000;
+/** A long task travels as a file, so this guards only persistence and the envelopes. */
+const TASK_MAX = 100_000;
+/** What still fits on a spawn command line beside the briefing; a longer task goes to disk. */
+const TASK_INLINE_MAX = 8_000;
 const STOP_AFTER_REPORT_MS = 8000;
 /** Time for a finished turn to call dh_report before it is reminded. */
 const IDLE_GRACE_MS = 45_000;
@@ -158,6 +165,20 @@ export async function worktreeFacts(w: Pick<WorkerLink, 'worktree' | 'branch' | 
 }
 
 const WORKTREES = join(DATA_DIR, 'worktrees');
+const TASKS_DIR = join(DATA_DIR, 'worker-tasks');
+
+/** A long task is written to disk: the briefing and the first prompt point at it instead of carrying it. */
+function taskFileFor(task: string, name: string): string | undefined {
+  if (task.length <= TASK_INLINE_MAX) return undefined;
+  mkdirSync(TASKS_DIR, { recursive: true });
+  const file = join(TASKS_DIR, `${slug(name)}-${randomBytes(3).toString('hex')}.md`);
+  writeFileSync(file, task);
+  return file;
+}
+
+/** The spawn command line carries the task once at most: it rides in the briefing, or in the task file. */
+const startPrompt = (w: WorkerLink) =>
+  w.taskFile ? `Read your task from the file ${w.taskFile}, then carry it out.` : 'Carry out your task: it is in your instructions, under "Your task".';
 
 /** Where a folder's repository stands, or undefined when it isn't in one. */
 async function repoBase(folder: string) {
@@ -181,7 +202,7 @@ async function addWorktree(repo: string, baseCommit: string, name: string, root:
 }
 
 /** The worker's own branch off the folder's current commit, outside every synced folder. */
-async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
+export async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
   if (!w.worktree || !w.baseCommit) return [];
   const names = await git(w.worktree, 'diff', '--name-only', `${w.baseCommit}..HEAD`);
   return names ? names.split('\n') : [];
@@ -227,6 +248,9 @@ export async function bundleCommit(repo: string, commit: string, have: string[])
   if (have.includes(commit)) return undefined;
   const known: string[] = [];
   for (const sha of have) if (/^[0-9a-f]{40,64}$/.test(sha) && (await gitOk(repo, 'cat-file', '-e', `${sha}^{commit}`))) known.push(sha);
+  // an ancestor of a head the other side holds travelled in that head's bundle:
+  // nothing to send, and git would refuse to create the empty bundle
+  for (const sha of known) if (await gitOk(repo, 'merge-base', '--is-ancestor', commit, sha)) return undefined;
   const ref = `refs/deckhand/send/${commit}`;
   await git(repo, 'update-ref', ref, commit);
   try {
@@ -388,6 +412,7 @@ export class Swarm {
       architect: architect.claudeSessionId,
       architectName: architect.name,
       task,
+      taskFile: taskFileFor(task, name),
       baseFolder: architect.cwd,
       project: architect.worker?.project ?? projectName(architect.cwd),
       platform: process.platform,
@@ -406,7 +431,7 @@ export class Swarm {
       agentType: opts.agentType ?? architect.agentType,
       model: opts.model ?? architect.model,
       permissionMode: opts.permissionMode,
-      initialPrompt: task,
+      initialPrompt: startPrompt(worker),
       role: kind,
       worker,
     });
@@ -487,32 +512,34 @@ export class Swarm {
       throw new Error(`the architect's folder (${h.sub}) is not in the commit the worker would branch from: commit it there first`);
     }
     const tree = await addWorktree(repo, h.baseCommit, h.name, WORKTREES);
+    const worker: WorkerLink = {
+      architect: h.architect,
+      architectName: h.architectName,
+      architectMachine: h.architectMachine,
+      architectPlatform: h.architectPlatform,
+      platform: process.platform,
+      task: h.task,
+      taskFile: taskFileFor(h.task, h.name),
+      baseFolder: h.baseFolder,
+      project: h.project,
+      worktree: tree.worktree,
+      repo,
+      branch: tree.branch,
+      baseCommit: h.baseCommit,
+      mcpChoices: h.mcpChoices,
+      leadKey: h.leadKey,
+      status: 'working',
+      startedAt: Date.now(),
+    };
     const session = this.manager.create({
       cwd: h.sub ? join(tree.worktree, h.sub) : tree.worktree,
       name: h.name,
       agentType: h.agentType,
       model: h.model,
       permissionMode: h.permissionMode,
-      initialPrompt: h.task,
+      initialPrompt: startPrompt(worker),
       role: h.kind === 'subarchitect' ? 'subarchitect' : 'worker',
-      worker: {
-        architect: h.architect,
-        architectName: h.architectName,
-        architectMachine: h.architectMachine,
-        architectPlatform: h.architectPlatform,
-        platform: process.platform,
-        task: h.task,
-        baseFolder: h.baseFolder,
-        project: h.project,
-        worktree: tree.worktree,
-        repo,
-        branch: tree.branch,
-        baseCommit: h.baseCommit,
-        mcpChoices: h.mcpChoices,
-        leadKey: h.leadKey,
-        status: 'working',
-        startedAt: Date.now(),
-      },
+      worker,
     });
     session.autoYes = true;
     this.deps.promptFrom(session, 'session:architect', true);
@@ -780,7 +807,9 @@ export class Swarm {
   private async tidyAfterRemoval(s: HubSession) {
     dropSwarmKey(s.swarmKey);
     const w = s.worker;
-    if (!w?.worktree) return;
+    if (!w) return;
+    if (w.taskFile) rmSync(w.taskFile, { force: true });
+    if (!w.worktree) return;
     const facts = await worktreeFacts(w).catch(() => undefined);
     if (!facts || facts.dirty) return;
     // the process has only just been told to stop, and it holds the folder on Windows

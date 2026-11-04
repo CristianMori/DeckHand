@@ -81,6 +81,8 @@ export interface WorkerLink {
   architect: string;
   architectName: string;
   task: string;
+  /** a task too long for a command line is on disk: the briefing and first prompt point at it */
+  taskFile?: string;
   followUps?: string[];
   baseFolder: string;
   /** the project's name, which holds on every machine, unlike a path */
