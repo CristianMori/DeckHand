@@ -1,6 +1,8 @@
 # shell scripts and node entry points run on macOS/Linux: never CRLF
 *.sh text eol=lf
 *.mjs text eol=lf
+# git hooks run through sh everywhere, Windows included: never CRLF
+.githooks/* text eol=lf
 start-hub.cmd text eol=crlf
 # real screen captures used as composer-test fixtures: keep them byte-exact
 server/agents/screens/*.txt text eol=lf
