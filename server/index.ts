@@ -64,6 +64,7 @@ import {
   isSettled,
   keyData,
   lastExchanges,
+  MAX_PROMPT_BYTES,
   replyTo,
   screenText,
   typePrompt,
@@ -1754,6 +1755,10 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   const session = manager.sessions.get(id)!;
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (!text.trim()) return res.status(400).json({ error: 'text required' });
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > MAX_PROMPT_BYTES) {
+    return res.status(413).json({ error: `prompt is ${bytes} bytes — the limit is ${MAX_PROMPT_BYTES}; put the content in a file in the session's folder and send a prompt that references it` });
+  }
   if (!session.proc) return res.status(409).json({ error: 'session has exited — resume it first' });
   if (session.state === 'WORKING' && !req.body?.queue) {
     return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
