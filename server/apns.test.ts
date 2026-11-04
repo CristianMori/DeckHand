@@ -111,6 +111,13 @@ test('alert push: the headers and payload APNs and the app need, with a valid pr
   await apns.close();
 });
 
+test('each attention kind gets its own subtitle, dialogs included', () => {
+  assert.equal(attentionPayload(event).aps.alert.subtitle, 'has a question');
+  assert.equal(attentionPayload({ ...event, kind: 'permission' }).aps.alert.subtitle, 'wants approval');
+  assert.equal(attentionPayload({ ...event, kind: 'dialog', text: "Claude's login screen" }).aps.alert.body, "Claude's login screen");
+  assert.equal(attentionPayload({ ...event, kind: 'dialog' }).aps.alert.subtitle, 'is waiting at a dialog');
+});
+
 test('the payload stays under the 4 KB limit with a full-length text, and the alert is shortened', () => {
   const p = attentionPayload({ ...event, text: 'é'.repeat(600) });
   assert.ok(Buffer.byteLength(JSON.stringify(p)) < 4096);

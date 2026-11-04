@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.mjs text eol=lf
 start-hub.cmd text eol=crlf
+# real screen captures used as composer-test fixtures: keep them byte-exact
+server/agents/screens/*.txt text eol=lf

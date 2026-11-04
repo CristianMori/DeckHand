@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR, readSecretFile, warnOnce } from './config.js';
-import { alertPeople, type AttentionEvent } from './needsYou.js';
+import { alertPeople, attentionPhrase, type AttentionEvent } from './needsYou.js';
 import type { DeliverResult } from './sms.js';
 import type { SessionInfo } from './types.js';
 
@@ -73,7 +73,7 @@ function sender(c: EmailConfig | undefined): Sender | undefined {
 
 /** Short, with the session name and what it needs — the same line Discord uses. */
 export function emailSubject(e: Pick<AttentionEvent, 'name' | 'kind' | 'machine'>): string {
-  const what = e.kind === 'permission' ? 'wants approval' : 'has a question';
+  const what = attentionPhrase(e.kind);
   return `${e.name}${e.machine ? ` on ${e.machine}` : ''} ${what}`;
 }
 

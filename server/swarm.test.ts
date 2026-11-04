@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, renderRoleTask, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
+import { peerWithLiveSession } from './federation.js';
 import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
-import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, changedFiles, createWorktree, gitTimeoutMs, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, roleSpawnRefusal, Swarm, swarmEvent, TYPING_BLOCKED_MAX_MS, workerStep, worktreeFacts } from './swarm.js';
 import type { RoleCharter } from './roleCharters.js';
 import type { WorkerLink } from './types.js';
 
@@ -140,7 +141,7 @@ function repo(withDocs = true) {
   return { dir, git };
 }
 
-function harness(stuckAt?: (s: HubSession) => string | undefined, extra: Partial<ConstructorParameters<typeof Swarm>[1]> = {}) {
+function harness(over: { stuckAt?: (s: HubSession) => string | undefined; composerBusy?: (s: HubSession) => boolean } = {}, extra: Partial<ConstructorParameters<typeof Swarm>[1]> = {}) {
   const manager = Object.assign(new EventEmitter(), {
     sessions: new Map<string, HubSession>(),
     create(opts: { cwd: string; name: string; role: string; worker: WorkerLink; agentType: string }) {
@@ -150,7 +151,10 @@ function harness(stuckAt?: (s: HubSession) => string | undefined, extra: Partial
       return s;
     },
     byClaudeSessionId: (id: string) => [...manager.sessions.values()].find((s) => s.claudeSessionId === id),
-    kill() {},
+    kill(_hubId: string) {},
+    resume(_hubId: string): HubSession | undefined {
+      return undefined;
+    },
     remove(hubId: string) {
       const s = manager.sessions.get(hubId);
       manager.sessions.delete(hubId);
@@ -164,7 +168,8 @@ function harness(stuckAt?: (s: HubSession) => string | undefined, extra: Partial
     typePrompt: async (s, text) => void typed.push({ to: s.hubId, text }),
     promptFrom: (_s, caller) => void asked.push(caller),
     lastReply: async () => 'it said this',
-    stuckAt,
+    stuckAt: over.stuckAt,
+    composerBusy: over.composerBusy,
     save() {},
     letterFiled: (to, letter) => void events.push(swarmEvent(to, letter)),
     ...extra,
@@ -218,6 +223,21 @@ test('the worker gets its own branch and checkout, and the main folder stays put
     execFileSync('git', ['-C', t.worktree, 'commit', '-qm', 'b']);
     assert.deepEqual(await worktreeFacts(t), { branch: t.branch, commits: 1, files: 1, dirty: false });
     assert.equal(existsSync(join(dir, 'b.txt')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a worker cwd not in the base commit is refused before any worktree exists', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    const sub = join(dir, 'newpkg');
+    mkdirSync(sub);
+    writeFileSync(join(sub, 'x.txt'), 'x'); // on disk, but in no commit
+    await assert.rejects(createWorktree(sub, 'w', root), /not in the commit/);
+    assert.equal(git('worktree', 'list').trim().split('\n').length, 1); // nothing left behind
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
@@ -322,6 +342,68 @@ test('from task to report to merge to removal', async () => {
   }
 });
 
+test('a follow-up within the post-report stop window keeps the worker alive', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  const killed: string[] = [];
+  manager.kill = (hubId: string) => void killed.push(hubId);
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const { session } = await swarm.start(architect, { task: 'add b', name: 'adder' });
+  const w = session!.worker!;
+  try {
+    writeFileSync(join(w.worktree!, 'b.txt'), 'b\n');
+    execFileSync('git', ['-C', w.worktree!, 'add', '.']);
+    execFileSync('git', ['-C', w.worktree!, 'commit', '-qm', 'b']);
+    await swarm.report(session!, reported(session!, 'b is added'));
+    // new work arrives inside the window: the stop the report scheduled must not land
+    await swarm.followUp(session!, 'one more thing');
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(killed, []);
+    // reported again, with nothing new since: now it lands
+    await swarm.report(session!, reported(session!, 'still added'));
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(killed, [session!.hubId]);
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a worker left EXITED after a hub restart is brought back once, or its lead is told', async () => {
+  const { manager, swarm } = harness();
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const comesBack = aMember(architect, 'w1', {}, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  const stays = aMember(architect, 'w2', {}, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  const done = aMember(architect, 'w3', { status: 'reported' }, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  for (const s of [comesBack, stays, done]) manager.sessions.set(s.hubId, s);
+  const resumed: string[] = [];
+  manager.resume = (hubId: string) => {
+    resumed.push(hubId);
+    const s = manager.sessions.get(hubId)!;
+    if (hubId === 'w1') Object.assign(s, { proc: {}, state: 'WORKING', detail: undefined });
+    return s;
+  };
+  swarm.restoreLeftBehind();
+  assert.deepEqual(resumed, ['w1', 'w2']); // the reported one is left alone
+  assert.equal(comesBack.worker?.status, 'working');
+  assert.equal(stays.worker?.status, 'failed');
+  assert.match(stays.worker?.result ?? '', /could not restore after a restart/);
+  // the lead hears why, through the usual outbox
+  await swarm.tick();
+  assert.match(swarm.inboxOf(architect).map((l) => l.text).join(), /could not restore after a restart/);
+});
+
+test('a message for an architect elsewhere goes only to a hub with its live card', () => {
+  const dead = { sessions: [{ claudeSessionId: 'arch-conv', alive: false }] };
+  const live = { sessions: [{ claudeSessionId: 'arch-conv', alive: true }] };
+  assert.equal(peerWithLiveSession([dead, live], 'arch-conv'), live);
+  assert.equal(peerWithLiveSession([dead], 'arch-conv'), undefined); // no live card: the outbox keeps the message
+  assert.equal(peerWithLiveSession([live], 'other-conv'), undefined);
+});
+
 test('reports from several workers mean one prompt, and each can be read', async () => {
   const { manager, swarm, typed } = harness();
   const architect = aLead();
@@ -385,7 +467,7 @@ test('a worker inherits the project MCP servers its lead enabled', async () => {
 });
 
 test('a worker stuck at a startup dialog is reported with what blocks it, not nudged', async () => {
-  const { manager, swarm, typed } = harness((s) => (s.hubId === 'w1' ? 'Claude\'s "2 new MCP servers found" project dialog' : undefined));
+  const { manager, swarm, typed } = harness({ stuckAt: (s) => (s.hubId === 'w1' ? 'Claude\'s "2 new MCP servers found" project dialog' : undefined) });
   const architect = aLead();
   manager.sessions.set('lead', architect);
   const now = Date.now();
@@ -394,6 +476,80 @@ test('a worker stuck at a startup dialog is reported with what blocks it, not nu
   assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // no nudge typed into the dialog
   assert.match(swarm.inboxOf(architect)[0].text, /stuck at Claude's "2 new MCP servers found" project dialog[\s\S]*dh_send_keys/);
   assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
+});
+
+test('a draft in the composer holds the inbox pointer back, letters safe, until it clears', async () => {
+  let busy = true;
+  const { manager, swarm, typed } = harness({ composerBusy: () => busy });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const w = aMember(architect, 'w1');
+  w.worker!.outbox = [{ env: sealAs(w.swarmKey!, { type: 'notice', to: architect.swarmKey!, body: { text: 'done' } }) }];
+  manager.sessions.set('w1', w);
+  const now = Date.now();
+  await swarm.tick(now);
+  await swarm.tick(now + 3000);
+  assert.equal(typed.length, 0); // never typed over the draft
+  assert.equal(swarm.inboxOf(architect).length, 1); // the letter waits in the inbox
+  assert.equal(architect.inbox?.[0]?.notified, undefined); // still due for a pointer
+  busy = false;
+  await swarm.tick(now + 6000);
+  assert.equal(typed.length, 1); // the composer cleared: the pointer went in
+  assert.match(typed[0].text, /1 swarm message/);
+});
+
+test('a draft that never clears gives up on the pointer after ten minutes, keeping the letters', async () => {
+  const { manager, swarm, typed } = harness({ composerBusy: () => true });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const w = aMember(architect, 'w1');
+  w.worker!.outbox = [{ env: sealAs(w.swarmKey!, { type: 'notice', to: architect.swarmKey!, body: { text: 'done' } }) }];
+  manager.sessions.set('w1', w);
+  const now = Date.now();
+  await swarm.tick(now);
+  await swarm.tick(now + TYPING_BLOCKED_MAX_MS + 3000);
+  assert.equal(typed.length, 0); // gave up without typing
+  assert.equal(architect.inbox?.[0]?.notified, true); // and stopped retrying
+  assert.equal(swarm.inboxOf(architect).length, 1); // the letter itself is still there to read
+});
+
+test('a draft in the composer holds the nudge back too', async () => {
+  let busy = true;
+  const { manager, swarm, typed } = harness({ composerBusy: () => busy });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const now = Date.now();
+  const w = aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: now - 60_000 });
+  manager.sessions.set('w1', w);
+  await swarm.tick(now);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0);
+  assert.equal(w.worker?.nudgedAt, undefined); // so the next tick tries again
+  busy = false;
+  await swarm.tick(now + 3000);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 1); // the nudge went in
+});
+
+test('a nudge blocked for ten minutes is given up, so the stalled notice can follow', async () => {
+  const { manager, swarm, typed } = harness({ composerBusy: () => true });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const now = Date.now();
+  const w = aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: now - 60_000 });
+  manager.sessions.set('w1', w);
+  await swarm.tick(now);
+  const later = now + TYPING_BLOCKED_MAX_MS + 3000;
+  await swarm.tick(later);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // nothing typed into the draft
+  assert.equal(w.worker?.nudgedAt, later); // but the nudge is spent: stalled is next
+});
+
+test('a role on session creation is the user\'s alone', () => {
+  assert.equal(roleSpawnRefusal('architect', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('worker', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('subarchitect', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('architect', false), undefined);
+  assert.equal(roleSpawnRefusal(undefined, true), undefined);
+  assert.equal(roleSpawnRefusal(null, true), undefined);
 });
 
 test('an outside agent can reach an architect, and nothing else', () => {
@@ -632,6 +788,88 @@ test('a commit travels to a mirror and a branch comes back, with nothing else sh
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a base that is an ancestor of a head the mirror holds needs no bundle, and the round trip still works', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-far-'));
+  try {
+    const mirror = await projectMirror('demo', root);
+    const first = git('rev-parse', 'HEAD').trim();
+    writeFileSync(join(dir, 'b.txt'), 'b\n');
+    git('add', '.');
+    git('commit', '-qm', 'second');
+    const second = git('rev-parse', 'HEAD').trim();
+    await receiveCommit(mirror, (await bundleCommit(dir, second, []))!);
+    // the next worker starts from the older commit: its objects travelled inside `second`
+    assert.equal(await bundleCommit(dir, first, [second]), undefined);
+    // and a worker there can still branch from it and come back
+    const worktree = join(root, 'w-old');
+    execFileSync('git', ['-C', mirror, 'worktree', 'add', '-q', '-b', 'worker/old', worktree, first]);
+    writeFileSync(join(worktree, 'c.txt'), 'c\n');
+    execFileSync('git', ['-C', worktree, 'add', '.']);
+    execFileSync('git', ['-C', worktree, '-c', 'user.name=w', '-c', 'user.email=w@w', 'commit', '-qm', 'c']);
+    await receiveBranch(dir, 'worker/old', await bundleBranch(mirror, 'worker/old', first));
+    assert.equal(git('log', '--format=%s', '-1', 'worker/old').trim(), 'c');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('non-ASCII names come back from git as they are, so Windows safety judges the real name', async () => {
+  const { dir } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    const t = await createWorktree(dir, 'uni', root);
+    writeFileSync(join(t!.worktree, 'héllo-ö.txt'), 'x\n');
+    execFileSync('git', ['-C', t!.worktree, 'add', '.']);
+    execFileSync('git', ['-C', t!.worktree, 'commit', '-qm', 'uni']);
+    const names = await changedFiles(t!);
+    assert.deepEqual(names, ['héllo-ö.txt']);
+    assert.deepEqual(windowsUnsafeNames(names), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('worktree, bundle and fetch get minutes; quick queries keep failing fast', () => {
+  assert.equal(gitTimeoutMs(['worktree', 'add', '-b', 'worker/x', 'd', 'abc']), 300_000);
+  assert.equal(gitTimeoutMs(['fetch', '-q', 'file.bundle']), 300_000);
+  assert.equal(gitTimeoutMs(['bundle', 'create', '-q', 'f', 'ref']), 300_000);
+  assert.equal(gitTimeoutMs(['status', '--porcelain']), 30_000);
+  assert.equal(gitTimeoutMs(['rev-parse', 'HEAD']), 30_000);
+});
+
+test('a 40 KB task travels as a file, and the command line carries the task once at most', async () => {
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const id = (s: HubSession) => ({ hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: s.cwd, hubUrl: 'u', role: 'worker' as const, worker: s.worker });
+  const promptOf = (s: HubSession) => (s as unknown as { initialPrompt?: string }).initialPrompt ?? '';
+  const short = (await swarm.start(architect, { task: 'add b', name: 'small' })).session!;
+  const task = `the first line\n${'x'.repeat(40_000)}`;
+  const long = (await swarm.start(architect, { task, name: 'long' })).session!;
+  try {
+    // a short task rides in the briefing alone; the first prompt only points there
+    assert.equal(short.worker!.taskFile, undefined);
+    assert.match(fleetBriefing(id(short)), /add b/);
+    assert.doesNotMatch(promptOf(short), /add b/);
+    // a long one lives on disk, named by briefing and prompt, and the spawn line stays under Windows' ~32k
+    const file = long.worker!.taskFile!;
+    assert.ok(file && existsSync(file));
+    assert.equal(readFileSync(file, 'utf8'), task);
+    const briefing = fleetBriefing(id(long));
+    assert.ok(!briefing.includes('xxxx') && !promptOf(long).includes('xxxx'));
+    assert.ok(briefing.includes(file) && promptOf(long).includes(file));
+    assert.ok(briefing.length + promptOf(long).length < 32_000, `spawn line would be ${briefing.length + promptOf(long).length}`);
+  } finally {
+    for (const s of [short, long]) if (s.worker?.worktree) rmSync(s.worker.worktree, { recursive: true, force: true });
+    if (long.worker?.taskFile) rmSync(long.worker.taskFile, { force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

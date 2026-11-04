@@ -49,6 +49,10 @@ export function attentionConfig(file = CONFIG_FILE): AttentionConfig {
 /** The sender answers these itself: a prompt from a session, an outside agent or Mimir. */
 const answeredBySender = (caller: string | undefined) => /^(session:|agent:|gateway:|mimir\b)/i.test(caller ?? '');
 
+/** What a waiting session needs, in the words every outside channel uses. */
+export const attentionPhrase = (kind: Attention['kind']): string =>
+  kind === 'permission' ? 'wants approval' : kind === 'dialog' ? 'is waiting at a dialog' : 'has a question';
+
 interface Track {
   /** prompts typed through the API whose turn hasn't started, oldest first */
   pending: { bySender: boolean; expires: number }[];
@@ -118,6 +122,7 @@ export class NeedsYou {
       case 'STARTING':
         t.turnBySender = undefined; // a new process: its old last reply is not a new question
         t.judged = undefined;
+        if (a?.kind === 'dialog') return; // startup dialogs show in STARTING; the dialog scan clears them
         return this.clear(session, t);
       case 'WORKING':
       case 'EXITED':
@@ -131,6 +136,7 @@ export class NeedsYou {
       }
       case 'IDLE':
         if (a?.kind === 'question') return; // still the same unanswered question
+        if (a?.kind === 'dialog') return; // the dialog scan clears it once the screen moves on
         if (a) this.clear(session, t); // the prompt went away without a turn
         if (session.detail === 'turn finished' && t.turnBySender === false) void this.judgeReply(session, t);
     }
@@ -152,6 +158,24 @@ export class NeedsYou {
     t.judged = reply;
     const text = askingText(reply);
     if (text && session.state === 'IDLE' && session.stateSince === since) this.waiting(session, t, 'question', text);
+  }
+
+  /**
+   * A startup dialog is on the session's screen (`dialog` names it), or no
+   * longer is (undefined). A dialog fires no hook and never settles by itself —
+   * folder trust, a project's MCP servers, a login — so nothing but the user
+   * answers it: the same episode pipeline as permission and question waits.
+   * Workers are not raised here: their lead is told instead (swarm.ts).
+   */
+  dialogWait(session: HubSession, dialog: string | undefined) {
+    if (session.worker || agentFor(session).outputOnlyStatus) return;
+    const t = this.track(session);
+    if (!dialog) {
+      if (session.attention?.kind === 'dialog') this.clear(session, t);
+      return;
+    }
+    if (session.attention && session.attention.kind !== 'dialog') return; // a real wait is already showing
+    this.waiting(session, t, 'dialog', dialog);
   }
 
   /** A waiting episode begins, or carries on under a new kind. */
@@ -335,7 +359,7 @@ export async function discordRecipients(config = attentionConfig(), fetcher: typ
 export async function sendToDiscord(e: AttentionEvent, config = attentionConfig(), fetcher: typeof fetch = fetch, person = config.hermod?.person ?? 'cristian'): Promise<boolean> {
   const hermod = hermodSender(config);
   if (!hermod) return false;
-  const what = e.kind === 'permission' ? 'wants approval' : 'has a question';
+  const what = attentionPhrase(e.kind);
   try {
     const res = await fetcher(`${hermod.url}/api/v1/notify`, {
       method: 'POST',

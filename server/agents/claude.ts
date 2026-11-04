@@ -339,12 +339,27 @@ export const claudeAdapter: AgentAdapter = {
     if (tail.some((l) => /^\s?[>›]\s*$/.test(l))) return 'idle';
     return null;
   },
+  // The composer is the "> " (or "❯ ") line Claude Code frames between two
+  // horizontal rules; while it is empty it may show a "Try \"…\"" hint. The
+  // framing matters: dialog cursors (❯ No, exit) and quoted text are bare.
+  composerText: (screen) => {
+    const rule = (l: string | undefined) => !!l && /─{20,}/.test(l);
+    const lines = screen.split('\n');
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 14); i--) {
+      const m = /^\s{0,2}[>❯›](?:\s(.*))?$/.exec(lines[i]);
+      if (!m || (!rule(lines[i - 1]) && !rule(lines[i + 1]))) continue;
+      const text = (m[1] ?? '').trim();
+      return /^Try "/.test(text) ? '' : text;
+    }
+    return undefined;
+  },
   acceptKeystroke: '\r',
   isProtectedPrompt: (screen) => PLAN_EXIT_MARKER.test(screen),
   startupDialog: (screen) => {
     const mcp = screen.match(/(?:\d+ )?new MCP servers? found/i);
     if (mcp) return `Claude's "${mcp[0]}" project dialog`;
-    if (/Do you trust the files in this folder\?/i.test(screen)) return "Claude's folder trust dialog";
+    // both wordings seen in the wild: older builds ask about files, current ones "Quick safety check: Is this a project you created or one you trust?"
+    if (/Do you trust the files in this folder\?|Is this a project you created or one you trust\?/i.test(screen)) return "Claude's folder trust dialog";
     if (/Select login method|Sign in to Claude/i.test(screen)) return "Claude's login screen";
     return undefined;
   },

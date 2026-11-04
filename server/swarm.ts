@@ -41,12 +41,19 @@ import type { CrewPin, SessionRole, SwarmEnvelope, SwarmLetter, SwarmLetterKind,
  */
 
 const run = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await run('git', ['-C', cwd, ...args], { timeout: 30_000, windowsHide: true })).stdout.trim();
+/** Quick queries fail fast; worktree, bundle and fetch walk whole repositories, minutes on a big one. */
+export const gitTimeoutMs = (args: string[]) => (['worktree', 'bundle', 'fetch'].includes(args[0]) ? 300_000 : 30_000);
+// quotepath off: non-ASCII file names come back as they are, not quoted with octal escapes
+const git = async (cwd: string, ...args: string[]) =>
+  (await run('git', ['-C', cwd, '-c', 'core.quotepath=false', ...args], { timeout: gitTimeoutMs(args), windowsHide: true })).stdout.trim();
 const gitOk = (cwd: string, ...args: string[]) => git(cwd, ...args).then(() => true, () => false);
 
 /** A report is what the architect needs, not the story. The transcript holds the rest. */
 export const REPORT_MAX = 3000;
-const TASK_MAX = 20_000;
+/** A long task travels as a file, so this guards only persistence and the envelopes. */
+const TASK_MAX = 100_000;
+/** What still fits on a spawn command line beside the briefing; a longer task goes to disk. */
+const TASK_INLINE_MAX = 8_000;
 const STOP_AFTER_REPORT_MS = 8000;
 /** Time for a finished turn to call dh_report before it is reminded. */
 const IDLE_GRACE_MS = 45_000;
@@ -54,6 +61,8 @@ const IDLE_GRACE_MS = 45_000;
 const PERMISSION_GRACE_MS = 30_000;
 /** Don't type over the user: a recent keystroke holds delivery back. */
 const USER_TYPING_MS = 10_000;
+/** A composer holding a draft blocks typing; after this long the hub gives up with a warning. */
+export const TYPING_BLOCKED_MAX_MS = 10 * 60_000;
 const NUDGE_IGNORED_MS = 120_000;
 const RETRY_MS = 15_000;
 /** Enough to spot a message delivered twice. */
@@ -126,6 +135,17 @@ export function refusedLead(lead: SessionRole | undefined, kind: 'worker' | 'sub
   return `only an architect starts ${kind === 'worker' ? 'workers' : 'sub-architects'}`;
 }
 
+/**
+ * Spawning a session with a role is the user's act, from the dashboard.
+ * Sessions start their crew through swarm.start (dh_start_worker /
+ * dh_start_subarchitect), where the lead is the caller itself; agents and
+ * gateway callers never hand out roles at all.
+ */
+export function roleSpawnRefusal(role: unknown, notTheUser: boolean): string | undefined {
+  if (!role) return undefined;
+  return notTheUser ? 'roles are chosen by the user in the dashboard' : undefined;
+}
+
 /** What a worker's state calls for next. Pure: the Swarm carries it out. */
 export type WorkerStep =
   | { do: 'resume-tracking' }
@@ -178,6 +198,20 @@ export async function worktreeFacts(w: Pick<WorkerLink, 'worktree' | 'branch' | 
 }
 
 const WORKTREES = join(DATA_DIR, 'worktrees');
+const TASKS_DIR = join(DATA_DIR, 'worker-tasks');
+
+/** A long task is written to disk: the briefing and the first prompt point at it instead of carrying it. */
+function taskFileFor(task: string, name: string): string | undefined {
+  if (task.length <= TASK_INLINE_MAX) return undefined;
+  mkdirSync(TASKS_DIR, { recursive: true });
+  const file = join(TASKS_DIR, `${slug(name)}-${randomBytes(3).toString('hex')}.md`);
+  writeFileSync(file, task);
+  return file;
+}
+
+/** The spawn command line carries the task once at most: it rides in the briefing, or in the task file. */
+const startPrompt = (w: WorkerLink) =>
+  w.taskFile ? `Read your task from the file ${w.taskFile}, then carry it out.` : 'Carry out your task: it is in your instructions, under "Your task".';
 
 /** Where a folder's repository stands, or undefined when it isn't in one. */
 async function repoBase(folder: string) {
@@ -201,7 +235,7 @@ async function addWorktree(repo: string, baseCommit: string, name: string, root:
 }
 
 /** The worker's own branch off the folder's current commit, outside every synced folder. */
-async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
+export async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
   if (!w.worktree || !w.baseCommit) return [];
   const names = await git(w.worktree, 'diff', '--name-only', `${w.baseCommit}..HEAD`);
   return names ? names.split('\n') : [];
@@ -210,6 +244,10 @@ async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
 export async function createWorktree(folder: string, name: string, root = WORKTREES) {
   const base = await repoBase(folder);
   if (!base) return undefined;
+  // the subfolder has to be in the commit, or the worker's cwd would not exist in its checkout
+  if (base.sub && !(await gitOk(base.top, 'cat-file', '-e', `${base.baseCommit}:${base.sub}`))) {
+    throw new Error(`this folder (${base.sub}) is not in the commit a worker would branch from: commit it first`);
+  }
   const tree = await addWorktree(base.top, base.baseCommit, name, root);
   return { ...tree, baseCommit: base.baseCommit, repo: base.top, cwd: base.sub ? join(tree.worktree, base.sub) : tree.worktree, baseDirty: base.baseDirty };
 }
@@ -243,6 +281,9 @@ export async function bundleCommit(repo: string, commit: string, have: string[])
   if (have.includes(commit)) return undefined;
   const known: string[] = [];
   for (const sha of have) if (/^[0-9a-f]{40,64}$/.test(sha) && (await gitOk(repo, 'cat-file', '-e', `${sha}^{commit}`))) known.push(sha);
+  // an ancestor of a head the other side holds travelled in that head's bundle:
+  // nothing to send, and git would refuse to create the empty bundle
+  for (const sha of known) if (await gitOk(repo, 'merge-base', '--is-ancestor', commit, sha)) return undefined;
   const ref = `refs/deckhand/send/${commit}`;
   await git(repo, 'update-ref', ref, commit);
   try {
@@ -352,6 +393,8 @@ export class Swarm {
   /** sessions with a message on its way to another hub, and when to try a failed one again */
   private sending = new Set<string>();
   private retryAt = new Map<string, number>();
+  /** sessions whose composer holds a draft the hub must not type over: hubId → when the block began */
+  private typeBlockedAt = new Map<string, number>();
 
   constructor(
     private manager: SessionManager,
@@ -362,6 +405,8 @@ export class Swarm {
       lastReply: (session: HubSession) => Promise<string | undefined>;
       /** a startup dialog on the session's screen, blocking the engine (named for the stall notice) */
       stuckAt?: (session: HubSession) => string | undefined;
+      /** the session's composer holds text the hub didn't type: typing now would merge with it */
+      composerBusy?: (session: HubSession) => boolean;
       save: () => void;
       /** a letter went into a session's inbox: the dashboards' swarm event */
       letterFiled?: (to: HubSession, letter: SwarmLetter) => void;
@@ -413,6 +458,7 @@ export class Swarm {
       architect: architect.claudeSessionId,
       architectName: architect.name,
       task,
+      taskFile: taskFileFor(task, name),
       baseFolder: architect.cwd,
       project: architect.worker?.project ?? projectName(architect.cwd),
       platform: process.platform,
@@ -431,7 +477,7 @@ export class Swarm {
       agentType: opts.agentType ?? architect.agentType,
       model: opts.model ?? architect.model,
       permissionMode: opts.permissionMode,
-      initialPrompt: task,
+      initialPrompt: startPrompt(worker),
       role: kind,
       worker,
     });
@@ -604,35 +650,41 @@ export class Swarm {
     const repo = await projectMirror(h.project);
     if (h.author?.name) await git(repo, 'config', 'user.name', h.author.name);
     if (h.author?.email) await git(repo, 'config', 'user.email', h.author.email);
+    // the subfolder has to be in the commit, or the worker's cwd would not exist in its checkout
+    if (h.sub && !(await gitOk(repo, 'cat-file', '-e', `${h.baseCommit}:${h.sub}`))) {
+      throw new Error(`the architect's folder (${h.sub}) is not in the commit the worker would branch from: commit it there first`);
+    }
     const tree = await addWorktree(repo, h.baseCommit, h.name, WORKTREES, h.kind === 'role' ? 'role' : 'worker');
+    const worker: WorkerLink = {
+      charter: h.charter,
+      triggerHead: h.triggerHead,
+      architect: h.architect,
+      architectName: h.architectName,
+      architectMachine: h.architectMachine,
+      architectPlatform: h.architectPlatform,
+      platform: process.platform,
+      task: h.task,
+      taskFile: taskFileFor(h.task, h.name),
+      baseFolder: h.baseFolder,
+      project: h.project,
+      worktree: tree.worktree,
+      repo,
+      branch: tree.branch,
+      baseCommit: h.baseCommit,
+      mcpChoices: h.mcpChoices,
+      leadKey: h.leadKey,
+      status: 'working',
+      startedAt: Date.now(),
+    };
     const session = this.manager.create({
       cwd: h.sub ? join(tree.worktree, h.sub) : tree.worktree,
       name: h.name,
       agentType: h.agentType,
       model: h.model,
       permissionMode: h.permissionMode,
-      initialPrompt: h.kind === 'role' ? ROLE_PROMPT : h.task,
+      initialPrompt: h.kind === 'role' ? ROLE_PROMPT : startPrompt(worker),
       role: h.kind === 'subarchitect' ? 'subarchitect' : h.kind === 'role' ? 'role' : 'worker',
-      worker: {
-        charter: h.charter,
-        triggerHead: h.triggerHead,
-        architect: h.architect,
-        architectName: h.architectName,
-        architectMachine: h.architectMachine,
-        architectPlatform: h.architectPlatform,
-        platform: process.platform,
-        task: h.task,
-        baseFolder: h.baseFolder,
-        project: h.project,
-        worktree: tree.worktree,
-        repo,
-        branch: tree.branch,
-        baseCommit: h.baseCommit,
-        mcpChoices: h.mcpChoices,
-        leadKey: h.leadKey,
-        status: 'working',
-        startedAt: Date.now(),
-      },
+      worker,
     });
     session.autoYes = true;
     this.deps.promptFrom(session, 'session:architect', true);
@@ -815,8 +867,9 @@ export class Swarm {
       facts: { commits: facts.commits, files: facts.files, dirty: facts.dirty, unsafe, platform: process.platform, machine: w.architectMachine ? this.deps.fleet?.self : undefined },
       branchOf: w.sendBranch ? session.claudeSessionId : undefined,
     });
+    const statusAtReport = w.status; // captured now: a follow-up sets it back to working, and then the stop must not land
     setTimeout(() => {
-      if (session.worker?.status === w.status && session.proc) this.manager.kill(session.hubId);
+      if (session.worker?.status === statusAtReport && session.proc) this.manager.kill(session.hubId);
     }, STOP_AFTER_REPORT_MS).unref?.();
     return facts;
   }
@@ -942,7 +995,9 @@ export class Swarm {
   private async tidyAfterRemoval(s: HubSession) {
     dropSwarmKey(s.swarmKey);
     const w = s.worker;
-    if (!w?.worktree) return;
+    if (!w) return;
+    if (w.taskFile) rmSync(w.taskFile, { force: true });
+    if (!w.worktree) return;
     // a role instance's worktree holds nothing worth keeping, however dirty its test runs left it
     if (!w.charter) {
       const facts = await worktreeFacts(w).catch(() => undefined);
@@ -970,6 +1025,30 @@ export class Swarm {
     const w = worker.worker!;
     w.outbox = [...(w.outbox ?? []), packet];
     this.manager.emit('change', worker);
+    this.deps.save();
+  }
+
+  /**
+   * After a hub restart, once the restore pass is done: a worker still down with
+   * "hub restarted" on its card is waited on forever (workerStep leaves that state
+   * alone), so bring each back once. One that can't come back is failed and its
+   * lead told, so it can remove it or follow it up.
+   */
+  restoreLeftBehind() {
+    for (const s of [...this.manager.sessions.values()]) {
+      const w = s.worker;
+      if (!w || s.proc || s.detail !== 'hub restarted') continue;
+      if (w.status === 'reported' || w.status === 'failed') continue;
+      try {
+        this.manager.resume(s.hubId);
+      } catch {
+        /* told below: it has no process */
+      }
+      if (s.proc) continue;
+      w.status = 'failed';
+      w.result = `could not restore after a restart (${s.detail ?? 'exited'})`;
+      this.notice(s, `it could not restore after a restart (${s.detail ?? 'exited'}). dh_worker_followup brings it back; dh_remove_worker removes it.`);
+    }
     this.deps.save();
   }
 
@@ -1004,6 +1083,16 @@ export class Swarm {
         continue;
       }
       if (!unread.length || s.state !== 'IDLE' || now - s.lastInputAt < USER_TYPING_MS || this.delivering.has(s.hubId)) continue;
+      // a draft in the composer: typing the pointer would merge with it. The
+      // letters wait safely in the inbox (the card shows them), and the next
+      // tick tries again until the draft is sent or cleared, or the hold gives up.
+      const hold = this.typingHold(s, 'telling it about its swarm messages (they stay in its inbox)', now);
+      if (hold === 'wait') continue;
+      if (hold === 'give-up') {
+        for (const l of unread) l.notified = true;
+        this.deps.save();
+        continue;
+      }
       this.delivering.add(s.hubId);
       for (const l of unread) l.notified = true;
       // not from a session: a question the architect then asks is really for the user.
@@ -1016,6 +1105,26 @@ export class Swarm {
         this.deps.save();
       });
     }
+  }
+
+  /**
+   * Whether typing into this session must wait: its composer holds text the
+   * hub didn't put there (bug 6 of 2026-11-03: typed text merged with a draft
+   * the user was writing). 'wait' is retried on the next tick; after
+   * TYPING_BLOCKED_MAX_MS of that, one warning and 'give-up', so a parked
+   * draft never holds a delivery loop forever. null: clear to type.
+   */
+  private typingHold(s: HubSession, what: string, now: number): 'wait' | 'give-up' | null {
+    if (!this.deps.composerBusy?.(s)) {
+      this.typeBlockedAt.delete(s.hubId);
+      return null;
+    }
+    const since = this.typeBlockedAt.get(s.hubId) ?? now;
+    this.typeBlockedAt.set(s.hubId, since);
+    if (now - since < TYPING_BLOCKED_MAX_MS) return 'wait';
+    this.typeBlockedAt.delete(s.hubId);
+    console.warn(`[swarm] ${s.name}: its composer has held a draft for ${Math.round((now - since) / 60_000)} minutes — giving up on ${what}`);
+    return 'give-up';
   }
 
   /** Only once the other hub has the message, and the branch it talks about, is it off our hands. */
@@ -1070,7 +1179,12 @@ export class Swarm {
         // a nudge typed into a startup dialog goes nowhere: say what blocks it instead
         const dialog = this.deps.stuckAt?.(s);
         if (dialog) return this.stuckAtDialog(s, dialog);
+        // a draft in the composer: the nudge would merge with it — wait, retried
+        // each tick; given up, nudgedAt is set so the stalled notice can follow
+        const hold = this.typingHold(s, 'nudging it', now);
+        if (hold === 'wait') return;
         w.nudgedAt = now;
+        if (hold === 'give-up') return;
         this.deps.promptFrom(s, 'session:architect', false);
         await this.deps.typePrompt(s, w.charter ? ROLE_NUDGE : WORKER_NUDGE);
         return;

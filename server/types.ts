@@ -81,6 +81,8 @@ export interface WorkerLink {
   architect: string;
   architectName: string;
   task: string;
+  /** a task too long for a command line is on disk: the briefing and first prompt point at it */
+  taskFile?: string;
   followUps?: string[];
   baseFolder: string;
   /** the project's name, which holds on every machine, unlike a path */
@@ -177,8 +179,8 @@ export interface AlertChannels {
 export interface Attention {
   /** stable id of this waiting episode: dedupe popups on it */
   episode: string;
-  /** question: a turn ended asking in text; ask: AskUserQuestion or the like; permission: a tool approval */
-  kind: 'question' | 'ask' | 'permission';
+  /** question: a turn ended asking in text; ask: AskUserQuestion or the like; permission: a tool approval; dialog: a startup dialog only the user can answer */
+  kind: 'question' | 'ask' | 'permission' | 'dialog';
   text: string;
   since: number;
   /** when the alert went out, once the session had waited long enough */

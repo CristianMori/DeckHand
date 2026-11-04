@@ -28,7 +28,7 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
-import { bundleBranch, CREW_BRANCH, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, type HostWorker } from './swarm.js';
+import { bundleBranch, CREW_BRANCH, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, roleSpawnRefusal, Swarm, swarmEvent, type HostWorker } from './swarm.js';
 import { gitHead, onMerge as roleOnMerge, reportAcked as roleReportAcked, RoleLedger, type RoleTriggerDeps } from './roleTrigger.js';
 import { resolveCharter } from './roleCharters.js';
 import { signatureHolds } from '../mcp/swarm-envelope.mjs';
@@ -64,9 +64,11 @@ import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import { recordSessionRename } from './renameNotice.js';
 import {
+  composerBusy,
   isSettled,
   keyData,
   lastExchanges,
+  MAX_PROMPT_BYTES,
   replyTo,
   screenText,
   typePrompt,
@@ -177,7 +179,7 @@ for (const rec of loadPersisted()) {
  * never got an id (an unbound Codex card). HUB_RESTORE=0 disables it.
  */
 function restoreSessions() {
-  if (process.env.HUB_RESTORE === '0' || !toRestore.length) return;
+  if (process.env.HUB_RESTORE === '0') return;
   const eligible = toRestore.filter((s) => {
     if (s.claudeSessionId.startsWith('pending-')) return false;
     // a terminal has no conversation to pick up — it waits for a manual restart
@@ -190,7 +192,7 @@ function restoreSessions() {
       return false;
     }
   });
-  console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
+  if (toRestore.length) console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
   eligible.forEach((s, i) => {
     setTimeout(() => {
       if (s.proc || !manager.sessions.has(s.hubId)) return; // resumed by hand meanwhile, or removed
@@ -202,6 +204,9 @@ function restoreSessions() {
       }
     }, 1500 + i * 2500).unref();
   });
+  // a worker the restore pass skipped or failed to bring back would otherwise wait
+  // forever ("hub restarted" is left alone): one more chance, or its lead is told
+  setTimeout(() => swarm.restoreLeftBehind(), 1500 + eligible.length * 2500 + 4000).unref();
 }
 
 /** Local sessions tagged with this machine's name — the shape peers rely on. */
@@ -874,6 +879,10 @@ async function turnResult(session: HubSession, prompt: string | undefined, timed
 app.post('/api/sessions', async (req, res) => {
   const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait, role, architect } = req.body ?? {};
   let cwd: string | undefined = req.body?.cwd;
+  // a role comes from the user alone: sessions start their own crew through
+  // dh_start_worker / dh_start_subarchitect, where the lead is the caller itself
+  const roleRefused = roleSpawnRefusal(role, notTheUser());
+  if (roleRefused) return res.status(403).json({ error: roleRefused });
   // from the dashboard: a worker under a live architect, the same as one it starts itself.
   // Decided on the architect's hub, wherever the worker is to run.
   if (role === 'worker' || role === 'subarchitect') {
@@ -1834,9 +1843,17 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   const session = manager.sessions.get(id)!;
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (!text.trim()) return res.status(400).json({ error: 'text required' });
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > MAX_PROMPT_BYTES) {
+    return res.status(413).json({ error: `prompt is ${bytes} bytes — the limit is ${MAX_PROMPT_BYTES}; put the content in a file in the session's folder and send a prompt that references it` });
+  }
   if (!session.proc) return res.status(409).json({ error: 'session has exited — resume it first' });
   if (session.state === 'WORKING' && !req.body?.queue) {
     return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
+  }
+  // a draft in the composer: the prompt would merge with it (bug 6)
+  if (composerBusy(session)) {
+    return res.status(409).json({ error: 'its composer holds typed text (a draft someone is writing) — try again once it is sent or cleared' });
   }
   needsYou.promptFrom(session, currentTrace()?.caller, !!req.body?.queue);
   await typePrompt(manager, session, text);
@@ -1845,6 +1862,16 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   const timedOut = await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs });
   res.json(await turnResult(session, text, timedOut));
 }));
+
+/** A startup dialog on the session's screen, blocking the engine before any
+ *  hook fires — named for stall notices and attention events. */
+function startupDialogOn(session: HubSession): string | undefined {
+  try {
+    return agentFor(session).startupDialog?.(screenText(session));
+  } catch {
+    return undefined; // mirror mid-resize
+  }
+}
 
 /**
  * Cristian's text answering a question. Decided here, on the hub that owns the
@@ -1856,13 +1883,8 @@ const swarm = new Swarm(manager, {
   typePrompt: (session, text) => typePrompt(manager, session, text),
   promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
   lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
-  stuckAt: (session) => {
-    try {
-      return agentFor(session).startupDialog?.(screenText(session));
-    } catch {
-      return undefined; // mirror mid-resize
-    }
-  },
+  stuckAt: startupDialogOn,
+  composerBusy,
   save: () => savePersisted(manager),
   // the same audience as `sessions` and `alert`: every connected dashboard and app
   letterFiled: (to, letter) => broadcastAlert(swarmEvent(to, letter)),
@@ -1889,8 +1911,8 @@ const swarm = new Swarm(manager, {
       return { status: out.status, body };
     },
     callArchitect: async (conversation, path, body) => {
-      const peer = federation.connectedPeers().find((p) => p.sessions.some((s) => s.claudeSessionId === conversation && s.alive))
-        ?? federation.connectedPeers().find((p) => p.sessions.some((s) => s.claudeSessionId === conversation));
+      // only a live card: a dead one reads nothing, and the sender's outbox keeps the message
+      const peer = federation.peerWithLiveSession(conversation);
       if (!peer) return undefined;
       return federation.forward(peer, `/api/sessions/${encodeURIComponent(conversation)}/${path}`, { method: 'POST', body });
     },
@@ -1918,10 +1940,25 @@ const roleDeps: RoleTriggerDeps<HubSession> = {
   ledger: new RoleLedger(join(DATA_DIR, 'role-runs.json')),
 };
 
+// A plain session parked at a startup dialog (folder trust, a project's MCP
+// servers, a login) fires no hook and never settles on its own: only the user
+// can answer it, so it joins the same attention pipeline as permission and
+// question waits. Only sessions no hook has reached yet are read — a real
+// startup dialog blocks the engine before its first hook, and transcripts can
+// echo dialog wording later. Workers aren't raised: their lead is told
+// instead (swarm.stuckAtDialog), and dialogWait skips them too.
+setInterval(() => {
+  for (const session of manager.sessions.values()) {
+    if (!session.proc || session.hooksSeen || session.worker) continue;
+    needsYou.dialogWait(session, startupDialogOn(session));
+  }
+}, 15_000).unref();
+
 async function answerFromText(session: HubSession, episode: unknown, text: string, via: 'text' | 'email' = 'text'): Promise<string | undefined> {
   const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));
   const before = refusal();
   if (before) return before;
+  if (composerBusy(session)) return `a draft is sitting in the session's composer — the ${via} reply would merge with it`;
   needsYou.promptFrom(session, 'text-reply', false);
   const prompt = via === 'email' ? emailReplyPrompt(text) : textReplyPrompt(text);
   const typed = await typePrompt(manager, session, prompt, () => !refusal());

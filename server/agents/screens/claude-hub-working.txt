@@ -1,0 +1,12 @@
+● Now let me capture real screen snapshots — my own session first (Claude, working, empty composer), and check for a
+  live Codex session.
+
+● Calling deckhand 2 times…
+
+✢ Swirling… (3m 34s · ↓ 13.3k tokens · thought for 2s)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────── hub-small-fixes ─
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏵⏵ auto mode on (shift+tab to cycle) · install gh for PR status · ← 3 agents

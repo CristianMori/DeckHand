@@ -54,6 +54,10 @@ test('text: a permission says so', () => {
   assert.equal(smsText(event({ kind: 'permission', text: 'Bash: ls' })), 'RavenAgents wants approval: Bash: ls');
 });
 
+test('text: a startup dialog says where it waits', () => {
+  assert.equal(smsText(event({ kind: 'dialog', text: "Claude's folder trust dialog" })), "RavenAgents is waiting at Claude's folder trust dialog");
+});
+
 test('text: URLs come out, so the gateway does not refuse it', () => {
   const out = smsText(event({ text: 'See https://x.io/a?b=1 or HTTP://y.io and www.z.io/q, ok?' }));
   assert.equal(out, 'RavenAgents: See or and ok?');
@@ -242,11 +246,12 @@ test('what the session reads: marked, one line, data, and never a slash command'
 test('typing: Enter is not pressed if the session moved on while the text went in', async () => {
   const written: string[] = [];
   const manager = { write: (_id: string, d: string) => written.push(d) } as unknown as SessionManager;
-  const session = { hubId: 'h', state: 'IDLE' } as HubSession;
+  const session = { hubId: 'h', state: 'IDLE', proc: {}, agentType: 'claude' } as unknown as HubSession;
+  const paste = (text: string) => ['\x1b[200~', text, '\x1b[201~'];
   assert.equal(await typePrompt(manager, session, 'hello', () => false), false);
-  assert.deepEqual(written, ['hello']);
+  assert.deepEqual(written, paste('hello'));
   assert.equal(await typePrompt(manager, session, 'hello', () => true), true);
-  assert.deepEqual(written, ['hello', 'hello', '\r']);
+  assert.deepEqual(written, [...paste('hello'), ...paste('hello'), '\r']);
 });
 
 test('replies: a text already sent is still answered after its channel is turned off', async () => {
