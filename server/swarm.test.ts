@@ -130,10 +130,11 @@ function repo(withDocs = true) {
   git('config', 'user.email', 't@t');
   git('config', 'user.name', 't');
   if (withDocs) {
-    // workers only start from a commit that carries the architect's documentation
+    // the lead's documentation is untracked: it lives only in the working folder, ignored by git
     mkdirSync(join(dir, 'docs', 'architect', 'notes'), { recursive: true });
-    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n\n## Summary\n\nthe essentials\n');
     writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-01.md'), 'note\n');
+    writeFileSync(join(dir, '.gitignore'), 'docs/architect/\n');
   }
   writeFileSync(join(dir, 'a.txt'), 'a\n');
   git('add', '.');
@@ -955,14 +956,15 @@ test('removing a worker elsewhere asks the architect\'s repo whether it was merg
     writeFileSync(join(t!.worktree, 'x.txt'), 'x');
     execFileSync('git', ['-C', t!.worktree, 'add', '.']);
     execFileSync('git', ['-C', t!.worktree, 'commit', '-qm', 'x']);
-    const s = aMember(aLead(), 'w1', { architectMachine: 'alpha', worktree: t!.worktree, repo: t!.repo, branch: t!.branch, baseCommit: t!.baseCommit }, { proc: null });
+    const s = aMember(aLead(), 'w1', { architectMachine: 'alpha', worktree: t!.worktree, repo: t!.repo, branch: t!.branch, baseCommit: t!.baseCommit, docsFingerprint: 'fp-at-start' }, { proc: null });
     manager.sessions.set('w1', s);
     await assert.rejects(swarm.remove(s, false), /not merged/);
     merged = true;
     // the architect's hub says merged but no docs changed: refused once, then through
     await assert.rejects(swarm.remove(s, false), /refused this removal once/);
     await swarm.remove(s, false);
-    assert.equal(sent.find((x) => x.path === 'worker-merged')?.body.base, t!.baseCommit); // the docs check needs the base
+    // the docs are on the architect's machine: its hub compares the fingerprint recorded at start
+    assert.equal(sent.find((x) => x.path === 'worker-merged')?.body.docsFp, 'fp-at-start');
     assert.equal(existsSync(t!.worktree), false);
     const gone = sent.find((x) => x.path === 'worker-branch-gone');
     assert.ok(signatureHolds(gone?.body.env));
@@ -972,26 +974,61 @@ test('removing a worker elsewhere asks the architect\'s repo whether it was merg
   }
 });
 
-test('a worker is refused while the architecture is not committed, and started once it is', async () => {
+test('a worker is refused while the architecture is not in the lead\'s folder, and started once it is written', async () => {
   const { dir, git } = repo(false);
   const { manager, swarm } = harness();
   const architect = aLead({ cwd: dir, agentType: 'claude' });
   manager.sessions.set('lead', architect);
   let session;
   try {
-    await assert.rejects(swarm.start(architect, { task: 'add b', name: 'adder' }), /docs\/architect\/architecture\.md is not in the commit/);
+    await assert.rejects(swarm.start(architect, { task: 'add b', name: 'adder' }), /docs\/architect\/architecture\.md does not exist in your working folder/);
     assert.equal(swarm.workersOf(architect).length, 0);
     assert.equal(git('worktree', 'list').trim().split('\n').length, 1); // nothing left behind by the refusal
+    // writing the untracked, ignored documents is enough: no commit carries them
     mkdirSync(join(dir, 'docs', 'architect'), { recursive: true });
     writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
-    git('add', '.');
-    git('commit', '-qm', 'docs');
+    writeFileSync(join(dir, '.gitignore'), 'docs/architect/\n');
     const started = await swarm.start(architect, { task: 'add b', name: 'adder' });
     session = started.session;
     assert.ok(session);
     assert.match(started.inFlight ?? '', /^- ⚙ adder — ⎇ worker\//);
+    // the untracked docs never reach the worker's checkout; it is pointed at the lead's copy instead
+    assert.equal(existsSync(join(session!.worker!.worktree!, 'docs', 'architect')), false);
+    assert.equal(session!.worker!.docsFolder, dir);
+    assert.ok(session!.worker!.docsFingerprint);
   } finally {
     if (session?.worker?.worktree) rmSync(session.worker.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a merged worker is refused while the lead\'s untracked docs are unchanged, not once they moved', async () => {
+  const { dir, git } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude' });
+  manager.sessions.set('lead', architect);
+  const finish = async (name: string) => {
+    const s = (await swarm.start(architect, { task: `add ${name}`, name })).session!;
+    Object.assign(s, { proc: null }); // spare the removal its wait for a real process to die
+    writeFileSync(join(s.cwd, `${name}.txt`), name);
+    execFileSync('git', ['-C', s.cwd, 'add', '.']);
+    execFileSync('git', ['-C', s.cwd, 'commit', '-qm', name]);
+    s.worker!.status = 'reported';
+    s.worker!.result = `${name} added. Docs: architecture.md should mention ${name}.`;
+    git('merge', '-q', s.worker!.branch!);
+    return s;
+  };
+  try {
+    // docs untouched since the worker started: refused once (the retry window then lets it through)
+    const first = await finish('one');
+    await assert.rejects(swarm.remove(first, false), /refused this removal once/);
+    await swarm.remove(first, false);
+    // the lead wrote the documentation: the fingerprint moved, and the first removal goes through
+    const second = await finish('two');
+    writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-04.md'), 'wrote two\n');
+    await swarm.remove(second, false);
+    assert.equal(swarm.workersOf(architect).length, 0);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -1030,6 +1067,21 @@ test('each role\'s briefing, and what a worker is told across systems', () => {
   const other = process.platform === 'win32' ? 'darwin' : 'win32';
   const far = fleetBriefing({ ...id, role: 'worker', worker: link({ architectMachine: 'pc', architectPlatform: other }) });
   assert.match(far, /merges your branch there/);
+});
+
+test('a worker is pointed at the lead\'s docs: a path on the same machine, the inlined summary from another', () => {
+  const id = { hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: '/w', hubUrl: 'u', role: 'worker' as const };
+  const here = fleetBriefing({ ...id, worker: link({ docsFolder: 'D:/p/lead' }) });
+  assert.ok(here.includes(join('D:/p/lead', 'docs', 'architect', 'architecture.md')));
+  assert.match(here, /read it \(never edit it\)/);
+  const far = fleetBriefing({ ...id, worker: link({ architectMachine: 'pc', leadSummary: '## Summary\n\nthe essentials' }) });
+  assert.match(far, /## Summary/);
+  assert.match(far, /the essentials/);
+  assert.match(far, /on pc/);
+  // neither a path nor a summary: the briefing simply says whose the docs are
+  const none = fleetBriefing({ ...id, worker: link() });
+  assert.doesNotMatch(none, /never edit it/);
+  assert.match(none, /never create or edit docs\/architect/);
 });
 
 test('a session in a subfolder gets its worker in the same subfolder, however the path is spelled', async () => {

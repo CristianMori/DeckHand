@@ -59,7 +59,7 @@ export interface SessionInfo {
   alerts?: AlertChannels;
   /** architect: designs and delegates; subarchitect: the same for one module, under an architect; worker: one task. Absent: a plain session */
   role?: SessionRole;
-  /** architects: commits on the current branch since docs/architect/ last changed; absent outside git or for plain sessions */
+  /** architects: commits on the current branch made after docs/architect/ was last modified; absent outside git or for plain sessions */
   docsBehind?: number;
   /** public key for signed swarm messages */
   swarmKey?: string;
@@ -116,6 +116,12 @@ export interface WorkerLink {
   forwardedWait?: number;
   /** project .mcp.json servers its lead enabled — written into its settings on every spawn */
   mcpChoices?: { enableAll: boolean; enabled: string[] };
+  /** the lead's folder holding the untracked docs/architect, when it is on this machine: the worker reads it there */
+  docsFolder?: string;
+  /** fingerprint of the lead's docs/architect when the worker started: unchanged at removal means an undocumented merge */
+  docsFingerprint?: string;
+  /** the lead's architecture.md ## Summary, carried along when its docs are on another machine */
+  leadSummary?: string;
   /** the public key of who leads it, pinned when it was started: only that key can tell it anything */
   leadKey?: string;
   /** ids of signed messages already taken from its lead, so none is taken twice */

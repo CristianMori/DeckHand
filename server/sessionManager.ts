@@ -88,7 +88,7 @@ export class HubSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
-  /** architects: commits on the current branch since docs/architect/ last changed (cached, refreshed on a slow tick) */
+  /** architects: commits on the current branch made after docs/architect/ was last modified (cached, refreshed on a slow tick) */
   docsBehind?: number;
   /** public key for signed swarm messages; the private half is a file only this machine has */
   swarmKey?: string;

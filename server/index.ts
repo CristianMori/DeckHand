@@ -10,7 +10,7 @@ import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
 import { FLEET_RULES, folderOwner, projectFolderOf } from './etiquette.js';
-import { CREATE_DOCS_PROMPT, docsBehindCount, docsChangedSince, docsMissing } from './architectDocs.js';
+import { CREATE_DOCS_PROMPT, docsBehindCount, docsFingerprint, docsMissing } from './architectDocs.js';
 import { runShell } from './agents/shell.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
@@ -1222,10 +1222,13 @@ app.post('/api/sessions/:id/worker-merged', sessionAction(async (id, req, res) =
   const lead = manager.sessions.get(id)!;
   const cwd = lead.cwd;
   const merged = await isMergedHere(cwd, commit);
-  // whether docs/architect/ moved since the worker branched — for the removal's docs check
+  // whether this lead's untracked docs/architect moved since the worker started: the worker's hub
+  // sends the fingerprint it recorded, and this hub compares it against the working folder here
+  const fp = typeof req.body?.docsFp === 'string' && req.body.docsFp ? req.body.docsFp : undefined;
+  const docsChanged = merged && fp ? docsFingerprint(cwd) !== fp : undefined;
+  // the worker's base commit still rides along for the role trigger's merge diff
   const base = String(req.body?.base ?? '');
   const baseOk = /^[0-9a-f]{40,64}$/.test(base);
-  const docsChanged = merged && baseOk ? await docsChangedSince(cwd, base).catch(() => undefined) : undefined;
   res.json({ merged, docsChanged });
   // a cross-machine merge confirmed: this (the lead's) hub's one sight of it — specialist roles run on it.
   // The diff that drives them is base..HEAD of this repository, not the worker's own commit.
@@ -2798,8 +2801,9 @@ setInterval(scanAttention, 15_000).unref();
 startStatusFileWatcher(manager, engine);
 startSessionPusher();
 
-// How far each architect's branch has moved since docs/architect/ last changed:
-// counted on the slow tick below and cached on the session, never per change.
+// How far each architect's branch has moved since docs/architect/ was last
+// modified (the docs are untracked, so their mtime is the clock): counted on
+// the slow tick below and cached on the session, never per change.
 async function refreshDocsBehind() {
   for (const s of manager.sessions.values()) {
     const counts = s.role === 'architect' || s.role === 'subarchitect';
