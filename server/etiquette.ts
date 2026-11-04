@@ -81,7 +81,7 @@ ${w.worktree ? `You work in your own checkout (${w.worktree}) on your own branch
 Auto-approve is on so that you never stall, and that makes you responsible: don't deploy, publish, restart services, or change anything outside your checkout unless your task says so.
 
 Rules:
-- The project's documentation folder docs/architect/ is untracked (git ignores it), so your checkout doesn't have it: never create or edit docs/architect in your worktree. The documents are your lead's to write, in its own folder.
+- ${w.worktree ? `The project's documentation folder docs/architect/ is untracked (git ignores it), so your checkout doesn't have it: never create or edit docs/architect in your worktree. The documents are your lead's to write, in its own folder.` : `The project's documentation folder docs/architect/ is in the folder you work in, but the documents are your lead's to write: read them, never edit them.`}
 - End your report with a "Docs:" section: a sentence or two on what docs/architect/architecture.md or today's note should now say because of your work, or "Docs: no change, because …" — without one, the hub will hold up your removal. Your lead writes the documents from it.
 - Finish with dh_report: what you found or built, whether tests pass, and anything the architect must know or decide. Keep it short: your transcript stays readable if anyone wants the detail. The hub stops you after the report, and you may be brought back for a follow-up.
 - If you cannot go on without a decision, call dh_ask_architect and end your turn; you are told when the answer is waiting. Never use an interactive question tool, and never wait for a person.

@@ -999,6 +999,9 @@ test('a frozen folder, or one with no repository, stays on its machine', async (
   try {
     const lead = (cwd: string) => ({ hubId: 'lead', claudeSessionId: 'c', name: 'lead', cwd, role: 'architect', agentType: 'claude', swarmKey: 'k' }) as unknown as HubSession;
     await assert.rejects(swarm.start(lead('D:/p/icebox'), { task: 't', machine: 'beta' }), /frozen/);
+    // the docs convention is checked first, so give this lead its documents
+    mkdirSync(join(plain, 'docs', 'architect'), { recursive: true });
+    writeFileSync(join(plain, 'docs', 'architect', 'architecture.md'), '# arch\n');
     await assert.rejects(swarm.start(lead(plain), { task: 't', machine: 'beta' }), /not a git repository/);
   } finally {
     rmSync(plain, { recursive: true, force: true });
@@ -1092,6 +1095,82 @@ test('a merged worker is refused while the lead\'s untracked docs are unchanged,
   }
 });
 
+test('a lead outside git is held to the docs convention too', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swarm-plain-lead-'));
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude' });
+  manager.sessions.set('lead', architect);
+  try {
+    // no architecture.md on disk: refused, git repository or not
+    await assert.rejects(swarm.start(architect, { task: 'add x', name: 'adder' }), /docs\/architect\/architecture\.md does not exist in your working folder/);
+    assert.equal(swarm.workersOf(architect).length, 0);
+    // with the documents written, the worker starts — in the lead's own folder: no worktree to give
+    mkdirSync(join(dir, 'docs', 'architect', 'notes'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n\n## Summary\n\nthe essentials\n');
+    const started = await swarm.start(architect, { task: 'add x', name: 'adder' });
+    const session = started.session!;
+    assert.equal(started.isolated, false);
+    assert.equal(session.cwd, dir);
+    assert.equal(session.worker!.worktree, undefined);
+    assert.equal(session.worker!.docsFolder, dir);
+    assert.ok(session.worker!.docsFingerprint);
+
+    // its work goes straight into the lead's folder, so removal is the merge moment:
+    // docs unchanged and no "Docs: no change" in the report — refused once, the retry goes through
+    session.worker!.status = 'reported';
+    session.worker!.result = 'x added, tests pass. Docs: architecture.md should mention x.';
+    Object.assign(session, { proc: null }); // spare the removal its wait for a real process to die
+    await assert.rejects(swarm.remove(session, false), /refused this removal once/);
+    assert.equal(manager.sessions.has(session.hubId), true);
+    await swarm.remove(session, false);
+    assert.equal(manager.sessions.has(session.hubId), false);
+
+    // a report that says "Docs: no change" waives the check
+    const waived = (await swarm.start(architect, { task: 'check y', name: 'checker' })).session!;
+    waived.worker!.status = 'reported';
+    waived.worker!.result = 'y checked. Docs: no change, because nothing user-visible moved.';
+    Object.assign(waived, { proc: null });
+    await swarm.remove(waived, false);
+    assert.equal(manager.sessions.has(waived.hubId), false);
+
+    // and docs that moved since the worker started pass the first removal
+    const documented = (await swarm.start(architect, { task: 'add z', name: 'zedder' })).session!;
+    documented.worker!.status = 'reported';
+    documented.worker!.result = 'z added.';
+    writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-04.md'), 'wrote z\n');
+    Object.assign(documented, { proc: null });
+    await swarm.remove(documented, false);
+    assert.equal(swarm.workersOf(architect).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lead outside git is asked for its docs before the cross-machine git refusal', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swarm-plain-lead-'));
+  const { manager, swarm } = harness(undefined, {
+    fleet: {
+      self: 'alpha',
+      call: async () => ({ status: 200, body: {} }),
+      upload: async () => ({ status: 200, body: {} }),
+      callArchitect: async () => undefined,
+      isFrozen: () => false,
+    },
+  });
+  const architect = aLead({ cwd: dir, agentType: 'claude' });
+  manager.sessions.set('lead', architect);
+  try {
+    // the docs check comes first, whatever the folder
+    await assert.rejects(swarm.start(architect, { task: 't', name: 'w', machine: 'beta' }), /architecture\.md does not exist/);
+    // with the docs in place, what stops it is that nothing can carry the code
+    mkdirSync(join(dir, 'docs', 'architect'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
+    await assert.rejects(swarm.start(architect, { task: 't', name: 'w', machine: 'beta' }), /not a git repository, so nothing can carry its code/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an architect leads sub-architects or workers, a sub-architect only workers, a worker nobody', () => {
   assert.equal(refusedLead('architect', 'worker'), undefined);
   assert.equal(refusedLead('architect', 'subarchitect'), undefined);
@@ -1140,7 +1219,8 @@ test('a worker is pointed at the lead\'s docs: a path on the same machine, the i
   // neither a path nor a summary: the briefing simply says whose the docs are
   const none = fleetBriefing({ ...id, worker: link() });
   assert.doesNotMatch(none, /never edit it/);
-  assert.match(none, /never create or edit docs\/architect/);
+  assert.match(none, /your lead's to write/);
+  assert.match(fleetBriefing({ ...id, worker: link({ worktree: 'D:/t/w', branch: 'worker/x' }) }), /never create or edit docs\/architect/);
 });
 
 test('a session in a subfolder gets its worker in the same subfolder, however the path is spelled', async () => {

@@ -70,10 +70,14 @@ test('the briefings carry the documentation convention', () => {
 
   const id = { hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: 'D:/p/x', hubUrl: 'u' };
   const w: WorkerLink = { architect: 'a', architectName: 'lead', task: 't', baseFolder: 'D:/p/x', status: 'working', startedAt: 0 };
-  const worker = fleetBriefing({ ...id, role: 'worker', worker: w });
+  const worker = fleetBriefing({ ...id, role: 'worker', worker: { ...w, worktree: 'D:/t/w', branch: 'worker/x' } });
   assert.match(worker, /never create or edit docs\/architect in your worktree/);
   assert.match(worker, /"Docs:" section/);
   assert.match(worker, /"Docs: no change, because …"/);
+  // a lead outside git gets no worktrees: its worker works in the lead's own folder, where the documents are
+  const inPlace = fleetBriefing({ ...id, role: 'worker', worker: w });
+  assert.match(inPlace, /your lead's to write: read them, never edit them/);
+  assert.match(inPlace, /"Docs:" section/);
   const sub = fleetBriefing({ ...id, role: 'subarchitect', worker: { ...w, worktree: '/w', branch: 'worker/x' } });
   assert.match(sub, /never create or edit docs\/architect in your worktree/);
   assert.match(sub, /"Docs:" section/);

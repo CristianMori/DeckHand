@@ -478,10 +478,9 @@ export class Swarm {
     if (!architect.swarmKey) throw new Error('this session has no swarm key yet: restart it, then try again');
     const name = opts.name?.trim() || `${architect.name} ${kind === 'worker' ? 'worker' : 'sub-architect'}`;
     if (opts.machine && opts.machine !== this.deps.fleet?.self) return this.startElsewhere(architect, { ...opts, task, name }, opts.machine);
-    // the architecture a worker inherits has to be written down first; a folder outside git is exempt
-    const base = await repoBase(architect.cwd);
+    // the architecture a worker inherits has to be written down first, in or out of git
     const docsFolder = this.docsHome(architect);
-    if (base && docsFolder) this.requireArchitecture(docsFolder, kind);
+    if (docsFolder) this.requireArchitecture(docsFolder, kind);
     const docsFp = docsFolder ? docsFingerprint(docsFolder) : undefined;
     const tree = await createWorktree(architect.cwd, name);
     if (!tree && kind === 'subarchitect') throw new Error('a sub-architect works on a branch of its own, and this folder is not a git repository');
@@ -521,7 +520,7 @@ export class Swarm {
     this.deps.promptFrom(session, `session:${architect.hubId}`, true);
     this.manager.emit('change', session);
     this.deps.save();
-    return { session, info: undefined, baseDirty: tree?.baseDirty ?? false, isolated: !!tree, inFlight: tree ? inFlightLine(name, tree.branch, task) : undefined };
+    return { session, info: undefined, baseDirty: tree?.baseDirty ?? false, isolated: !!tree, inFlight: inFlightLine(name, tree?.branch, task) };
   }
 
   /**
@@ -552,11 +551,11 @@ export class Swarm {
     const project = architect.worker?.project ?? projectName(architect.cwd);
     // freezing a folder promises its code stays on this machine
     if (fleet.isFrozen(project)) throw new Error(`${project} is frozen to this machine: its code can't go to ${machine}. Run the worker here, or unfreeze it.`);
-    const base = await repoBase(architect.cwd);
-    if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
     // this hub decides about the docs before asking the host: they live here, in the lead's working folder
     const docsFolder = this.docsHome(architect);
     if (docsFolder) this.requireArchitecture(docsFolder, opts.kind ?? 'worker');
+    const base = await repoBase(architect.cwd);
+    if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
     const ask = this.askHost(fleet, machine);
     const { heads } = await ask('/api/worker-host/heads', { project });
     const bytes = await bundleCommit(base.top, base.baseCommit, heads);
@@ -1013,6 +1012,12 @@ export class Swarm {
         if (refusal) throw new Error(refusal);
         mergedWithCommits = true;
       }
+    } else if (!w.worktree && !discard && !role && w.docsFolder && w.docsFingerprint) {
+      // a lead outside git gets no worktrees: its worker worked in the lead's own folder, so its
+      // work is already in, and removal is the merge moment — the same refuse-once docs check applies
+      const docsChanged = docsFingerprint(w.docsFolder) !== w.docsFingerprint;
+      const refusal = docsMergeDecision(this.docsReminded, session.hubId, { merged: true, docsChanged, report: w.result });
+      if (refusal) throw new Error(refusal);
     }
     // a running process holds its folder on Windows, and git could not remove it
     if (session.proc) {
