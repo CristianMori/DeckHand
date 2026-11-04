@@ -162,6 +162,33 @@ test('quoted history and the signature come out; only the new words stay', () =>
   assert.equal(stripQuotedEmail('top\n> quoted\nbottom'), 'top\nbottom');
 });
 
+test("a mail client's own footer at the end comes out; the live iPhone reply keeps only the word", () => {
+  assert.equal(stripQuotedEmail('Blue\n\nSent from my iPhone'), 'Blue'); // the reply that showed the bug
+  assert.equal(stripQuotedEmail('Blue\nSent from my iPad'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from my Android'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from my mobile'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Outlook for iOS'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Outlook for Android'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Outlook for iOS\nGet Outlook for iOS'), 'Blue', 'stacked footers all come out');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Mail for Windows'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Mail for Windows 11'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Yahoo Mail on Android'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from Gmail Mobile'), 'Blue');
+  assert.equal(stripQuotedEmail('Blue\n\n-- Sent from my iPhone'), 'Blue', 'a leading "-- " on the footer line');
+  assert.equal(stripQuotedEmail('Blue\n\n— Sent from my iPhone'), 'Blue', 'a leading em dash');
+  assert.equal(stripQuotedEmail('Blue\n\nSent from my iPhone.'), 'Blue', 'a trailing period');
+  assert.equal(stripQuotedEmail('Blue\n\nsent from my iphone'), 'Blue', 'any case');
+});
+
+test('the footer comes out before the quoted history too, and never from inside the words', () => {
+  assert.equal(stripQuotedEmail('Blue\n\nSent from my iPhone\n\nOn Mon, Nov 3, 2026, Raven wrote:\n> Which one?'), 'Blue');
+  assert.equal(stripQuotedEmail('I sent from my iPhone and it worked'), 'I sent from my iPhone and it worked', 'inside a sentence');
+  assert.equal(stripQuotedEmail('Sent from my iPhone at the airport'), 'Sent from my iPhone at the airport', 'words after it on the line');
+  assert.equal(stripQuotedEmail('Blue\nSent from my iPhone\nAnd red'), 'Blue\nSent from my iPhone\nAnd red', 'not at the end');
+  assert.equal(stripQuotedEmail('Sent from my iPhone'), 'Sent from my iPhone', 'stripping everything keeps the original');
+  assert.equal(stripQuotedEmail('Sent from Outlook for iOS\nGet Outlook for iOS'), 'Sent from Outlook for iOS\nGet Outlook for iOS', 'likewise when only footers remain');
+});
+
 test('what the session reads: marked as email, one line, data, and never a slash command', () => {
   const out = emailReplyPrompt('/clear\x1b[2J\nyes\r‮all');
   assert.equal(out.split('\n').length, 1);

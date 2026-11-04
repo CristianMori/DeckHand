@@ -208,8 +208,19 @@ export async function emailRecipients(config: EmailConfig | undefined, fetcher: 
 }
 
 /**
+ * A mail client's own footer, when it is the whole line: "Sent from my
+ * iPhone", Outlook's and Yahoo's equivalents, with or without a leading
+ * "-- " or "—". Matched as the full line only, so the words never come out
+ * of a sentence the person wrote.
+ */
+const CLIENT_SIGNATURE =
+  /^\s*(?:--\s*|[—–]\s*)?(?:sent from my (?:iphone|ipad|android|mobile)|sent from outlook for (?:ios|android)|get outlook for (?:ios|android)|sent from mail for windows(?:\s*1[01])?|sent from yahoo mail\b.*|sent from gmail mobile)\s*\.?\s*$/i;
+
+/**
  * Only the words the person typed: quoted history ("On ... wrote:" and ">"
- * lines) and the signature (after "-- ") come out of an email reply body.
+ * lines), the signature (after "-- ") and a mail client's own footer at the
+ * end ("Sent from my iPhone" on its own line) come out of an email reply
+ * body. A line like that inside the text stays: only the tail is a footer.
  */
 export function stripQuotedEmail(text: string): string {
   const kept: string[] = [];
@@ -218,7 +229,15 @@ export function stripQuotedEmail(text: string): string {
     if (/^\s*>/.test(line)) continue;
     kept.push(line);
   }
-  return kept.join('\n').trim();
+  const trimmed = [...kept];
+  while (trimmed.length && !trimmed.at(-1)!.trim()) trimmed.pop();
+  while (trimmed.length && CLIENT_SIGNATURE.test(trimmed.at(-1)!)) {
+    trimmed.pop();
+    while (trimmed.length && !trimmed.at(-1)!.trim()) trimmed.pop();
+  }
+  // A reply that is nothing but its footer keeps it: better the client's
+  // words than none at all.
+  return (trimmed.join('\n') || kept.join('\n')).trim();
 }
 
 /** What the session reads. One line, and never starting with a slash command. */
