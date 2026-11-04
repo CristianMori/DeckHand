@@ -104,6 +104,17 @@ test('enabled: false at any layer switches the role off, whatever the other laye
   assert.equal(resolveCharter('tester')!.enabled, true);
 });
 
+test('the docs flag defaults off, and the most specific layer that sets it wins', () => {
+  const { builtin, fleet } = rig();
+  builtin('keeper', `---\ndocs: true\n---\nkeeper body`);
+  builtin('plain', 'just a body');
+  assert.ok(!resolveCharter('plain')!.docs); // unset: the role does not need the lead's documents
+  assert.equal(resolveCharter('keeper')!.docs, true);
+  fleet('keeper', `---\ndocs: false\n---\n`);
+  assert.equal(resolveCharter('keeper')!.docs, false); // fleet beats builtin
+  assert.equal(resolveCharter('keeper', `---\ndocs: true\n---\n`)!.docs, true); // project beats fleet
+});
+
 test('a fleet or project file with no builtin creates a new role with defaults', () => {
   const { fleet } = rig();
   fleet('linter', 'Run the linter and report.');
@@ -254,7 +265,12 @@ test('the built-in tester and doc keeper parse to what the design says', () => {
   const keeper = parseCharter(read('doc-keeper'));
   assert.equal(keeper.fields.platforms, 'any');
   assert.equal(keeper.fields.model, 'sonnet');
+  assert.equal(keeper.fields.docs, true); // it needs the lead's working documents
   assert.deepEqual(keeper.fields.skip, { underLines: 5 });
   assert.match(keeper.body, /docs\/architect\//);
+  assert.match(keeper.body, /lead's working files/);
+  assert.match(keeper.body, /what they should say/);
+  assert.match(keeper.body, /⎇ branch markers/);
+  assert.match(keeper.body, /In flight list/);
   assert.match(keeper.body, /never edit/i);
 });

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { matchesPaths, type RoleCharter, type RoleSkip } from './roleCharters.js';
 import type { RoleStart } from './swarm.js';
@@ -185,7 +186,7 @@ export interface RoleTriggerEvent {
 export interface RoleTriggerDeps<L extends RoleLead = RoleLead> {
   /** charter names known without the project layer (built-in + fleet) */
   names: () => string[];
-  /** the effective charter, the project layer's text already read from the merged commit */
+  /** the effective charter, the project layer's text already read from the lead's working folder */
   resolve: (name: string, projectText?: string) => RoleCharter | undefined;
   /** swarm.startRole, injected to avoid an import cycle */
   startRole: (lead: L, charter: RoleCharter, trig: RoleStart) => Promise<unknown>;
@@ -216,10 +217,28 @@ async function mergeDiff(folder: string, base: string, head: string): Promise<Ro
   return { files: names ? names.split('\n') : [], insertions, deletions };
 }
 
-/** A role's project-layer charter, read from the merged commit so overrides arrive only through a reviewed merge. */
-async function projectCharterText(folder: string, head: string, sub: string, name: string): Promise<string | undefined> {
-  const path = `${sub ? `${sub.replace(/\\/g, '/')}/` : ''}docs/architect/roles/${name}.md`;
-  return git(folder, 'show', `${head}:${path}`).catch(() => undefined);
+const warnedProjectCharters = new Set<string>();
+
+/**
+ * A role's project-layer charter: the architect's living file in the lead's
+ * working folder (docs/architect/ is not in git, so there is no commit to read
+ * it from; the trigger always runs on the lead's hub, where the folder is).
+ * Missing file: no project layer. Unreadable: the layer is skipped, warned once.
+ */
+function projectCharterText(folder: string, name: string): string | undefined {
+  const file = join(folder, 'docs', 'architect', 'roles', `${name}.md`);
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      const key = `${folder}|${name}`;
+      if (!warnedProjectCharters.has(key)) {
+        warnedProjectCharters.add(key);
+        console.warn(`[roles] project charter ${name} is skipped: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return undefined;
+  }
 }
 
 /**
@@ -238,9 +257,8 @@ export async function onMerge<L extends RoleLead>(lead: L, ev: RoleTriggerEvent,
   const now = Date.now();
   const diff: RoleDiff =
     ev.manual || !ev.base ? { files: [], insertions: 0, deletions: 0 } : await mergeDiff(ev.folder, ev.base, ev.head);
-  const sub = await git(ev.folder, 'rev-parse', '--show-prefix').then((s) => s.replace(/\/$/, '')).catch(() => '');
   for (const name of names) {
-    const text = await projectCharterText(ev.folder, ev.head, sub, name);
+    const text = projectCharterText(ev.folder, name);
     const charter = deps.resolve(name, text);
     if (!charter) {
       out.skipped.push({ role: name, reason: 'no such role' });

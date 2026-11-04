@@ -1,4 +1,5 @@
-import { basename, resolve, sep } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { basename, join, resolve, sep } from 'node:path';
 import { PROJECTS_ROOT } from './config.js';
 import { getAgent } from './agents/index.js';
 import { memoryBriefing } from './fleetMemory.js';
@@ -132,14 +133,19 @@ export interface RoleTrigFacts {
   insertions: number;
   deletions: number;
   manual?: boolean;
+  /** charter.docs, instance on the lead's machine: the lead's working docs/architect folder, named by path */
+  docsPath?: string;
+  /** charter.docs, instance on another machine: the lead's documents inlined (readLeadDocsInline) */
+  docsInline?: string;
 }
 
 /**
  * Rendered charter + trigger, stored as the instance's WorkerLink.task so the
  * briefing carries it (the spawn prompt itself stays one line). Capped well
- * under TASK_MAX: the task text rides on the spawn command line.
+ * under TASK_MAX; a rendered task over the swarm's inline limit travels as a
+ * task file, never on the spawn command line.
  */
-export const ROLE_TASK_MAX = 8_000;
+export const ROLE_TASK_MAX = 24_000;
 const ROLE_FILES_SHOWN = 80;
 
 export function renderRoleTask(charter: Pick<RoleCharter, 'title' | 'body' | 'effort'>, trig: RoleTrigFacts): string {
@@ -153,14 +159,67 @@ export function renderRoleTask(charter: Pick<RoleCharter, 'title' | 'body' | 'ef
         files.length ? `Changed files:\n${files.join('\n')}${more > 0 ? `\n…and ${more} more` : ''}` : '',
         trig.base ? `The full diff is \`git diff ${trig.base} ${trig.head}\` in your checkout.` : '',
       ].filter(Boolean).join('\n');
+  const docs = trig.docsPath
+    ? `The project's architect documentation lives at ${trig.docsPath} (it is the lead's working copy, not in git — your checkout does not contain it): read architecture.md and the newest notes there. Read only; it is the lead's.`
+    : (trig.docsInline ?? '');
   const parts = [
     `Your charter — ${charter.title}:`,
     charter.body || '(The charter has no body: report that, and do nothing else.)',
     trigger,
+    docs,
     charter.effort ? `Pace: work at ${charter.effort} effort — spend accordingly.` : '',
   ].filter(Boolean);
   const text = parts.join('\n\n');
   return text.length <= ROLE_TASK_MAX ? text : `${text.slice(0, ROLE_TASK_MAX)}\n[…cut by Deckhand to fit]`;
+}
+
+/** The inlined documents block stays well inside ROLE_TASK_MAX. */
+export const DOCS_INLINE_CAP = 12_000;
+const DOCS_NOTE_CAP = 2_400;
+const docsClip = (text: string, cap: number, name: string) =>
+  text.length <= cap ? text.trimEnd() : `${text.slice(0, cap)}\n[…${name} cut here by Deckhand to fit]`;
+
+/**
+ * A docs-needing role instance on another machine can't be pointed at the
+ * lead's docs/architect folder (the path doesn't exist there), so the lead's
+ * hub reads the documents and inlines them into the task, framed as data:
+ * architecture.md plus the newest two notes, each clipped, the whole block
+ * capped at DOCS_INLINE_CAP. Undefined: no documents to read.
+ */
+export function readLeadDocsInline(cwd: string): string | undefined {
+  try {
+    const dir = join(cwd, 'docs', 'architect');
+    let architecture: string | undefined;
+    try {
+      architecture = readFileSync(join(dir, 'architecture.md'), 'utf8');
+    } catch {
+      /* no architecture.md */
+    }
+    let notes: { name: string; text: string }[] = [];
+    try {
+      notes = readdirSync(join(dir, 'notes'))
+        .filter((f) => /^\d{4}-\d{2}-\d{2}.*\.md$/i.test(f))
+        .sort()
+        .slice(-2)
+        .map((name) => ({ name, text: readFileSync(join(dir, 'notes', name), 'utf8') }));
+    } catch {
+      /* no notes */
+    }
+    if (!architecture && !notes.length) return undefined;
+    const header = `The lead's docs/architect as its hub read them just now (not in your checkout):`;
+    const noteParts = notes.map((n) => `--- notes/${n.name} ---\n${docsClip(n.text, DOCS_NOTE_CAP, `notes/${n.name}`)}`);
+    const used = [header, ...noteParts].reduce((a, p) => a + p.length + 2, 0);
+    const parts = [header];
+    if (architecture) {
+      // headroom for this part's own "--- architecture.md ---" prefix, cut marker and joiners
+      const budget = Math.max(1_000, DOCS_INLINE_CAP - used - 120);
+      parts.push(`--- architecture.md ---\n${docsClip(architecture, budget, 'architecture.md')}`);
+    }
+    parts.push(...noteParts);
+    return parts.join('\n\n').slice(0, DOCS_INLINE_CAP);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Files an architect edits itself. Everything else inside its folder is a worker's. */
