@@ -143,6 +143,7 @@ export class HubSession {
       role: this.role,
       swarmKey: this.swarmKey,
       worker: this.worker && { ...this.worker, outbox: undefined, seen: undefined },
+      inboxCount: this.inbox?.length || undefined,
       toolUse: this.toolUse,
     };
   }

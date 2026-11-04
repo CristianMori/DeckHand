@@ -62,6 +62,8 @@ export interface SessionInfo {
   /** public key for signed swarm messages */
   swarmKey?: string;
   worker?: WorkerLink;
+  /** letters waiting in its swarm inbox (dh_swarm_inbox); absent when none */
+  inboxCount?: number;
   /** tool calls so far by tool name, kept for workers */
   toolUse?: Record<string, number>;
 }
@@ -133,12 +135,19 @@ export interface CrewPin {
   seen: string[];
 }
 
+/** What a letter is, for the dashboards' `swarm` event: from the envelope's type, never its text. */
+export type SwarmLetterKind = 'report' | 'failed' | 'ask' | 'notice' | 'answer' | 'followup';
+
 /** A message waiting for a session to read it with dh_swarm_inbox. */
 export interface SwarmLetter {
   id: string;
   at: number;
   /** verified: a pinned key signed it. unsigned: the dashboard or a local caller, with no signature. unknown-key: a valid signature from a key not pinned here */
   trust: 'verified' | 'unsigned' | 'unknown-key';
+  /** what it is, for the dashboards' event; set when it is filed, never parsed back out of the text */
+  kind?: SwarmLetterKind;
+  /** who sent it, from the pin or the worker link, never from the sender's words */
+  from?: { name: string; hubId?: string; kind?: 'worker' | 'subarchitect' | 'architect' };
   /** who and what, in the hub's words: comes from the pin, not from the sender */
   header: string;
   /** the sender's own text */

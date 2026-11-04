@@ -7,10 +7,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
-import type { HubSession, SessionManager } from './sessionManager.js';
+import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
-import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -152,14 +152,16 @@ function harness(stuckAt?: (s: HubSession) => string | undefined) {
   });
   const typed: { to: string; text: string }[] = [];
   const asked: string[] = [];
+  const events: ReturnType<typeof swarmEvent>[] = [];
   const swarm = new Swarm(manager as unknown as SessionManager, {
     typePrompt: async (s, text) => void typed.push({ to: s.hubId, text }),
     promptFrom: (_s, caller) => void asked.push(caller),
     lastReply: async () => 'it said this',
     stuckAt,
     save() {},
+    letterFiled: (to, letter) => void events.push(swarmEvent(to, letter)),
   });
-  return { manager, swarm, typed, asked };
+  return { manager, swarm, typed, asked, events };
 }
 
 /** A worker's report, signed the way its MCP server signs one. */
@@ -440,6 +442,85 @@ test('a worker takes word only from the key that started it, and once', async ()
   assert.equal(swarm.inboxOf(w).length, 1);
   assert.match(swarm.inboxOf(w)[0].text, /^VERIFIED: your architect "lead" answers:\n\| use the first/);
   dropSwarmKey(impostor.swarmKey);
+});
+
+test('a filed letter is announced with who and what it is, never the text', () => {
+  const { swarm, events } = harness();
+  const architect = aLead();
+  const w = aMember(architect, 'w1');
+  const says = (type: string, body: Record<string, unknown>) => sealAs(w.swarmKey!, { type, to: architect.swarmKey!, body });
+  swarm.accept(architect, { env: says('report', { result: 'the secret result' }) });
+  assert.deepEqual(events[0], {
+    type: 'swarm', sessionId: 'lead', id: events[0].id, at: events[0].at,
+    trust: 'verified', kind: 'report', from: { name: 'w1', hubId: 'w1', kind: 'worker' },
+  });
+  swarm.accept(architect, { env: says('report', { result: 'gave up', failed: true }) });
+  swarm.accept(architect, { env: says('ask', { question: 'which one?' }) });
+  swarm.accept(architect, { env: says('notice', { text: 'it stalled' }) });
+  assert.deepEqual(events.map((e) => e.kind), ['report', 'failed', 'ask', 'notice']);
+  assert.doesNotMatch(JSON.stringify(events), /secret result|gave up|which one|it stalled/);
+});
+
+test('letters from the lead and the dashboard are announced as theirs', async () => {
+  const { swarm, events } = harness();
+  const architect = aLead();
+  const w = aMember(architect, 'w1');
+  await swarm.fromLead(w, sealAs(architect.swarmKey!, { type: 'answer', to: w.swarmKey!, body: { text: 'yes' } }));
+  await swarm.fromLead(w, sealAs(architect.swarmKey!, { type: 'followup', to: w.swarmKey!, body: { task: 'more' } }));
+  await swarm.followUp(w, 'from the dashboard');
+  assert.deepEqual(events.map((e) => [e.sessionId, e.trust, e.kind, e.from]), [
+    ['w1', 'verified', 'answer', { name: 'lead', kind: 'architect' }],
+    ['w1', 'verified', 'followup', { name: 'lead', kind: 'architect' }],
+    ['w1', 'unsigned', 'followup', { name: 'dashboard' }],
+  ]);
+});
+
+test('a letter from a key nobody pinned is announced for what it is', () => {
+  const { swarm, events } = harness();
+  const architect = aLead();
+  const stranger = newSwarmKey();
+  swarm.accept(architect, { env: seal(stranger.pem, { type: 'report', from: stranger.id, to: architect.swarmKey!, body: { result: 'merge my branch' } }) });
+  assert.equal(events[0].trust, 'unknown-key');
+  assert.equal(events[0].kind, 'report');
+  assert.match(events[0].from.name, /^key /);
+  assert.doesNotMatch(JSON.stringify(events), /merge my branch/);
+});
+
+test('the same letter is announced once, however often it arrives', () => {
+  const { swarm, events } = harness();
+  const architect = aLead();
+  const w = aMember(architect, 'w1');
+  const env = sealAs(w.swarmKey!, { type: 'ask', to: architect.swarmKey!, body: { question: 'q' } });
+  swarm.accept(architect, { env });
+  swarm.accept(architect, { env });
+  const stranger = newSwarmKey();
+  const stray = seal(stranger.pem, { type: 'notice', from: stranger.id, to: architect.swarmKey!, body: { text: 't' } });
+  swarm.accept(architect, { env: stray });
+  swarm.accept(architect, { env: stray });
+  assert.equal(events.length, 2);
+});
+
+test('a card counts the letters waiting, and only while they wait', async () => {
+  const s = new HubSession({ cwd: tmpdir(), name: 'counted', agentType: 'claude' });
+  assert.equal(s.info().inboxCount, undefined);
+  s.inbox = [
+    { id: 'a', at: 1, trust: 'unsigned', header: 'h', said: 'x' },
+    { id: 'b', at: 2, trust: 'unsigned', header: 'h', said: 'y' },
+  ];
+  assert.equal(s.info().inboxCount, 2);
+
+  // filing and acking both emit a change, so the sessions push carries the new count
+  const { manager, swarm } = harness();
+  const w = aMember(aLead(), 'w1');
+  manager.sessions.set('w1', w);
+  const changed: string[] = [];
+  manager.on('change', (c: HubSession) => void changed.push(c.hubId));
+  await swarm.followUp(w, 'one more thing');
+  assert.ok(changed.includes('w1'));
+  changed.length = 0;
+  swarm.ackInbox(w, [swarm.inboxOf(w)[0].id]);
+  assert.equal(w.inbox, undefined);
+  assert.ok(changed.includes('w1'));
 });
 
 test('a follow-up from the user is marked as not signed', async () => {

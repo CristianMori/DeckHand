@@ -34,6 +34,8 @@ export interface SessionInfo {
   /** architect: designs and delegates; subarchitect: the same for one module; worker: one task. Absent: plain */
   role?: 'architect' | 'subarchitect' | 'worker';
   worker?: WorkerLink;
+  /** letters waiting in its swarm inbox; absent when none, and on a hub too old to count them */
+  inboxCount?: number;
   /** tool calls so far by tool name, kept for workers */
   toolUse?: Record<string, number>;
   /** the latest tool call */

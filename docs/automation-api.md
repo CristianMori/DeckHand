@@ -235,6 +235,15 @@ A session that stopped with something for the user carries `attention` on its ca
 { "type": "attention-cleared", "episode": "1a2b3c4d-1793000000000", "hubId": "1a2b3c4d", "conversationId": "…", "machine": "mac-mini" }
 ```
 
+`/ws/control` also announces swarm mail: one `swarm` event when a letter is filed into a session's inbox on this hub (a letter forwarded from another hub is announced by the hub it lands on, and each letter id only once per hub). It says who sent it and what it is, never the text:
+
+```jsonc
+{ "type": "swarm", "sessionId": "1a2b3c4d", "id": "<letter id>", "at": 1793000000000, "trust": "verified",
+  "kind": "report", "from": { "name": "adder", "hubId": "9f8e7d6c", "kind": "worker" } }
+```
+
+`trust` is `verified`/`unsigned`/`unknown-key`; `kind` is `report`, `failed`, `ask`, `notice`, `answer` or `followup`; `from.kind`, when present, is `worker`/`subarchitect`/`architect`. While letters wait, the session's card carries `inboxCount`. That is all a viewer gets to use: `GET /api/sessions/:id/swarm-inbox` returns the letters themselves (`{letters:[{id,text}]}`) and its POST marks them read and **removes** them, so an app that only shows mail must never call either — the session would lose its mail.
+
 Who hears on Discord, by text and by email is chosen per session, nobody by default: `alerts` on the card, `{"discord":[],"text":["sara"],"email":[]}`, names as Hermod's people registry and the text gateway know them, kept in the hub's `hub-sessions.json` across hub restarts and resumes, and carried along when a conversation resumes on another machine. A hub sends to the names on the card, read when the alert goes out, one message each. `data/attention.json` holds how to send, never who gets what from which session. iOS push and the alert to connected dashboards and apps don't depend on it. Turning a channel on after the alert went out does not send that alert. `data/attention-sent.json` records each person on each channel apart (`discord:sara:<episode>`), and someone not chosen records nothing. A text already sent can still be answered after its channel is turned off.
 
 Dedupe on `episode`. An app that connects late finds what it missed in the first `sessions` message: any `attention` with `alertedAt`. Discord goes through Hermod from the one hub holding a key: `data/attention.json` = `{"hermod":{"url":"http://desktop-master:5103","keyFile":"hermod-notify.key","person":"cristian"}}` (vps-node; `keyFile` absolute or relative to the data folder — an inline `"key"` still works for existing configs, and `keyFile` wins when both are present), re-read on every alert. No file, no key or the session's Discord off: no Discord; everything else still works.
@@ -325,8 +334,8 @@ Callers identify themselves with `X-Deckhand-Caller` (the MCP server sends `sess
 | `POST /api/sessions/:id/report` | `{"env":<signed envelope>}` with `result` (at most 3000 characters), `failed`, `head` | a worker finishes. Signed with its own key by its MCP server. 409 if it isn't, while it has uncommitted changes unless `failed`, or if the branch moved past `head`. Stopped shortly after |
 | `POST /api/sessions/:id/ask-architect` | `{"env":<signed envelope>}` with `question` | a worker needs a decision. Signed with its own key |
 | `POST /api/sessions/:id/lead-message` | `{"env":<signed envelope>}`, type `answer` (`text`), `followup` (`task`) or `remove` (`discard`) | from a worker's lead, on any hub. 409 unless signed by the key that started the worker |
-| `GET /api/sessions/:id/swarm-inbox` | – | `{letters:[{id,text}]}`: what's waiting for this session, marked with how it was verified. The session itself or the user |
-| `POST /api/sessions/:id/swarm-inbox` | `{"read":["id"]}` | those were read, so they go. The session itself or the user |
+| `GET /api/sessions/:id/swarm-inbox` | – | `{letters:[{id,text}]}`: what's waiting for this session, marked with how it was verified. The session itself or the user; a viewer app shows `inboxCount` and the `swarm` event instead |
+| `POST /api/sessions/:id/swarm-inbox` | `{"read":["id"]}` | those were read, so they go. The session itself or the user — never a viewer: the letters would be gone before the session reads them |
 | `POST /api/sessions/:id/swarm-message` | `{"packet":{env,facts,branchOf},"branch":true}` | hub to hub: a signed message for a lead, its branch fetched first. 403 for a bad signature |
 | `POST /api/sessions/:id/follow-up` | `{"task":"…"}` | the user: more work for a worker, brought back first if stopped, shown to it as not signed. 403 for a session, which uses `lead-message` |
 | `POST /api/sessions/:id/remove-worker` | `{"discard":false}` | the user: remove a worker's card, worktree and branch. 409 while its branch is unmerged or its worktree has changes, unless `discard`. 403 for a session, which uses `lead-message` |

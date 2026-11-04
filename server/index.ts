@@ -27,7 +27,7 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
-import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, WORKER_BRANCH, type HostWorker } from './swarm.js';
+import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, WORKER_BRANCH, type HostWorker } from './swarm.js';
 import { signatureHolds } from '../mcp/swarm-envelope.mjs';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
@@ -1772,6 +1772,8 @@ const swarm = new Swarm(manager, {
     }
   },
   save: () => savePersisted(manager),
+  // the same audience as `sessions` and `alert`: every connected dashboard and app
+  letterFiled: (to, letter) => broadcastAlert(swarmEvent(to, letter)),
   fleetSessions: () => mergedList(),
   fleet: {
     get self() {
