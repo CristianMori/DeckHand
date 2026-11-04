@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
+import { peerWithLiveSession } from './federation.js';
 import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
@@ -149,7 +150,10 @@ function harness(stuckAt?: (s: HubSession) => string | undefined) {
       return s;
     },
     byClaudeSessionId: (id: string) => [...manager.sessions.values()].find((s) => s.claudeSessionId === id),
-    kill() {},
+    kill(_hubId: string) {},
+    resume(_hubId: string): HubSession | undefined {
+      return undefined;
+    },
     remove(hubId: string) {
       const s = manager.sessions.get(hubId);
       manager.sessions.delete(hubId);
@@ -203,6 +207,21 @@ test('the worker gets its own branch and checkout, and the main folder stays put
     execFileSync('git', ['-C', t.worktree, 'commit', '-qm', 'b']);
     assert.deepEqual(await worktreeFacts(t), { branch: t.branch, commits: 1, files: 1, dirty: false });
     assert.equal(existsSync(join(dir, 'b.txt')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a worker cwd not in the base commit is refused before any worktree exists', async () => {
+  const { dir, git } = repo();
+  const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
+  try {
+    const sub = join(dir, 'newpkg');
+    mkdirSync(sub);
+    writeFileSync(join(sub, 'x.txt'), 'x'); // on disk, but in no commit
+    await assert.rejects(createWorktree(sub, 'w', root), /not in the commit/);
+    assert.equal(git('worktree', 'list').trim().split('\n').length, 1); // nothing left behind
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
@@ -298,6 +317,68 @@ test('from task to report to merge to removal', async () => {
     if (session.worker?.worktree) rmSync(session.worker.worktree, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a follow-up within the post-report stop window keeps the worker alive', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  const killed: string[] = [];
+  manager.kill = (hubId: string) => void killed.push(hubId);
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const { session } = await swarm.start(architect, { task: 'add b', name: 'adder' });
+  const w = session!.worker!;
+  try {
+    writeFileSync(join(w.worktree!, 'b.txt'), 'b\n');
+    execFileSync('git', ['-C', w.worktree!, 'add', '.']);
+    execFileSync('git', ['-C', w.worktree!, 'commit', '-qm', 'b']);
+    await swarm.report(session!, reported(session!, 'b is added'));
+    // new work arrives inside the window: the stop the report scheduled must not land
+    await swarm.followUp(session!, 'one more thing');
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(killed, []);
+    // reported again, with nothing new since: now it lands
+    await swarm.report(session!, reported(session!, 'still added'));
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(killed, [session!.hubId]);
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a worker left EXITED after a hub restart is brought back once, or its lead is told', async () => {
+  const { manager, swarm } = harness();
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const comesBack = aMember(architect, 'w1', {}, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  const stays = aMember(architect, 'w2', {}, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  const done = aMember(architect, 'w3', { status: 'reported' }, { proc: null, state: 'EXITED', detail: 'hub restarted' });
+  for (const s of [comesBack, stays, done]) manager.sessions.set(s.hubId, s);
+  const resumed: string[] = [];
+  manager.resume = (hubId: string) => {
+    resumed.push(hubId);
+    const s = manager.sessions.get(hubId)!;
+    if (hubId === 'w1') Object.assign(s, { proc: {}, state: 'WORKING', detail: undefined });
+    return s;
+  };
+  swarm.restoreLeftBehind();
+  assert.deepEqual(resumed, ['w1', 'w2']); // the reported one is left alone
+  assert.equal(comesBack.worker?.status, 'working');
+  assert.equal(stays.worker?.status, 'failed');
+  assert.match(stays.worker?.result ?? '', /could not restore after a restart/);
+  // the lead hears why, through the usual outbox
+  await swarm.tick();
+  assert.match(swarm.inboxOf(architect).map((l) => l.text).join(), /could not restore after a restart/);
+});
+
+test('a message for an architect elsewhere goes only to a hub with its live card', () => {
+  const dead = { sessions: [{ claudeSessionId: 'arch-conv', alive: false }] };
+  const live = { sessions: [{ claudeSessionId: 'arch-conv', alive: true }] };
+  assert.equal(peerWithLiveSession([dead, live], 'arch-conv'), live);
+  assert.equal(peerWithLiveSession([dead], 'arch-conv'), undefined); // no live card: the outbox keeps the message
+  assert.equal(peerWithLiveSession([live], 'other-conv'), undefined);
 });
 
 test('reports from several workers mean one prompt, and each can be read', async () => {

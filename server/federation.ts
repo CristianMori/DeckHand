@@ -224,6 +224,13 @@ export class Federation extends EventEmitter {
     return [...this.peers.values()].filter((p) => p.connected);
   }
 
+  /** The peer running this conversation as a live card. A dead card (EXITED, or
+   *  removed on its hub) reads nothing, so with no live one there is no peer to
+   *  call: the sender's outbox keeps the message, as signed packets already do. */
+  peerWithLiveSession(conversation: string): Peer | undefined {
+    return peerWithLiveSession(this.connectedPeers(), conversation);
+  }
+
   peerByMachine(machine: string): Peer | undefined {
     for (const peer of this.peers.values()) {
       if (peer.info.machine === machine && peer.connected) return peer;
@@ -275,6 +282,14 @@ export class Federation extends EventEmitter {
   termWsUrl(peer: Peer, hubId: string): string {
     return `ws://${peer.info.ip}:${peer.info.port}/ws/term/${hubId}`;
   }
+}
+
+/** Only a live card counts: a dead one (EXITED, or removed on its hub) can't read a message. */
+export function peerWithLiveSession<P extends { sessions: Pick<SessionInfo, 'claudeSessionId' | 'alive'>[] }>(
+  peers: P[],
+  conversation: string,
+): P | undefined {
+  return peers.find((p) => p.sessions.some((s) => s.claudeSessionId === conversation && s.alive));
 }
 
 export type { Peer };
