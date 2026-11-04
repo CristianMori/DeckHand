@@ -1,5 +1,6 @@
 import { api } from './api';
 import { openAuditDialog, renderGatewayAgents } from './auditDialog';
+import { renderRolesPanel } from './rolesPanel';
 import { renderTrustPanel } from './trustPanel';
 import type { AdminStatus } from './types';
 
@@ -28,6 +29,10 @@ export async function openAdminDialog() {
         <div class="ad-col-title">TRUST — WHAT EACH AGENT MAY REACH</div>
         <div class="ad-scroll" id="ad-trust"><div class="empty-note">loading grants…</div></div>
       </section>
+      <section>
+        <div class="ad-col-title">ROLES — SPECIALIST CHARTERS, RUN ON MERGE</div>
+        <div class="ad-scroll" id="ad-roles"><div class="empty-note">loading charters…</div></div>
+      </section>
     </div>
     <div class="dialog-actions">
       <button class="primary-btn" id="ad-update-all">UPDATE ALL</button>
@@ -49,6 +54,7 @@ export async function openAdminDialog() {
     });
   void refreshAgents();
   void renderTrustPanel(dialog.querySelector('#ad-trust') as HTMLElement);
+  void renderRolesPanel(dialog.querySelector('#ad-roles') as HTMLElement);
   const agentTimer = window.setInterval(() => {
     if (!dialog.open) return window.clearInterval(agentTimer);
     void refreshAgents();

@@ -214,6 +214,21 @@ export interface AccessGrant {
   originMachine: string;
 }
 
+/** One specialist role's effective charter (built-in + fleet layers merged) */
+export interface RoleCharter {
+  name: string;
+  title: string;
+  on: 'merge';
+  paths: string[];
+  platforms: 'any' | 'all' | string[];
+  model?: string;
+  effort?: string;
+  skip: { underLines?: number; docsOnly?: boolean };
+  enabled: boolean;
+  body: string;
+  layers: ('builtin' | 'fleet' | 'project')[];
+}
+
 export interface MimirRequest {
   id: string;
   agent: string;

@@ -1,4 +1,4 @@
-import type { AccessGrant, AdminStatus,UpdateAllResult, AgentInfo, MimirAgent, MimirRequest, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, SessionInfo } from './types';
+import type { AccessGrant, AdminStatus,UpdateAllResult, AgentInfo, MimirAgent, MimirRequest, ProvenanceEntry, FileEntry, FleetFolderGroup, FleetMachine, HandoffJob, ResumeJob, RoleCharter, SessionInfo } from './types';
 
 const mq = (machine?: string) => (machine ? `?machine=${encodeURIComponent(machine)}` : '');
 
@@ -166,6 +166,23 @@ export const api = {
       body: JSON.stringify(body),
     }).then((r) => json<unknown>(r)),
   trustRevoke: (id: string) => fetch(`/api/trust/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => json<unknown>(r)),
+  /** specialist roles: effective charters plus the fleet layer's raw texts */
+  roles: () => fetch('/api/roles').then((r) => json<{ roles: RoleCharter[]; fleet: Record<string, string> }>(r)),
+  roleSave: (name: string, text: string) =>
+    fetch(`/api/roles/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).then((r) => json<{ name: string; version: number }>(r)),
+  roleRevert: (name: string) =>
+    fetch(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => json<{ name: string; deleted: boolean }>(r)),
+  /** manual trigger: run one role against a lead session's HEAD (the hub that owns it answers) */
+  runRole: (hubId: string, role: string) =>
+    fetch(`/api/sessions/${encodeURIComponent(hubId)}/run-role`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }).then((r) => json<unknown>(r)),
   provenance: (machine: string, opts: { q?: string; id?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams({ machine, limit: String(opts.limit ?? 300) });
     if (opts.q) qs.set('q', opts.q);

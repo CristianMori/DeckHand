@@ -52,6 +52,7 @@ import { startFleetResume, getResumeJob, ensureTranscript } from './fleetResume.
 import { startHandoff, getHandoffJob, receiveHandoff, type HandoffPayload } from './handoff.js';
 import { isFrozen, setFrozen, folderNameOf } from './frozen.js';
 import { applyOnAuthority, changesSince, findMemory, forget, formatMemory, initFleetMemory, recall, remember, renameProjectMemories, TRUST_ORIGIN, type MemoryOp } from './fleetMemory.js';
+import { deleteFleetRole, fleetRoleTexts, fleetRolesSnapshot, initRoleCharters, listCharters, putFleetRole } from './roleCharters.js';
 import { currentTrace, initProvenance, provenanceMiddleware, readProvenance } from './provenance.js';
 import {
   ACCESS_LEVELS, accessTo, accessToFolder, allGrants, atLeast, delegatedAgent, grantMemory, grantsFor, hasDelegateKey,
@@ -1736,6 +1737,52 @@ app.post('/api/memories/apply', (req, res) => {
 app.get('/api/memories/changes', (req, res) => {
   if (discovery.selfName !== STORE_MACHINE) return res.status(409).json({ error: `memories are kept on ${STORE_MACHINE}` });
   res.json(changesSince(Number(req.query.since) || 0));
+});
+
+// ----------------------------------------------------------- Role charters
+// Specialist roles (roleCharters.ts): built-in charters ship with the hub,
+// the fleet layer lives on the memory authority and replicates to every hub.
+initRoleCharters({
+  selfName: () => discovery.selfName,
+  authorityName: STORE_MACHINE,
+  callAuthority: async (path, init) => {
+    const peer = federation.peerByMachine(STORE_MACHINE);
+    return peer ? federation.forward(peer, path, init) : undefined;
+  },
+});
+
+// Fleet-layer charter edits are the user's, like trust grants: sessions,
+// gateway clients and Mimir are refused (the caller travels on a forward,
+// so the check holds on the authority too).
+function roleCallerRefused(res: express.Response): boolean {
+  const caller = currentTrace()?.caller ?? '';
+  if (!/^(session:|gateway:|mimir)/i.test(caller)) return false;
+  res.status(403).json({ error: 'role charters are edited by the user in the dashboard (ADMIN → ROLES), not by sessions or agents' });
+  return true;
+}
+app.get('/api/roles', (_req, res) => {
+  res.json({ roles: listCharters(), fleet: Object.fromEntries(fleetRoleTexts()) });
+});
+// authority side: replicas pull the full set when the version counter moved
+app.get('/api/roles/sync', (_req, res) => {
+  if (discovery.selfName !== STORE_MACHINE) return res.status(409).json({ error: `role charters are kept on ${STORE_MACHINE}` });
+  res.json(fleetRolesSnapshot());
+});
+app.put('/api/roles/:name', async (req, res) => {
+  if (roleCallerRefused(res)) return;
+  try {
+    res.json(await putFleetRole(String(req.params.name), String(req.body?.text ?? '')));
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
+});
+app.delete('/api/roles/:name', async (req, res) => {
+  if (roleCallerRefused(res)) return;
+  try {
+    res.json(await deleteFleetRole(String(req.params.name)));
+  } catch (err) {
+    res.status(400).json({ error: errText(err) });
+  }
 });
 
 // ----------------------------------------------------------- Automation
