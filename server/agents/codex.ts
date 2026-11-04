@@ -432,6 +432,13 @@ export const codexAdapter: AgentAdapter = {
     if (/Hooks need review/i.test(screen)) return "Codex's hooks-review dialog";
     return undefined;
   },
+  // Signed out: the sign-in picker takes the screen over, or an auth error
+  // tells you to run codex login. Either way only the user can log in.
+  loggedOut: (screen) => {
+    const tail = screen.split('\n').slice(-14).join('\n');
+    if (/Sign in with ChatGPT/i.test(tail) || /run\s+`?codex login`?/i.test(tail)) return 'Codex is not logged in (run codex login)';
+    return undefined;
+  },
 
   transcript: {
     file(cwd, sessionId) {

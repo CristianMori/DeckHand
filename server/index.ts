@@ -1913,6 +1913,16 @@ function startupDialogOn(session: HubSession): string | undefined {
   }
 }
 
+/** The engine signed out mid-session ("Login expired · Please run /login"): hooks have
+ *  already fired by then, so the startup-dialog scan never sees it (2026-11-04 incident). */
+function loggedOutOn(session: HubSession): string | undefined {
+  try {
+    return agentFor(session).loggedOut?.(screenText(session));
+  } catch {
+    return undefined; // mirror mid-resize
+  }
+}
+
 /**
  * Cristian's text answering a question. Decided here, on the hub that owns the
  * session, right before typing: only that episode, only a question, only at
@@ -1924,6 +1934,7 @@ const swarm = new Swarm(manager, {
   promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
   lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
   stuckAt: startupDialogOn,
+  loggedOut: loggedOutOn,
   composerBusy,
   save: () => savePersisted(manager),
   // the same audience as `sessions` and `alert`: every connected dashboard and app
@@ -1983,14 +1994,18 @@ const roleDeps: RoleTriggerDeps<HubSession> = {
 // A plain session parked at a startup dialog (folder trust, a project's MCP
 // servers, a login) fires no hook and never settles on its own: only the user
 // can answer it, so it joins the same attention pipeline as permission and
-// question waits. Only sessions no hook has reached yet are read — a real
-// startup dialog blocks the engine before its first hook, and transcripts can
-// echo dialog wording later. Workers aren't raised: their lead is told
-// instead (swarm.stuckAtDialog), and dialogWait skips them too.
+// question waits. Startup dialogs are read only on sessions no hook has reached
+// yet — a real one blocks the engine before its first hook, and transcripts can
+// echo dialog wording later. A signed-out engine ("Login expired · Please run
+// /login") is the opposite: it shows after hooks have fired, so every session is
+// read for it, through the same `dialog` episode. Workers aren't raised: their
+// lead is told instead (swarm.stuckAtDialog and the swarm's logged-out check),
+// and dialogWait skips them too.
 setInterval(() => {
   for (const session of manager.sessions.values()) {
-    if (!session.proc || session.hooksSeen || session.worker) continue;
-    needsYou.dialogWait(session, startupDialogOn(session));
+    if (!session.proc || session.worker) continue;
+    const dialog = session.hooksSeen ? undefined : startupDialogOn(session);
+    needsYou.dialogWait(session, dialog ?? loggedOutOn(session));
   }
 }, 15_000).unref();
 

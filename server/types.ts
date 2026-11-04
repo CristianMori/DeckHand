@@ -114,6 +114,8 @@ export interface WorkerLink {
   nudgedAt?: number;
   /** stateSince of the last prompt already passed to the architect */
   forwardedWait?: number;
+  /** its lead was told the engine is signed out ("run /login"): not nudged or told again until it works */
+  loggedOutTold?: boolean;
   /** project .mcp.json servers its lead enabled — written into its settings on every spawn */
   mcpChoices?: { enableAll: boolean; enabled: string[] };
   /** the lead's folder holding the untracked docs/architect, when it is on this machine: the worker reads it there */

@@ -9,7 +9,7 @@ import { leadMcpChoices, type McpChoices } from './agents/claude.js';
 import { ARCHITECTURE_FILE, docsFingerprint, docsMergeDecision, docsMissing, inFlightLine, readLeadSummary } from './architectDocs.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
-import { osName, projectFolderOf, readLeadDocsInline, renderRoleTask, windowsUnsafeNames, type RoleTrigFacts } from './etiquette.js';
+import { osName, projectFolderOf, readLeadDocsInline, renderRoleTask, taskWithFollowUps, windowsUnsafeNames, type RoleTrigFacts } from './etiquette.js';
 import type { RoleCharter } from './roleCharters.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import { dropSwarmKey, sealAs } from './swarmKeys.js';
@@ -76,6 +76,8 @@ export const ROLE_BRANCH = /^role\/[a-z0-9-]+$/;
 export const CREW_BRANCH = /^(worker|role)\/[a-z0-9-]+$/;
 /** A finished role instance left unread is still tidied away eventually. */
 const ROLE_LINGER_MS = 24 * 3600_000;
+/** One whose report left its local lead's inbox was read: the ack-time removal slipped, so the sweep takes it soon. */
+const ROLE_ACKED_LINGER_MS = 60_000;
 const firstKeyChars = (key: string) => key.slice(0, 8);
 const remember = (seen: string[] | undefined, id: string) => [...(seen ?? []), id].slice(-SEEN_MAX);
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -206,13 +208,29 @@ export async function worktreeFacts(w: Pick<WorkerLink, 'worktree' | 'branch' | 
 const WORKTREES = join(DATA_DIR, 'worktrees');
 const TASKS_DIR = join(DATA_DIR, 'worker-tasks');
 
+function newTaskFile(name: string): string {
+  mkdirSync(TASKS_DIR, { recursive: true });
+  return join(TASKS_DIR, `${slug(name)}-${randomBytes(3).toString('hex')}.md`);
+}
+
 /** A long task is written to disk: the briefing and the first prompt point at it instead of carrying it. */
 function taskFileFor(task: string, name: string): string | undefined {
   if (task.length <= TASK_INLINE_MAX) return undefined;
-  mkdirSync(TASKS_DIR, { recursive: true });
-  const file = join(TASKS_DIR, `${slug(name)}-${randomBytes(3).toString('hex')}.md`);
+  const file = newTaskFile(name);
   writeFileSync(file, task);
   return file;
+}
+
+/**
+ * Follow-ups ride the respawn briefing like the task does, so they too must fit
+ * a Windows command line: outgrown the inline limit — or once a task file exists —
+ * task and follow-ups live whole in the file, and the briefing just names it.
+ */
+function spillFollowUps(w: WorkerLink, name: string) {
+  const whole = taskWithFollowUps(w);
+  if (!w.taskFile && whole.length <= TASK_INLINE_MAX) return;
+  w.taskFile ??= newTaskFile(name);
+  writeFileSync(w.taskFile, whole);
 }
 
 /** The spawn command line carries the task once at most: it rides in the briefing, or in the task file. */
@@ -415,6 +433,8 @@ export class Swarm {
       lastReply: (session: HubSession) => Promise<string | undefined>;
       /** a startup dialog on the session's screen, blocking the engine (named for the stall notice) */
       stuckAt?: (session: HubSession) => string | undefined;
+      /** the engine on this session is signed out: only the user logging in on its machine fixes it */
+      loggedOut?: (session: HubSession) => string | undefined;
       /** the session's composer holds text the hub didn't type: typing now would merge with it */
       composerBusy?: (session: HubSession) => boolean;
       save: () => void;
@@ -422,7 +442,7 @@ export class Swarm {
       letterFiled?: (to: HubSession, letter: SwarmLetter) => void;
       fleet?: SwarmFleet;
       /** every session in the fleet: a session's workers can be on other machines */
-      fleetSessions?: () => { claudeSessionId: string; hubId?: string; worker?: WorkerLink }[];
+      fleetSessions?: () => { claudeSessionId: string; hubId?: string; swarmKey?: string; worker?: WorkerLink }[];
       /** a merged branch was confirmed at removal: the role trigger runs on it (injected to avoid an import cycle) */
       onMerge?: (lead: HubSession, ev: { project: string; folder: string; base?: string; head: string }) => void;
       /** a role instance's report was acked: a pending head for its (project, role, platform) may fire */
@@ -832,25 +852,30 @@ export class Swarm {
     this.deps.save();
     // a role instance is done the moment its report is read: removed on the ack
     for (const l of acked) {
-      if (l.from?.kind === 'role' && (l.kind === 'report' || l.kind === 'failed')) void this.roleReportAcked(session, l.from.hubId);
+      if (l.from?.kind === 'role' && (l.kind === 'report' || l.kind === 'failed')) void this.roleReportAcked(session, l);
     }
   }
 
   /** The lead read a role instance's report: the instance goes, and a pending merge for its slot may fire. */
-  private async roleReportAcked(lead: HubSession, hubId: string | undefined) {
-    if (!hubId) return;
-    const local = this.manager.sessions.get(hubId);
-    const w = local?.worker ?? this.deps.fleetSessions?.().find((s) => s.hubId === hubId)?.worker;
+  private async roleReportAcked(lead: HubSession, letter: SwarmLetter) {
+    // a hub restart hands restored sessions new hub ids, so the id the letter was
+    // filed with can be stale: the instance's signing key, pinned at start, is what holds
+    const key = letter.packet?.env.from;
+    const hubId = letter.from?.hubId;
+    if (!key && !hubId) return;
+    const sameOne = (s: { hubId?: string; swarmKey?: string }) => (!!key && s.swarmKey === key) || (!!hubId && s.hubId === hubId);
+    const local = [...this.manager.sessions.values()].find(sameOne);
     if (local?.worker?.charter) {
       await this.remove(local, true).catch((err) => console.warn(`[swarm] role instance ${local.name} not removed: ${err}`));
     } else if (!local) {
       // on another machine: tell its hub, signed as the lead, the way dh_remove_worker would
-      const entry = Object.entries(lead.crew ?? {}).find(([, pin]) => pin.hubId === hubId && pin.kind === 'role');
+      const entry = Object.entries(lead.crew ?? {}).find(([k, pin]) => pin.kind === 'role' && (k === key || (!!hubId && pin.hubId === hubId)));
       if (entry && entry[1].machine && lead.swarmKey) {
         const env = sealAs(lead.swarmKey, { type: 'remove', to: entry[0], body: { discard: true } });
-        await this.deps.fleet?.call(entry[1].machine, `/api/sessions/${encodeURIComponent(hubId)}/lead-message`, { env }).catch((err) => console.warn(`[swarm] role instance ${hubId} on ${entry[1].machine} not removed: ${err}`));
+        await this.deps.fleet?.call(entry[1].machine, `/api/sessions/${encodeURIComponent(entry[1].hubId)}/lead-message`, { env }).catch((err) => console.warn(`[swarm] role instance ${entry[1].hubId} on ${entry[1].machine} not removed: ${err}`));
       }
     }
+    const w = local?.worker ?? this.deps.fleetSessions?.().find(sameOne)?.worker;
     if (w?.charter) this.deps.roleDone?.(lead, { charter: w.charter, project: w.project, platform: w.platform });
   }
 
@@ -942,8 +967,11 @@ export class Swarm {
     if (!w) throw new Error('not a worker');
     const text = task?.trim();
     if (!text) throw new Error('task required');
+    if (text.length > TASK_MAX) throw new Error(`task too long (${text.length} characters, the limit is ${TASK_MAX})`);
     w.status = 'working';
     w.followUps = [...(w.followUps ?? []), text];
+    spillFollowUps(w, session.name); // before any respawn: the briefing must already name the file
+    w.loggedOutTold = undefined;
     w.result = undefined;
     w.reportedAt = undefined;
     w.nudgedAt = undefined;
@@ -1100,12 +1128,18 @@ export class Swarm {
   async tick(now = Date.now()) {
     const workers = [...this.manager.sessions.values()].filter((s) => s.worker);
     for (const s of workers) await this.step(s, now).catch((err) => console.warn(`[swarm] ${s.name}: ${err}`));
-    // a finished role instance whose report nobody acked still goes, a day later
+    // a finished role instance whose report nobody acked still goes, a day later — and one
+    // whose ack slipped past the removal (a stale hub id on the letter, a failed remove)
+    // goes a minute after its local lead's inbox no longer holds anything it sent
     for (const s of workers) {
       const w = s.worker!;
       if (!w.charter || !['reported', 'failed'].includes(w.status)) continue;
-      if (now - (w.reportedAt ?? w.startedAt) < ROLE_LINGER_MS) continue;
+      if (!this.manager.sessions.has(s.hubId)) continue; // already removed this tick
+      const lead = this.manager.byClaudeSessionId(w.architect);
+      const acked = !w.outbox?.length && !!lead?.proc && !lead.inbox?.some((l) => l.packet?.env.from === s.swarmKey);
+      if (now - (w.reportedAt ?? w.startedAt) < (acked ? ROLE_ACKED_LINGER_MS : ROLE_LINGER_MS)) continue;
       await this.remove(s, true).catch((err) => console.warn(`[swarm] ${s.name}: ${err}`));
+      if (acked) this.deps.roleDone?.(lead!, { charter: w.charter, project: w.project, platform: w.platform });
     }
     for (const s of workers) {
       if (!s.worker?.outbox?.length) continue;
@@ -1203,6 +1237,18 @@ export class Swarm {
 
   private async step(s: HubSession, now: number) {
     const w = s.worker!;
+    // a signed-out engine ("Login expired · Please run /login") answers every prompt
+    // with the same line and fires no hook: no nudge helps, only the user logging in
+    // on this machine. The lead is told once, and the stall keeps further nudges away.
+    if (s.proc && s.state === 'IDLE' && !w.loggedOutTold && !['reported', 'failed'].includes(w.status)) {
+      const out = this.deps.loggedOut?.(s);
+      if (out) {
+        w.loggedOutTold = true;
+        w.status = 'stalled';
+        this.deps.save();
+        return this.notice(s, `it can't work: ${out}. Only the user can log in on its machine — tell them, and bring it back with dh_worker_followup once they have.`);
+      }
+    }
     const crewGoing = this.crewOf(s).some((c) => !['reported', 'failed'].includes(c.worker!.status));
     const step = workerStep(w, { alive: !!s.proc, state: s.state, stateSince: s.stateSince, detail: s.detail, autoYes: s.autoYes, crewGoing }, now);
     switch (step?.do) {
@@ -1210,6 +1256,7 @@ export class Swarm {
         w.status = 'working';
         w.nudgedAt = undefined;
         w.question = undefined;
+        w.loggedOutTold = undefined;
         this.deps.save();
         return;
       case 'stopped':

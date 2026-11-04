@@ -8,6 +8,9 @@ names and temp-dir suffixes scrubbed. Re-capture when a TUI redesign breaks the
 tests, not by hand-editing these files.
 
 - `claude-startup.txt` — the folder trust dialog ("Quick safety check: Is this a project you created or one you trust?")
+- `claude-logged-out.txt` — a prompt answered with "Login expired · Please run /login" (reconstructed from the 2026-11-04 incident on the Linux hub, where a role instance answered every prompt with that line)
+- `claude-not-logged-in.txt` — the "Not logged in · Run /login" status line under an empty composer (reconstructed, same incident)
+- `codex-logged-out.txt` — the signed-out "Sign in with ChatGPT" picker (reconstructed from Codex's onboarding wording)
 - `claude-empty.txt` — empty composer, with the rotating `❯ Try "…"` placeholder hint
 - `claude-draft.txt` — the composer holding typed text
 - `claude-hub-working.txt` — a hub-spawned session mid-turn: spinner above an empty `>` composer (from a live hub mirror)
