@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse a commit whose staged changes look like they carry a secret.
+# Installed by `npm install` (scripts/install-hooks.mjs sets core.hooksPath).
+# False positives: add a line to scripts/check-secrets.allow.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-secrets.mjs" --staged

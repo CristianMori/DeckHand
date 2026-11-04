@@ -5,6 +5,26 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+# Never publish a secret: the tree scan covers exactly what the tarball ships,
+# and when the shelf remembers the last published commit, the commits since it
+# are scanned too (a secret committed and then removed still sits in history).
+Write-Host '== secret scan =='
+node scripts/check-secrets.mjs --tree
+if ($LASTEXITCODE -ne 0) { throw 'publish refused: check-secrets found something in the working tree' }
+$prev = $null
+try { $prev = Invoke-RestMethod -Uri 'http://vps-node:5959/releases/version.json' -TimeoutSec 15 } catch {}
+if ($prev -and $prev.commit) {
+  $null = git rev-parse --verify --quiet "$($prev.commit)^{commit}"
+  if ($LASTEXITCODE -eq 0) {
+    node scripts/check-secrets.mjs --range "$($prev.commit)..HEAD"
+    if ($LASTEXITCODE -ne 0) { throw 'publish refused: check-secrets found something in the commits since the last publish' }
+  } else {
+    Write-Host "== last published commit $($prev.commit) unknown here - tree scan only =="
+  }
+} else {
+  Write-Host '== no last-published commit on the shelf - tree scan only =='
+}
+
 Write-Host '== build web =='
 npm run build | Out-Null
 
@@ -13,7 +33,8 @@ $pkg = Get-Content package.json -Raw | ConvertFrom-Json
 # keeps build numbers monotonic so deployed hubs still see new releases
 $build = 40 + [int](git rev-list --count HEAD)
 $version = "$($pkg.version)+$build"
-$stamp = @{ version = $version; build = $build; builtAt = (Get-Date -Format o) } | ConvertTo-Json
+# commit: the next publish's secret scan covers exactly the commits since this one
+$stamp = @{ version = $version; build = $build; builtAt = (Get-Date -Format o); commit = (git rev-parse HEAD).Trim() } | ConvertTo-Json
 [IO.File]::WriteAllText("$PWD\version.json", $stamp)  # no BOM
 Write-Host "== version $version =="
 
