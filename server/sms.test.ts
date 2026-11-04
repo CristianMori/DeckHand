@@ -246,11 +246,12 @@ test('what the session reads: marked, one line, data, and never a slash command'
 test('typing: Enter is not pressed if the session moved on while the text went in', async () => {
   const written: string[] = [];
   const manager = { write: (_id: string, d: string) => written.push(d) } as unknown as SessionManager;
-  const session = { hubId: 'h', state: 'IDLE' } as HubSession;
+  const session = { hubId: 'h', state: 'IDLE', proc: {}, agentType: 'claude' } as unknown as HubSession;
+  const paste = (text: string) => ['\x1b[200~', text, '\x1b[201~'];
   assert.equal(await typePrompt(manager, session, 'hello', () => false), false);
-  assert.deepEqual(written, ['hello']);
+  assert.deepEqual(written, paste('hello'));
   assert.equal(await typePrompt(manager, session, 'hello', () => true), true);
-  assert.deepEqual(written, ['hello', 'hello', '\r']);
+  assert.deepEqual(written, [...paste('hello'), ...paste('hello'), '\r']);
 });
 
 test('replies: a text already sent is still answered after its channel is turned off', async () => {

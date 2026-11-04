@@ -68,5 +68,5 @@ test('typePrompt refuses to type over a draft, and types into an empty composer'
 
   const free = fake(screen('claude-empty'));
   assert.equal(await typePrompt(free.manager, free.session, 'hello'), true);
-  assert.deepEqual(free.writes, ['hello', '\r']);
+  assert.deepEqual(free.writes, ['\x1b[200~', 'hello', '\x1b[201~', '\r']); // one bracketed paste, then Enter
 });
