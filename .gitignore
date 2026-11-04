@@ -8,3 +8,6 @@ version.json
 data/pusher.json
 data/pushed-sessions.json
 hub-env.cmd
+
+# Obsidian's own workspace settings, when docs/architect is opened as a vault
+.obsidian/
