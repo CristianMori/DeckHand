@@ -30,7 +30,7 @@ import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
 import { bundleBranch, CREW_BRANCH, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, type HostWorker } from './swarm.js';
 import { gitHead, onMerge as roleOnMerge, reportAcked as roleReportAcked, RoleLedger, type RoleTriggerDeps } from './roleTrigger.js';
-import { listCharters, resolveCharter } from './roleCharters.js';
+import { resolveCharter } from './roleCharters.js';
 import { signatureHolds } from '../mcp/swarm-envelope.mjs';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
