@@ -14,14 +14,26 @@ import { openFilesDialog } from './filesDialog';
 import { openManageDialog, updateManageDialog } from './manageDialog';
 import { chime, soundEnabled, setSoundEnabled } from './sound';
 import { openSwarm, updateSwarm } from './swarmDialog';
+import { confirmDialog } from './confirmDialog';
 
 let sessions: SessionInfo[] = [];
 let selected: string | null = null;
 let tabs: string[] = []; // hubIds with an open terminal tab, in open order
 const restart = { running: new Set<string>(), failed: new Map<string, string>() };
 
+// the machine this dashboard is served from: sessions carry no machine tag at home
+let selfMachine = '';
+api.hubInfo().then((h) => { selfMachine = h.machine; render(); }).catch(() => {});
+
+// the card filter, remembered per browser (best effort: storage can be blocked)
+const FILTER_KEY = 'deckhand.cardFilter';
+let cardFilter = '';
+try { cardFilter = localStorage.getItem(FILTER_KEY) ?? ''; } catch { /* per-viewer convenience only */ }
+
 const el = {
   list: document.getElementById('session-list')!,
+  filter: document.getElementById('session-filter') as HTMLInputElement,
+  machineStats: document.getElementById('machine-stats')!,
   connStatus: document.getElementById('conn-status')!,
   tabBar: document.getElementById('term-tabs')!,
   placeholder: document.getElementById('terminal-placeholder')!,
@@ -167,7 +179,10 @@ async function restartAllIdle(btn: HTMLButtonElement) {
     alert(`No idle sessions on ${machine}.`);
     return;
   }
-  if (!confirm(`Restart ${targets.length} idle session${targets.length > 1 ? 's' : ''} on ${machine}?\n\n${targets.map((s) => s.name).join('\n')}`)) return;
+  if (!(await confirmDialog(
+    `Restart ${targets.length} idle session${targets.length > 1 ? 's' : ''} on ${machine}?\n\n${targets.map((s) => s.name).join('\n')}`,
+    'RESTART ALL',
+  ))) return;
   btn.disabled = true;
   let done = 0;
   let failed = 0;
@@ -191,6 +206,11 @@ const cardHandlers = {
   // a click only selects and opens the session; the menu is on right click
   onSelect: (s: SessionInfo) => select(s),
   onResume: async (s: SessionInfo) => {
+    // for a terminal this button is labelled RESTART: it starts a fresh shell
+    if (s.agentType === 'shell' && !(await confirmDialog(
+      `Restart terminal "${s.name}"${s.machine ? ` on ${s.machine}` : ''}?\n\nIt comes back as a fresh shell in the same folder.`,
+      'RESTART',
+    ))) return;
     try {
       await withElsewhereConfirm((force) => api.resumeForce(s.hubId, force));
     } catch {
@@ -227,14 +247,15 @@ const cardHandlers = {
   },
   onHandoff: (s: SessionInfo) => void openHandoffDialog(s, (ns) => select(ns)),
   onFiles: (s: SessionInfo) => void openFilesDialog({ machine: s.machine, path: s.cwd }),
-  onRestart: (s: SessionInfo) => {
-    const warning =
+  onRestart: async (s: SessionInfo) => {
+    const where = s.machine ? ` on ${s.machine}` : '';
+    const message =
       s.agentType === 'shell'
-        ? `Restart terminal "${s.name}"?\n\nIt comes back as a fresh shell; whatever is running in it stops.`
+        ? `Restart terminal "${s.name}"${where}?\n\nIt comes back as a fresh shell; whatever is running in it stops.`
         : s.state !== 'IDLE'
-          ? `"${s.name}" is ${s.state}. Restart it anyway?\n\nThe conversation comes back, but what it is doing right now stops.`
-          : '';
-    if (warning && !confirm(warning)) return;
+          ? `Restart session "${s.name}"${where}?\n\nIt is ${s.state}: the conversation comes back, but what it is doing right now stops.`
+          : `Restart session "${s.name}"${where}?\n\nIt is killed and started again on the same conversation.`;
+    if (!(await confirmDialog(message, 'RESTART'))) return;
     void restartSession(s);
   },
   onDismissRestartError: (s: SessionInfo) => {
@@ -284,8 +305,66 @@ const menuActions: MenuActions = {
   },
 };
 
+// ── per-machine role counts in the top bar ──
+// Architects / Sub-architects / Workers, each not-active / idle / working.
+// Role instances (tester, doc keeper, …) count as workers; plain sessions and
+// terminals carry no role and are not counted. Machine names come from the
+// session data, never hard-coded.
+type Lane = 'off' | 'idle' | 'work';
+function laneOf(s: SessionInfo): Lane {
+  if (s.unreachable || !s.alive || s.state === 'EXITED') return 'off';
+  if (s.state === 'WORKING' || s.state === 'STARTING') return 'work';
+  return 'idle'; // IDLE, and the waiting states: alive but not computing
+}
+const GROUPS = [
+  { key: 'A', title: 'architects', of: (s: SessionInfo) => s.role === 'architect' },
+  { key: 'S', title: 'sub-architects', of: (s: SessionInfo) => s.role === 'subarchitect' },
+  { key: 'W', title: 'workers', of: (s: SessionInfo) => s.role === 'worker' || s.role === 'role' },
+] as const;
+
+function renderMachineStats() {
+  const perMachine = new Map<string, Record<string, Record<Lane, number>>>();
+  for (const s of sessions) {
+    if (!s.role) continue;
+    const machine = s.machine || selfMachine || '?';
+    const group = GROUPS.find((g) => g.of(s));
+    if (!group) continue;
+    let counts = perMachine.get(machine);
+    if (!counts) perMachine.set(machine, (counts = {}));
+    const lanes = (counts[group.key] ??= { off: 0, idle: 0, work: 0 });
+    lanes[laneOf(s)]++;
+  }
+  el.machineStats.innerHTML = '';
+  for (const machine of [...perMachine.keys()].sort()) {
+    const counts = perMachine.get(machine)!;
+    const box = document.createElement('span');
+    box.className = 'ms-machine';
+    const name = document.createElement('span');
+    name.className = 'ms-name';
+    name.textContent = machine;
+    box.append(name);
+    const spoken: string[] = [];
+    for (const g of GROUPS) {
+      const lanes = counts[g.key];
+      if (!lanes) continue;
+      const seg = document.createElement('span');
+      seg.className = 'ms-group';
+      seg.innerHTML = `${g.key} <b class="n-off"></b>/<b class="n-idle"></b>/<b class="n-work"></b>`;
+      const [off, idle, work] = seg.querySelectorAll('b');
+      off.textContent = String(lanes.off);
+      idle.textContent = String(lanes.idle);
+      work.textContent = String(lanes.work);
+      box.append(seg);
+      spoken.push(`${g.title} ${lanes.off} not active / ${lanes.idle} idle / ${lanes.work} working`);
+    }
+    box.title = `${machine} — ${spoken.join('; ')} (waiting counts as idle; role instances count as workers)`;
+    el.machineStats.append(box);
+  }
+}
+
 function render() {
-  renderSessionList(el.list, sessions, selected, cardHandlers, restart);
+  renderSessionList(el.list, sessions, selected, cardHandlers, restart, cardFilter);
+  renderMachineStats();
 
   const waiting = waitingCount();
   document.title = waiting > 0 ? `(${waiting}) Deckhand` : 'Deckhand';
@@ -321,6 +400,22 @@ function render() {
   refreshCardMenu();
   updateSwarm();
 }
+
+// ── the filter box over the card list ──
+el.filter.value = cardFilter;
+function setFilter(text: string) {
+  cardFilter = text;
+  try { localStorage.setItem(FILTER_KEY, text); } catch { /* fine without */ }
+  render();
+}
+el.filter.oninput = () => setFilter(el.filter.value);
+el.filter.onkeydown = (e) => {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  e.stopPropagation(); // the global Escape handlers must not also fire
+  el.filter.value = '';
+  setFilter('');
+};
 
 el.frozenBtn.onclick = () => {
   const s = sessions.find((x) => x.hubId === selected);
