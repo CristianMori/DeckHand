@@ -140,6 +140,14 @@ when any session on any machine needs a human.
   hub-owned sessions bridged into your real terminal, tmux-style: `Ctrl+Q`
   detaches, the session lives on, reattach from anywhere — including a
   session running on another machine.
+- **An agent swarm, with a paper trail.** A session launched from the
+  dashboard is an *architect*: it delegates coding to workers in their own
+  git worktrees and branches (on any fleet machine), reviews and merges
+  their work, and keeps the project's documentation in an untracked
+  `docs/architect/` folder the hub enforces. Specialist roles — a tester
+  per operating system and a doc keeper — run on every merge, in fresh
+  checkouts, and report without fixing. Details under
+  [Fleet etiquette](#fleet-etiquette).
 - **Concurrency guard.** Opening a folder that has a live session on another
   machine asks for confirmation first — two agents editing one folder can
   overwrite each other.
@@ -273,14 +281,20 @@ and how to behave towards the others.
   It talks to the hub at `DECKHAND_HUB_URL` and never calls admin routes.
 - **Architects and workers.** A long session forgets detail as its context
   compacts, so a session you launch from the dashboard is an *architect* unless
-  you pick otherwise: it discusses with you, keeps the repo, the docs and
-  `docs/ARCHITECTURE.md`, and delegates everything whose detail stops mattering
-  once its result is known. `dh_start_worker` starts a *worker*: an ordinary
-  session, on this machine or another (see below), in its own git worktree and
-  branch under `data/worktrees`, with auto-yes on and its task in its
-  instructions so compaction can't lose it. It finishes with `dh_report` (3000
-  characters at most, refused while its work is uncommitted), and the hub stops
-  it. Reports and questions (`dh_ask_architect`) wait until the architect's hub
+  you pick otherwise: it discusses with you, keeps the repo and the architect
+  documentation (next bullet), and delegates everything whose detail stops
+  mattering once its result is known. `dh_start_worker` starts a *worker*: an
+  ordinary session, on this machine or another (see below), in its own git
+  worktree and branch under `data/worktrees`, with auto-yes on and its task in
+  its instructions so compaction can't lose it. A worker's worktree is a new
+  path to Claude, so the hub pre-answers the project MCP dialog with the
+  lead's own choice — a worker never stalls at a startup dialog. A task over
+  8 KB travels as a file under `data/worker-tasks/` that the briefing points
+  at, and follow-ups that outgrow the inline limit spill into the same file,
+  so nothing is lost to command-line length limits. It finishes with
+  `dh_report` (3000 characters at most, refused while its work is
+  uncommitted, ending with a `Docs:` section — what the architect's documents
+  should now say), and the hub stops it. Reports and questions (`dh_ask_architect`) wait until the architect's hub
   has them, and the architect is only told something is waiting once it is idle
   and you aren't typing, so they survive a busy or stopped architect and a hub
   restart. It reads them with `dh_swarm_inbox` and answers a question with
@@ -330,6 +344,41 @@ and how to behave towards the others.
   or worker. Every hub in a swarm has to run a build with signed messages, and a
   session with a role gets its key the next time it starts, so restart one that was
   already running.
+- **Architect documentation.** Every architect keeps a `docs/architect/`
+  folder in its project: `architecture.md` (what is true now, with a
+  `## Summary` section first) and `notes/YYYY-MM-DD.md` (append-only
+  history). The folder is **untracked** — listed in `.gitignore`, never
+  committed, moved between machines by Deckhand's own folder sync — and the
+  hub enforces the convention for every lead, in a git repository or not:
+  `dh_start_worker` refuses while `architecture.md` is missing from the
+  lead's working folder; removing a merged worker is refused once while the
+  docs haven't changed since the worker started (unless its report says
+  `Docs: no change`); after a context compaction the hub re-feeds the
+  documents (the `## Summary` first and always in full); and a card whose
+  docs lag its commits shows a `docs N behind` tag — git leads only, since a
+  lead outside git has no commits to count. Workers never write the
+  documents: every report ends with a `Docs:` section, and the lead writes
+  the documents from it. The full convention:
+  [docs/architect-convention.md](docs/architect-convention.md).
+- **Specialist roles.** A *role* is a charter — what it checks, how it
+  reports, which model it runs — and an instance is a fresh session per job,
+  in its own worktree, that **reports only and never fixes**: the architect
+  decides. Charters come in three layers, the most specific field winning:
+  built-ins shipped in `server/roles/`, fleet-wide edits made in
+  ADMIN → ROLES (stored on the home machine, replicated to every hub,
+  user-only like TRUST), and a per-project override in the lead's
+  `docs/architect/roles/`. Two ship today, triggered by every merged worker
+  branch: a **tester** (one instance per distinct OS among connected hubs,
+  each in a fresh checkout of the merged commit — it finds the project's own
+  test and build commands, runs them, and reports pass/fail with the failing
+  output) and a **doc keeper** (compares the merged diff against the lead's
+  `docs/architect/` and reports, per discrepancy, the concrete sentence the
+  documents should say). Skip rules (tiny or docs-only diffs), a run ledger
+  and a cooldown keep merges cheap; `POST /api/sessions/:id/run-role` — or
+  the ROLES panel's "run now" — runs one by hand against the lead's current
+  HEAD. Reports travel the signed path into the lead's inbox like a
+  worker's; an instance's branch is never merged, and its card is removed
+  once the report is read.
 - **Fleet memory.** Small facts every session on every machine shares — "the
   user has the Apple Developer subscription", "WSL2 is on the laptop for
   ROS2" — so a new session does not have to ask. Sessions write with
@@ -468,12 +517,24 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
 ### Dashboard
 
 - **Cards** (left) — every session in the fleet, machine-tagged, sorted by
-  urgency: WAITING first, then WORKING, IDLE, EXITED, with unreachable
-  machines' cards at the bottom. Inside the working, idle and exited bands
-  the card that entered the state most recently is on top, so a session that
-  just finished sits right under the working ones and one that just exited
-  sits right under the idle ones. Cards show elapsed time in state and the
+  urgency: architects lead the list (most recently active first), then
+  WAITING, WORKING, IDLE, EXITED, with unreachable machines' cards at the
+  bottom. A lead's crew (workers, sub-architects, role instances) is grouped
+  under it, and a family sits where its *root* puts it — a waiting worker
+  never drags its architect up the list. Inside the working, idle and exited
+  bands the card that entered the state most recently is on top, so a session
+  that just finished sits right under the working ones and one that just
+  exited sits right under the idle ones. While the pointer is over the list
+  the order is held still (the data keeps updating) and the fresh order is
+  applied the moment the pointer leaves, so a card can't slide away from
+  under a click. A filter box above the list narrows it by name, folder,
+  machine or role (Esc clears it). Cards show elapsed time in state and the
   last assistant message.
+- **Per-machine counts** (top bar) — one group per machine running swarm
+  sessions: `A n/n/n · S n/n/n · W n/n/n` for architects, sub-architects and
+  workers, each counted not-active / idle / working. Waiting counts as idle,
+  role instances count as workers, and plain sessions and terminals carry no
+  role and are not counted.
 - **Terminal tabs** (right) — click a card to open its terminal as a tab.
   `–` (or middle-click) closes the tab and leaves the session running; `×`
   ends the session (it stays resumable). On another machine's session,
@@ -507,14 +568,27 @@ managed by the hubs — never configure folders in the Syncthing GUI by hand.
   hubs), and a hub that reconnects applies the ones it missed, unless a
   session is running in that folder there (it retries every minute), the
   new name is taken there, or the folder is frozen.
-  A terminal card just gets the new name. Agents: `dh_rename_session`.
+  A terminal card just gets the new name. A conversation that wasn't running
+  during the rename is told, when it is next resumed, that its folder was
+  renamed, so it doesn't trip on paths from before. Agents:
+  `dh_rename_session`.
 - **ADMIN** — per-machine version, build, uptime; check for updates; UPDATE
-  and RESTART buttons that work across the fleet from any dashboard.
+  and RESTART buttons that work across the fleet from any dashboard; the
+  ROLES panel (specialist charters: the effective layers, fleet-wide edits,
+  "run now"). Every restart control — a card's RESTART, RESTART ALL, a hub
+  restart, UPDATE ALL — asks for confirmation first, saying what stops and
+  what comes back.
 
 ### Alert channels
 
 A session that stays waiting past the delay (2 minutes) alerts every connected
-dashboard and the iOS app. Beyond that, each session chooses who is told on
+dashboard and the iOS app. A session parked at a startup dialog — folder
+trust, a project's MCP servers, a login — alerts through the same pipeline,
+named for the dialog, and so does an engine that signs out mid-session
+("Login expired · Please run /login", Codex's sign-in picker). A worker's,
+sub-architect's or role instance's sign-out goes to its lead instead — told
+once, the worker marked stalled — never to your phone. Beyond the dashboards,
+each session chooses who is told on
 three outside channels — **Discord**, **SMS** and **email** — from the card's
 right-click menu or the DISCORD / SMS / EMAIL header buttons; nobody by
 default. How to send lives in `data/attention.json` on the **one hub that
@@ -548,8 +622,9 @@ and no secret ever goes in the config itself.
   channel is off unless both files are readable. The `notify` scope also reads
   `/api/v1/replies`, so replies need no extra scope. With `"replies": true`
   the hub polls Hermod every 30 seconds; a reply from the configured person
-  lands only on the alert episode it answers (quoted history and the signature
-  stripped first), under the same rules as SMS replies, and an episode that
+  lands only on the alert episode it answers (quoted history, the signature
+  and a mail client's own trailing footer — "Sent from my iPhone" and the
+  like — stripped first), under the same rules as SMS replies, and an episode that
   ends without an email answer closes its reply watch on Hermod, so a reply
   arriving after that alerts Cristian as late.
 
@@ -600,6 +675,7 @@ GET  /api/sessions/:id/exchanges?n=5                            → [{q, r}, …
 GET  /api/sessions/:id                                          → card data
 POST /api/sessions/:id/kill | /resume | /restart | /remove | /autoyes {"on":true}
 POST /api/sessions/:id/alerts {"discord":["cristian"],"text":[],"email":[]}
+POST /api/sessions/:id/run-role {"role":"tester"}    → run a specialist role by hand (architects only)
 ```
 
 Rules of the road:
@@ -611,6 +687,11 @@ Rules of the road:
   are just a loop over `wait`.
 - **`prompt` refuses a WORKING session with 409** unless `"queue": true`;
   the TUI would stack it behind the running turn.
+- **Long prompts arrive whole.** The hub types a prompt into the pty as one
+  bracketed paste, in small paced pieces (raw writes used to lose multi-KB
+  spans on Windows), and a delivery guard checks the text actually landed. A
+  prompt over 256 KiB is refused with 413 — long content belongs in a file
+  the prompt references.
 - **`reply`** is the agent's text for that prompt, pulled from its transcript.
   Codex and Claude both provide it; an engine with no readable transcript
   returns no `reply` and 404 on `exchanges`.
@@ -729,9 +810,13 @@ appears in the session you are watching.
 powershell -File scripts\publish.ps1
 ```
 
-Builds the frontend, stamps `version.json` (semver + git commit count as a
-monotonic build number), tars the tree, uploads to the home machine's
-release shelf. Every hub notices within 6 hours, or immediately via
+Refuses to publish anything the secret scan flags: the working tree is
+scanned first (exactly what the tarball ships, untracked files included),
+and when the release shelf remembers the last published commit, the commits
+since it are scanned too — a secret committed and then removed still sits in
+history. Then builds the frontend, stamps `version.json` (semver + git
+commit count as a monotonic build number, plus the commit the next publish
+scans from), tars the tree, uploads to the home machine's release shelf. Every hub notices within 6 hours, or immediately via
 ADMIN → CHECK FOR UPDATES. Every check **prestages** a newer build: it is
 downloaded to `data/update-staged.tgz` and verified (complete download, gzip
 checksum) before it counts, so applying installs from that file and works
@@ -818,6 +903,26 @@ Read this section before port-forwarding anything.
   in front — the hub itself should stay unreachable from the internet.
 - Syncthing API keys in `data/sync.json` grant control of file sync; the
   file is gitignored — keep it that way.
+- **The browser you carry is treated as hostile.** Routing is case-sensitive
+  and the access gates match `/api` in any letter case, so a path can't
+  skirt a check by casing. State-changing requests (POST/PUT/PATCH/DELETE)
+  and WebSocket upgrades that carry a foreign `Origin` (or
+  `Sec-Fetch-Site: cross-site`) are refused: a web page you visit can't make
+  your browser drive a hub on the tailnet. Callers that send neither header
+  — curl, the iOS app, hooks, the MCP server, the CLI, hub-to-hub federation
+  — are unaffected, and the glasses bridge port applies the same refusal.
+- **Nothing unattended starts on an outside agent's word.** While a
+  session's current turn began with a gateway or Mimir prompt, the hub
+  refuses its worker, sub-architect and `run-role` calls — auto-yes workers
+  run with nobody approving, so starting one stays yours.
+- **The repository is public, and a secret scanner guards it.**
+  `scripts/check-secrets.mjs` (secret-shaped patterns, an entropy scan, and
+  exposure checks for phone numbers, private IPs and email addresses; it
+  prints fingerprints, never values) runs in three places: as the pre-commit
+  hook (`npm install` points `core.hooksPath` at `.githooks/`), as the first
+  step of `npm test` (the whole tree, untracked files included), and in
+  `scripts/publish.ps1`. False positives go in `scripts/check-secrets.allow`,
+  one regex per line.
 
 ## Known gotchas (all discovered the hard way)
 
@@ -837,26 +942,52 @@ Read this section before port-forwarding anything.
 ```
 npm run dev      # tsx watch server + vite dev server on :5960 (proxies to :5959)
 npm run build    # vite build → server/public (what npm start serves)
+npm test         # secret scan of the tree, then the server test suite (node --test, via tsx)
 npx tsc --noEmit && npx tsc -p web --noEmit   # typecheck both sides
 ```
+
+Tests sit next to what they test (`server/*.test.ts`). Most are unit tests;
+`server/hub.http.test.ts` is an HTTP-level harness for the security gates: it
+loads the real Express app with `HUB_LISTEN=0` (`index.ts` then skips its own
+`listen()`), a temporary `HUB_DATA_DIR`, `HUB_SOLO=1` and `HUB_RESTORE=0`,
+listens on an ephemeral loopback port and sends real requests — the case
+gates, the cross-site refusal, the agent access gate, WebSocket upgrades and
+the glasses bridge. If you start a scratch hub **by hand** instead, override
+`CODEX_HOME` too: a hub's boot rewrites the Codex hooks file it finds there,
+and with the default it points your real `~/.codex/hooks.json` at the scratch
+port.
+
+`npm install` also installs the git hooks: its `prepare` step runs
+`scripts/install-hooks.mjs`, which sets `core.hooksPath` to `.githooks/` (the
+pre-commit secret scan). Outside a git checkout — a hub installing a release
+tarball — it quietly does nothing.
 
 Layout:
 
 - `server/` — `index.ts` (HTTP/WS API, wiring), `sessionManager.ts` (PTYs +
   headless terminal mirrors), `statusEngine.ts` (signal fusion),
-  `discovery.ts` (tailnet probing), `federation.ts` (peer connections,
-  merged sessions, forwarding), `syncthing.ts` (on-use folder sync driver),
-  `fleetFolders.ts` (folder + conversation index), `fleetResume.ts`
-  (cross-machine resume jobs), `transcriptStore.ts` (durable store +
-  pusher), `updater.ts` + `version.ts` (auto-update), `hooksReceiver.ts`,
-  `claudeSessionsWatcher.ts`, `transcripts.ts`, `conversations.ts`,
-  `persistence.ts`, `config.ts`.
-- `web/` — vite vanilla-TS frontend (xterm.js): `main.ts`, `sessionList.ts`,
-  `terminalView.ts`, `resumeDialog.ts`, `newSessionDialog.ts`,
-  `adminDialog.ts`, `quickAnswers.ts`, `styles.css`.
+  `automation.ts` (typed prompt delivery), `agents/` (one adapter per
+  engine), `discovery.ts` (tailnet probing), `federation.ts` (peer
+  connections, merged sessions, forwarding), `syncthing.ts` (on-use folder
+  sync driver), `fleetFolders.ts`, `fleetResume.ts`, `transcriptStore.ts`,
+  `updater.ts` + `version.ts`, `access.ts` + `agentAccess.ts` (caller
+  classes, agent grants), `needsYou.ts` + `apns.ts`/`sms.ts`/`email.ts`
+  (attention + alert channels), `swarm.ts` + `swarmKeys.ts` (architects,
+  workers, signed envelopes), `etiquette.ts` (briefings),
+  `architectDocs.ts` (docs-convention checks), `roleCharters.ts` +
+  `roleTrigger.ts` + `roles/` (specialist roles), `fleetMemory.ts`,
+  `provenance.ts`, `renameJournal.ts` + `renameNotice.ts`, `evenBridge.ts`,
+  `hooksReceiver.ts`, `persistence.ts`, `config.ts`.
+- `web/src/` — vite vanilla-TS frontend (xterm.js): `main.ts`,
+  `sessionList.ts` + `sessionOrder.ts`, `terminalView.ts`, the dialogs
+  (`resumeDialog.ts`, `newSessionDialog.ts`, `adminDialog.ts` +
+  `rolesPanel.ts`, `auditDialog.ts`, `manageDialog.ts`, `trustPanel.ts`,
+  `confirmDialog.ts`, …), `quickAnswers.ts`, `styles.css`.
 - `cli/deckhand.mjs` — terminal attach client.
 - `hooks/hub-hooks.template.json` — hook settings injected into sessions.
-- `scripts/` — `install.ps1`, `install.sh`, `publish.ps1`, `vps-bootstrap.sh`.
+- `scripts/` — `install.ps1`, `install.sh`, `install-macos.sh`,
+  `publish.ps1`, `vps-bootstrap.sh`, `check-secrets.mjs` +
+  `check-secrets.allow` (the secret scan), `install-hooks.mjs`.
 
 ## License
 
