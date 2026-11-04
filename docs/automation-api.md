@@ -32,8 +32,8 @@ Requires hub build **74 or newer** (LAN access + beacon; the REST routes themsel
      LAN's directed broadcast address (e.g. `192.168.1.255` — compute it from
      your interface's address and netmask; `255.255.255.255` alone is
      unreliable on Windows). Every hub replies within ~50 ms with JSON:
-     `{"hub":"deckhand","machine":"thelaptop","build":74,"port":5959,
-       "urls":["http://192.168.1.253:5959"],"auth":"token",...}`.
+     `{"hub":"deckhand","machine":"laptop","build":74,"port":5959,
+       "urls":["http://laptop.local:5959"],"auth":"token",...}`.
      Hubs also announce that JSON unprompted every 30 s to the same port.
      **No reply from a machine you know runs a hub?** Windows Firewall on
      that machine is dropping the datagram — the hub runs as a service and
@@ -52,7 +52,7 @@ Requires hub build **74 or newer** (LAN access + beacon; the REST routes themsel
   Once you have any one hub, `GET /api/fleet` →
   `[{"machine","self","connected","url"}]` gives you every other machine
   and its URL, and you never need to probe again.
-- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"thelaptop","build":74,...}`.
+- Probe response: `GET /api/hub-info` → `{"hub":"deckhand","machine":"laptop","build":74,...}`.
 
 All request bodies are JSON (`Content-Type: application/json`). All responses
 are JSON except `screen` and `export`. Errors are `{"error": "..."}` with a
@@ -111,7 +111,7 @@ carries `timedOut` and `reply`:
 {"hubId":"3724583a","agentType":"claude","claudeSessionId":"a577e8bf-…",
  "name":"nightly-refactor","cwd":"C:\\DataDrive\\myproject","state":"IDLE",
  "stateSince":1789138782699,"detail":"turn finished","createdAt":1789138779269,
- "alive":true,"autoYes":false,"machine":"thelaptop","timedOut":false,"reply":"…"}
+ "alive":true,"autoYes":false,"machine":"laptop","timedOut":false,"reply":"…"}
 ```
 
 Notes:
