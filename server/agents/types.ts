@@ -111,6 +111,14 @@ export interface AgentAdapter {
    * for work.
    */
   screenActivity?(screen: string): 'working' | 'idle' | null;
+  /**
+   * What the composer (the TUI's input line) holds right now, read from the
+   * rendered screen: '' when it is empty (placeholder hints count as empty),
+   * the draft's first line when someone typed into it, undefined when no
+   * composer is visible or the engine has no way to tell. The hub checks this
+   * before typing into a session, so it never merges with a human's draft.
+   */
+  composerText?(screen: string): string | undefined;
   /** keystroke that accepts the highlighted default of a permission prompt */
   acceptKeystroke: string;
   /** prompts auto-yes must leave to a human (screen text test) */

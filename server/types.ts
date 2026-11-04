@@ -175,8 +175,8 @@ export interface AlertChannels {
 export interface Attention {
   /** stable id of this waiting episode: dedupe popups on it */
   episode: string;
-  /** question: a turn ended asking in text; ask: AskUserQuestion or the like; permission: a tool approval */
-  kind: 'question' | 'ask' | 'permission';
+  /** question: a turn ended asking in text; ask: AskUserQuestion or the like; permission: a tool approval; dialog: a startup dialog only the user can answer */
+  kind: 'question' | 'ask' | 'permission' | 'dialog';
   text: string;
   since: number;
   /** when the alert went out, once the session had waited long enough */

@@ -11,7 +11,7 @@ import { peerWithLiveSession } from './federation.js';
 import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
-import { bundleBranch, bundleCommit, changedFiles, createWorktree, gitTimeoutMs, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
+import { bundleBranch, bundleCommit, changedFiles, createWorktree, gitTimeoutMs, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, roleSpawnRefusal, Swarm, swarmEvent, TYPING_BLOCKED_MAX_MS, workerStep, worktreeFacts } from './swarm.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -140,7 +140,7 @@ function repo(withDocs = true) {
   return { dir, git };
 }
 
-function harness(stuckAt?: (s: HubSession) => string | undefined) {
+function harness(over: { stuckAt?: (s: HubSession) => string | undefined; composerBusy?: (s: HubSession) => boolean } = {}) {
   const manager = Object.assign(new EventEmitter(), {
     sessions: new Map<string, HubSession>(),
     create(opts: { cwd: string; name: string; role: string; worker: WorkerLink; agentType: string }) {
@@ -167,7 +167,8 @@ function harness(stuckAt?: (s: HubSession) => string | undefined) {
     typePrompt: async (s, text) => void typed.push({ to: s.hubId, text }),
     promptFrom: (_s, caller) => void asked.push(caller),
     lastReply: async () => 'it said this',
-    stuckAt,
+    stuckAt: over.stuckAt,
+    composerBusy: over.composerBusy,
     save() {},
     letterFiled: (to, letter) => void events.push(swarmEvent(to, letter)),
   });
@@ -444,7 +445,7 @@ test('a worker inherits the project MCP servers its lead enabled', async () => {
 });
 
 test('a worker stuck at a startup dialog is reported with what blocks it, not nudged', async () => {
-  const { manager, swarm, typed } = harness((s) => (s.hubId === 'w1' ? 'Claude\'s "2 new MCP servers found" project dialog' : undefined));
+  const { manager, swarm, typed } = harness({ stuckAt: (s) => (s.hubId === 'w1' ? 'Claude\'s "2 new MCP servers found" project dialog' : undefined) });
   const architect = aLead();
   manager.sessions.set('lead', architect);
   const now = Date.now();
@@ -453,6 +454,80 @@ test('a worker stuck at a startup dialog is reported with what blocks it, not nu
   assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // no nudge typed into the dialog
   assert.match(swarm.inboxOf(architect)[0].text, /stuck at Claude's "2 new MCP servers found" project dialog[\s\S]*dh_send_keys/);
   assert.equal(manager.sessions.get('w1')?.worker?.status, 'stalled');
+});
+
+test('a draft in the composer holds the inbox pointer back, letters safe, until it clears', async () => {
+  let busy = true;
+  const { manager, swarm, typed } = harness({ composerBusy: () => busy });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const w = aMember(architect, 'w1');
+  w.worker!.outbox = [{ env: sealAs(w.swarmKey!, { type: 'notice', to: architect.swarmKey!, body: { text: 'done' } }) }];
+  manager.sessions.set('w1', w);
+  const now = Date.now();
+  await swarm.tick(now);
+  await swarm.tick(now + 3000);
+  assert.equal(typed.length, 0); // never typed over the draft
+  assert.equal(swarm.inboxOf(architect).length, 1); // the letter waits in the inbox
+  assert.equal(architect.inbox?.[0]?.notified, undefined); // still due for a pointer
+  busy = false;
+  await swarm.tick(now + 6000);
+  assert.equal(typed.length, 1); // the composer cleared: the pointer went in
+  assert.match(typed[0].text, /1 swarm message/);
+});
+
+test('a draft that never clears gives up on the pointer after ten minutes, keeping the letters', async () => {
+  const { manager, swarm, typed } = harness({ composerBusy: () => true });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const w = aMember(architect, 'w1');
+  w.worker!.outbox = [{ env: sealAs(w.swarmKey!, { type: 'notice', to: architect.swarmKey!, body: { text: 'done' } }) }];
+  manager.sessions.set('w1', w);
+  const now = Date.now();
+  await swarm.tick(now);
+  await swarm.tick(now + TYPING_BLOCKED_MAX_MS + 3000);
+  assert.equal(typed.length, 0); // gave up without typing
+  assert.equal(architect.inbox?.[0]?.notified, true); // and stopped retrying
+  assert.equal(swarm.inboxOf(architect).length, 1); // the letter itself is still there to read
+});
+
+test('a draft in the composer holds the nudge back too', async () => {
+  let busy = true;
+  const { manager, swarm, typed } = harness({ composerBusy: () => busy });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const now = Date.now();
+  const w = aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: now - 60_000 });
+  manager.sessions.set('w1', w);
+  await swarm.tick(now);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0);
+  assert.equal(w.worker?.nudgedAt, undefined); // so the next tick tries again
+  busy = false;
+  await swarm.tick(now + 3000);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 1); // the nudge went in
+});
+
+test('a nudge blocked for ten minutes is given up, so the stalled notice can follow', async () => {
+  const { manager, swarm, typed } = harness({ composerBusy: () => true });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const now = Date.now();
+  const w = aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: now - 60_000 });
+  manager.sessions.set('w1', w);
+  await swarm.tick(now);
+  const later = now + TYPING_BLOCKED_MAX_MS + 3000;
+  await swarm.tick(later);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // nothing typed into the draft
+  assert.equal(w.worker?.nudgedAt, later); // but the nudge is spent: stalled is next
+});
+
+test('a role on session creation is the user\'s alone', () => {
+  assert.equal(roleSpawnRefusal('architect', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('worker', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('subarchitect', true), 'roles are chosen by the user in the dashboard');
+  assert.equal(roleSpawnRefusal('architect', false), undefined);
+  assert.equal(roleSpawnRefusal(undefined, true), undefined);
+  assert.equal(roleSpawnRefusal(null, true), undefined);
 });
 
 test('an outside agent can reach an architect, and nothing else', () => {

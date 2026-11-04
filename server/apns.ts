@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import http2 from 'node:http2';
 import { isAbsolute, join } from 'node:path';
 import { DATA_DIR } from './config.js';
-import type { AttentionCleared, AttentionEvent } from './needsYou.js';
+import { attentionPhrase, type AttentionCleared, type AttentionEvent } from './needsYou.js';
 
 /**
  * Push to the Deckhand iOS app through APNs, with token auth. Off until
@@ -85,7 +85,7 @@ export function providerToken(keyPem: string, keyId: string, teamId: string, now
 
 /** What the app gets for an alert. Everything it routes on is at the top level. */
 export function attentionPayload(e: AttentionEvent) {
-  const what = e.kind === 'permission' ? 'wants approval' : 'has a question';
+  const what = attentionPhrase(e.kind);
   const body = e.text.length > ALERT_BODY_CAP ? `${e.text.slice(0, ALERT_BODY_CAP)}…` : e.text;
   return {
     aps: {

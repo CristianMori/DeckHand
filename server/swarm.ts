@@ -60,6 +60,8 @@ const IDLE_GRACE_MS = 45_000;
 const PERMISSION_GRACE_MS = 30_000;
 /** Don't type over the user: a recent keystroke holds delivery back. */
 const USER_TYPING_MS = 10_000;
+/** A composer holding a draft blocks typing; after this long the hub gives up with a warning. */
+export const TYPING_BLOCKED_MAX_MS = 10 * 60_000;
 const NUDGE_IGNORED_MS = 120_000;
 const RETRY_MS = 15_000;
 /** Enough to spot a message delivered twice. */
@@ -111,6 +113,17 @@ export function refusedLead(lead: SessionRole | undefined, kind: 'worker' | 'sub
   if (lead === 'architect') return undefined;
   if (lead === 'subarchitect') return kind === 'worker' ? undefined : 'a sub-architect can only have workers';
   return `only an architect starts ${kind === 'worker' ? 'workers' : 'sub-architects'}`;
+}
+
+/**
+ * Spawning a session with a role is the user's act, from the dashboard.
+ * Sessions start their crew through swarm.start (dh_start_worker /
+ * dh_start_subarchitect), where the lead is the caller itself; agents and
+ * gateway callers never hand out roles at all.
+ */
+export function roleSpawnRefusal(role: unknown, notTheUser: boolean): string | undefined {
+  if (!role) return undefined;
+  return notTheUser ? 'roles are chosen by the user in the dashboard' : undefined;
 }
 
 /** What a worker's state calls for next. Pure: the Swarm carries it out. */
@@ -356,6 +369,8 @@ export class Swarm {
   /** sessions with a message on its way to another hub, and when to try a failed one again */
   private sending = new Set<string>();
   private retryAt = new Map<string, number>();
+  /** sessions whose composer holds a draft the hub must not type over: hubId → when the block began */
+  private typeBlockedAt = new Map<string, number>();
 
   constructor(
     private manager: SessionManager,
@@ -366,6 +381,8 @@ export class Swarm {
       lastReply: (session: HubSession) => Promise<string | undefined>;
       /** a startup dialog on the session's screen, blocking the engine (named for the stall notice) */
       stuckAt?: (session: HubSession) => string | undefined;
+      /** the session's composer holds text the hub didn't type: typing now would merge with it */
+      composerBusy?: (session: HubSession) => boolean;
       save: () => void;
       /** a letter went into a session's inbox: the dashboards' swarm event */
       letterFiled?: (to: HubSession, letter: SwarmLetter) => void;
@@ -885,6 +902,16 @@ export class Swarm {
         continue;
       }
       if (!unread.length || s.state !== 'IDLE' || now - s.lastInputAt < USER_TYPING_MS || this.delivering.has(s.hubId)) continue;
+      // a draft in the composer: typing the pointer would merge with it. The
+      // letters wait safely in the inbox (the card shows them), and the next
+      // tick tries again until the draft is sent or cleared, or the hold gives up.
+      const hold = this.typingHold(s, 'telling it about its swarm messages (they stay in its inbox)', now);
+      if (hold === 'wait') continue;
+      if (hold === 'give-up') {
+        for (const l of unread) l.notified = true;
+        this.deps.save();
+        continue;
+      }
       this.delivering.add(s.hubId);
       for (const l of unread) l.notified = true;
       // not from a session: a question the architect then asks is really for the user.
@@ -897,6 +924,26 @@ export class Swarm {
         this.deps.save();
       });
     }
+  }
+
+  /**
+   * Whether typing into this session must wait: its composer holds text the
+   * hub didn't put there (bug 6 of 2026-11-03: typed text merged with a draft
+   * the user was writing). 'wait' is retried on the next tick; after
+   * TYPING_BLOCKED_MAX_MS of that, one warning and 'give-up', so a parked
+   * draft never holds a delivery loop forever. null: clear to type.
+   */
+  private typingHold(s: HubSession, what: string, now: number): 'wait' | 'give-up' | null {
+    if (!this.deps.composerBusy?.(s)) {
+      this.typeBlockedAt.delete(s.hubId);
+      return null;
+    }
+    const since = this.typeBlockedAt.get(s.hubId) ?? now;
+    this.typeBlockedAt.set(s.hubId, since);
+    if (now - since < TYPING_BLOCKED_MAX_MS) return 'wait';
+    this.typeBlockedAt.delete(s.hubId);
+    console.warn(`[swarm] ${s.name}: its composer has held a draft for ${Math.round((now - since) / 60_000)} minutes — giving up on ${what}`);
+    return 'give-up';
   }
 
   /** Only once the other hub has the message, and the branch it talks about, is it off our hands. */
@@ -951,7 +998,12 @@ export class Swarm {
         // a nudge typed into a startup dialog goes nowhere: say what blocks it instead
         const dialog = this.deps.stuckAt?.(s);
         if (dialog) return this.stuckAtDialog(s, dialog);
+        // a draft in the composer: the nudge would merge with it — wait, retried
+        // each tick; given up, nudgedAt is set so the stalled notice can follow
+        const hold = this.typingHold(s, 'nudging it', now);
+        if (hold === 'wait') return;
         w.nudgedAt = now;
+        if (hold === 'give-up') return;
         this.deps.promptFrom(s, 'session:architect', false);
         await this.deps.typePrompt(s, WORKER_NUDGE);
         return;

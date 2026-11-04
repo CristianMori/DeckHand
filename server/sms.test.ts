@@ -54,6 +54,10 @@ test('text: a permission says so', () => {
   assert.equal(smsText(event({ kind: 'permission', text: 'Bash: ls' })), 'RavenAgents wants approval: Bash: ls');
 });
 
+test('text: a startup dialog says where it waits', () => {
+  assert.equal(smsText(event({ kind: 'dialog', text: "Claude's folder trust dialog" })), "RavenAgents is waiting at Claude's folder trust dialog");
+});
+
 test('text: URLs come out, so the gateway does not refuse it', () => {
   const out = smsText(event({ text: 'See https://x.io/a?b=1 or HTTP://y.io and www.z.io/q, ok?' }));
   assert.equal(out, 'RavenAgents: See or and ok?');

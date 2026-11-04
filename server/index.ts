@@ -28,7 +28,7 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
-import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, WORKER_BRANCH, type HostWorker } from './swarm.js';
+import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, roleSpawnRefusal, Swarm, swarmEvent, WORKER_BRANCH, type HostWorker } from './swarm.js';
 import { signatureHolds } from '../mcp/swarm-envelope.mjs';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
@@ -61,6 +61,7 @@ import { MIMIR_MACHINE, mimirCall, mimirHere } from './mimir.js';
 import { markRenameSeen, mergeRenames, recordRename, renameLog, unseenRenames, type RenameEntry } from './renameJournal.js';
 import { recordSessionRename } from './renameNotice.js';
 import {
+  composerBusy,
   isSettled,
   keyData,
   lastExchanges,
@@ -872,6 +873,10 @@ async function turnResult(session: HubSession, prompt: string | undefined, timed
 app.post('/api/sessions', async (req, res) => {
   const { agentType, name, model, permissionMode, initialPrompt, machine, force, newFolder, wait, role, architect } = req.body ?? {};
   let cwd: string | undefined = req.body?.cwd;
+  // a role comes from the user alone: sessions start their own crew through
+  // dh_start_worker / dh_start_subarchitect, where the lead is the caller itself
+  const roleRefused = roleSpawnRefusal(role, notTheUser());
+  if (roleRefused) return res.status(403).json({ error: roleRefused });
   // from the dashboard: a worker under a live architect, the same as one it starts itself.
   // Decided on the architect's hub, wherever the worker is to run.
   if (role === 'worker' || role === 'subarchitect') {
@@ -1761,6 +1766,10 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   if (session.state === 'WORKING' && !req.body?.queue) {
     return res.status(409).json({ error: 'session is WORKING — wait for it to settle, or pass queue:true' });
   }
+  // a draft in the composer: the prompt would merge with it (bug 6)
+  if (composerBusy(session)) {
+    return res.status(409).json({ error: 'its composer holds typed text (a draft someone is writing) — try again once it is sent or cleared' });
+  }
   needsYou.promptFrom(session, currentTrace()?.caller, !!req.body?.queue);
   await typePrompt(manager, session, text);
   if (!req.body?.wait) return res.json({ ...session.info(), machine: discovery.selfName });
@@ -1768,6 +1777,16 @@ app.post('/api/sessions/:id/prompt', sessionAction(async (id, req, res) => {
   const timedOut = await waitForTurn(manager, session, { startMs: timeoutMs, totalMs: timeoutMs });
   res.json(await turnResult(session, text, timedOut));
 }));
+
+/** A startup dialog on the session's screen, blocking the engine before any
+ *  hook fires — named for stall notices and attention events. */
+function startupDialogOn(session: HubSession): string | undefined {
+  try {
+    return agentFor(session).startupDialog?.(screenText(session));
+  } catch {
+    return undefined; // mirror mid-resize
+  }
+}
 
 /**
  * Cristian's text answering a question. Decided here, on the hub that owns the
@@ -1779,13 +1798,8 @@ const swarm = new Swarm(manager, {
   typePrompt: (session, text) => typePrompt(manager, session, text),
   promptFrom: (session, caller, queued) => needsYou.promptFrom(session, caller, queued),
   lastReply: async (session) => (await lastExchanges(session, 1))?.at(-1)?.r,
-  stuckAt: (session) => {
-    try {
-      return agentFor(session).startupDialog?.(screenText(session));
-    } catch {
-      return undefined; // mirror mid-resize
-    }
-  },
+  stuckAt: startupDialogOn,
+  composerBusy,
   save: () => savePersisted(manager),
   // the same audience as `sessions` and `alert`: every connected dashboard and app
   letterFiled: (to, letter) => broadcastAlert(swarmEvent(to, letter)),
@@ -1822,10 +1836,25 @@ const swarm = new Swarm(manager, {
 });
 setInterval(() => void swarm.tick(), 3000).unref();
 
+// A plain session parked at a startup dialog (folder trust, a project's MCP
+// servers, a login) fires no hook and never settles on its own: only the user
+// can answer it, so it joins the same attention pipeline as permission and
+// question waits. Only sessions no hook has reached yet are read — a real
+// startup dialog blocks the engine before its first hook, and transcripts can
+// echo dialog wording later. Workers aren't raised: their lead is told
+// instead (swarm.stuckAtDialog), and dialogWait skips them too.
+setInterval(() => {
+  for (const session of manager.sessions.values()) {
+    if (!session.proc || session.hooksSeen || session.worker) continue;
+    needsYou.dialogWait(session, startupDialogOn(session));
+  }
+}, 15_000).unref();
+
 async function answerFromText(session: HubSession, episode: unknown, text: string, via: 'text' | 'email' = 'text'): Promise<string | undefined> {
   const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));
   const before = refusal();
   if (before) return before;
+  if (composerBusy(session)) return `a draft is sitting in the session's composer — the ${via} reply would merge with it`;
   needsYou.promptFrom(session, 'text-reply', false);
   const prompt = via === 'email' ? emailReplyPrompt(text) : textReplyPrompt(text);
   const typed = await typePrompt(manager, session, prompt, () => !refusal());

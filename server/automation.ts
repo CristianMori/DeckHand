@@ -42,8 +42,26 @@ export const KEYS: Record<string, string> = {
 /** A named key (any case) as its escape sequence; anything else is typed literally. */
 export const keyData = (k: string) => KEYS[k.toLowerCase()] ?? k;
 
-/** Type a prompt into a live session's composer and submit it. False: mayEnter said no. */
+/** The draft sitting in the session's composer ('' when it is empty), or
+ *  undefined when the screen shows no composer or the engine can't tell. */
+export function composerDraft(session: HubSession): string | undefined {
+  try {
+    return agentFor(session).composerText?.(session.screenText());
+  } catch {
+    return undefined; // mirror mid-resize, or a stand-in session with no screen
+  }
+}
+
+/** True when typing now would merge with text already in the composer —
+ *  a draft the user is writing, or a menu that reuses the composer line. */
+export function composerBusy(session: HubSession): boolean {
+  return !!composerDraft(session);
+}
+
+/** Type a prompt into a live session's composer and submit it. False: the
+ *  composer already held someone's text (nothing was typed), or mayEnter said no. */
 export async function typePrompt(manager: SessionManager, session: HubSession, text: string, mayEnter: () => boolean = () => true) {
+  if (composerBusy(session)) return false;
   manager.write(session.hubId, text);
   // the CR must arrive in its own chunk — text+CR together reads as a paste
   // to the TUI and lands in the composer without submitting. A long text
