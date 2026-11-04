@@ -121,12 +121,18 @@ test('each role is briefed with its own rules, a plain session with neither', ()
 
 // ---- against a real repository, with sessions faked
 
-function repo() {
+function repo(withDocs = true) {
   const dir = mkdtempSync(join(tmpdir(), 'swarm-test-'));
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   git('config', 'user.email', 't@t');
   git('config', 'user.name', 't');
+  if (withDocs) {
+    // workers only start from a commit that carries the architect's documentation
+    mkdirSync(join(dir, 'docs', 'architect', 'notes'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
+    writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-01.md'), 'note\n');
+  }
   writeFileSync(join(dir, 'a.txt'), 'a\n');
   git('add', '.');
   git('commit', '-qm', 'first');
@@ -222,6 +228,7 @@ test('from task to report to merge to removal', async () => {
   const { isolated } = started;
   try {
     assert.equal(isolated, true);
+    assert.match(started.inFlight ?? '', /^- ⚙ adder — ⎇ worker\/adder-[0-9a-f]{6}: add b$/);
     assert.equal(session.autoYes, true);
     assert.equal(session.role, 'worker');
     assert.equal(swarm.workersOf(architect).length, 1);
@@ -278,7 +285,10 @@ test('from task to report to merge to removal', async () => {
     // not merged yet: its work can't be lost by accident
     await assert.rejects(swarm.remove(session, false), /not merged/);
     git('merge', '-q', w.branch!);
+    // merged, but the merge touched no documentation and the report gave no reason: refused once
+    await assert.rejects(swarm.remove(session, false), /refused this removal once/);
     const { worktree, branch } = w;
+    // the deliberate second call goes through
     await swarm.remove(session, false);
     assert.equal(manager.sessions.has(session.hubId), false);
     assert.equal(existsSync(worktree!), false);
@@ -675,10 +685,10 @@ test('a frozen folder, or one with no repository, stays on its machine', async (
   }
 });
 
-test('removing a worker elsewhere asks the architect\'s repo whether it was merged', async () => {
+test('removing a worker elsewhere asks the architect\'s repo whether it was merged, and whether docs moved', async () => {
   const far = repo();
   let merged = false;
-  const { manager, swarm, sent } = fleetHarness((_c, path) => (path === 'worker-merged' ? { status: 200, body: { merged } } : { status: 200, body: {} }));
+  const { manager, swarm, sent } = fleetHarness((_c, path) => (path === 'worker-merged' ? { status: 200, body: { merged, docsChanged: false } } : { status: 200, body: {} }));
   const root = mkdtempSync(join(tmpdir(), 'swarm-trees-'));
   try {
     const t = await createWorktree(far.dir, 'w', root);
@@ -689,13 +699,40 @@ test('removing a worker elsewhere asks the architect\'s repo whether it was merg
     manager.sessions.set('w1', s);
     await assert.rejects(swarm.remove(s, false), /not merged/);
     merged = true;
+    // the architect's hub says merged but no docs changed: refused once, then through
+    await assert.rejects(swarm.remove(s, false), /refused this removal once/);
     await swarm.remove(s, false);
+    assert.equal(sent.find((x) => x.path === 'worker-merged')?.body.base, t!.baseCommit); // the docs check needs the base
     assert.equal(existsSync(t!.worktree), false);
     const gone = sent.find((x) => x.path === 'worker-branch-gone');
     assert.ok(signatureHolds(gone?.body.env));
   } finally {
     rmSync(far.dir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a worker is refused while the architecture is not committed, and started once it is', async () => {
+  const { dir, git } = repo(false);
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude' });
+  manager.sessions.set('lead', architect);
+  let session;
+  try {
+    await assert.rejects(swarm.start(architect, { task: 'add b', name: 'adder' }), /docs\/architect\/architecture\.md is not in the commit/);
+    assert.equal(swarm.workersOf(architect).length, 0);
+    assert.equal(git('worktree', 'list').trim().split('\n').length, 1); // nothing left behind by the refusal
+    mkdirSync(join(dir, 'docs', 'architect'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
+    git('add', '.');
+    git('commit', '-qm', 'docs');
+    const started = await swarm.start(architect, { task: 'add b', name: 'adder' });
+    session = started.session;
+    assert.ok(session);
+    assert.match(started.inFlight ?? '', /^- ⚙ adder — ⎇ worker\//);
+  } finally {
+    if (session?.worker?.worktree) rmSync(session.worker.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -776,12 +813,13 @@ test('a worker branches from its sub-architect, and merges into its branch, not 
 
     await assert.rejects(swarm.report(sub, reported(sub, 'done')), /still going/);
     await assert.rejects(swarm.remove(sub, true), /still has 1 worker/);
-    await swarm.report(worker, reported(worker, 'p added'));
+    // the stated reason spares it the docs reminder on removal
+    await swarm.report(worker, reported(worker, 'p added. Docs: no change, because this is a test'));
     await assert.rejects(swarm.remove(sub, true), /still has 1 worker/);
 
     execFileSync('git', ['-C', sub.cwd, 'merge', '-q', worker.worker!.branch!]);
     await swarm.remove(worker, false);
-    await swarm.report(sub, reported(sub, 'parser done'));
+    await swarm.report(sub, reported(sub, 'parser done. Docs: no change, because this is a test'));
     assert.equal(sub.worker?.status, 'reported');
     assert.equal(sub.worker?.commits, 1);
     await swarm.tick();

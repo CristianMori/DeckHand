@@ -285,6 +285,8 @@ button {
 }
 .tag.local { color: var(--green); border: 1px solid var(--green-deep); }
 .tag.model { color: var(--ink-dim); border: 1px solid var(--line-bright); text-transform: none; letter-spacing: 0.06em; }
+/* an architect's branch has moved on without docs/architect/ moving with it */
+.tag.docs { color: var(--amber); border: 1px solid var(--amber-deep); }
 .term-tab .tag { font-size: 8px; padding: 1px 5px; }
 .term-tab:has(.tag) { max-width: 260px; }
 /* lower right corner of every card: FILES opener, plus the model name on local sessions */

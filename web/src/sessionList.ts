@@ -88,6 +88,7 @@ export function renderSessionList(
         ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
+        ${(s.role === 'architect' || s.role === 'subarchitect') && (s.docsBehind ?? 0) >= 3 ? `<span class="tag docs" title="commits on this branch since docs/architect/ last changed">docs ${s.docsBehind} behind</span>` : ''}
       </div>
       <div class="card-meta">
         <span class="cwd"></span>

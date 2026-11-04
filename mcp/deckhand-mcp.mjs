@@ -333,7 +333,8 @@ const TOOLS = [
       for (const k of ['name', 'agentType', 'model', 'machine']) if (nz(a[k])) body[k] = a[k];
       const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, nz(a.machine) ? 600_000 : 60_000);
       const where = s.isolated ? `branch ${s.worker.branch}` : 'your own folder, because it is not a git repository: nothing isolates its changes';
-      return `Worker ${s.hubId} "${s.name}" started on ${s.machine}, in ${where}.${s.baseDirty ? ' Your folder has uncommitted changes the worker does not have.' : ''} End your turn: you will be told when its report is in dh_swarm_inbox.`;
+      const docs = s.inFlight ? `\nAdd this line under "In flight" in docs/architect/architecture.md, and take it out when the branch merges or is dropped:\n${s.inFlight}` : '';
+      return `Worker ${s.hubId} "${s.name}" started on ${s.machine}, in ${where}.${s.baseDirty ? ' Your folder has uncommitted changes the worker does not have.' : ''} End your turn: you will be told when its report is in dh_swarm_inbox.${docs}`;
     },
   },
   {
@@ -345,7 +346,8 @@ const TOOLS = [
       const body = { task: a.task, kind: 'subarchitect' };
       for (const k of ['name', 'agentType', 'model', 'machine']) if (nz(a[k])) body[k] = a[k];
       const s = await post(`/api/sessions/${q(ME.hubId)}/workers`, body, nz(a.machine) ? 600_000 : 60_000);
-      return `Sub-architect ${s.hubId} "${s.name}" started on ${s.machine}, on branch ${s.worker.branch}.${s.baseDirty ? ' Your folder has uncommitted changes it does not have.' : ''} End your turn: you will be told when its report is in dh_swarm_inbox.`;
+      const docs = s.inFlight ? `\nAdd this line under "In flight" in docs/architect/architecture.md, and take it out when the branch merges or is dropped:\n${s.inFlight}` : '';
+      return `Sub-architect ${s.hubId} "${s.name}" started on ${s.machine}, on branch ${s.worker.branch}.${s.baseDirty ? ' Your folder has uncommitted changes it does not have.' : ''} End your turn: you will be told when its report is in dh_swarm_inbox.${docs}`;
     },
   },
   {

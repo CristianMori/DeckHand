@@ -1,6 +1,18 @@
 {
   "cleanupPeriodDays": 36500,
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "C:/Windows/System32/curl.exe -s -m 5 -X POST \"http://127.0.0.1:{{PORT}}/api/hook?event=SessionStart\" -H \"Content-Type: application/json\" --data-binary @-"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

@@ -10,6 +10,7 @@ import { homedir, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
 import { FLEET_RULES, folderOwner, projectFolderOf } from './etiquette.js';
+import { CREATE_DOCS_PROMPT, docsBehindCount, docsChangedSince, docsMissing } from './architectDocs.js';
 import { runShell } from './agents/shell.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DATA_DIR, DEFAULT_PORT, HUB_ROOT, PROJECTS_ROOT, PUBLIC_DIR } from './config.js';
@@ -1109,6 +1110,12 @@ app.post('/api/sessions/:id/role', sessionAction((id, req, res) => {
   if (session.worker) return res.status(400).json({ error: 'a worker stays a worker' });
   if (getAgent(session.agentType).outputOnlyStatus) return res.status(400).json({ error: 'a terminal has no role' });
   session.role = role ?? undefined;
+  // a new architect with no documentation folder is told to write it before anything else.
+  // The hub never writes the documents: they have to be the architect's own words.
+  if (role === 'architect' && session.proc && docsMissing(session.cwd)) {
+    needsYou.promptFrom(session, currentTrace()?.caller, true);
+    void typePrompt(manager, session, CREATE_DOCS_PROMPT).catch(() => {});
+  }
   manager.emit('change', session);
   res.json({ ok: true, role });
 }));
@@ -1123,8 +1130,8 @@ app.post('/api/sessions/:id/workers', sessionAction(async (id, req, res) => {
   // another machine answers for its own engines
   if (agentType && (!machine || machine === discovery.selfName) && engineMissing(res, agentType)) return;
   try {
-    const { session, info, baseDirty, isolated } = await swarm.start(manager.sessions.get(id)!, { task, name, agentType, model, permissionMode, machine, kind });
-    res.json({ ...(session ? { ...session.info(), machine: discovery.selfName } : info), baseDirty, isolated });
+    const { session, info, baseDirty, isolated, inFlight } = await swarm.start(manager.sessions.get(id)!, { task, name, agentType, model, permissionMode, machine, kind });
+    res.json({ ...(session ? { ...session.info(), machine: discovery.selfName } : info), baseDirty, isolated, inFlight });
   } catch (err) {
     res.status(400).json({ error: errorText(err) });
   }
@@ -1198,7 +1205,12 @@ app.post('/api/sessions/:id/swarm-message', sessionAction(async (id, req, res) =
 app.post('/api/sessions/:id/worker-merged', sessionAction(async (id, req, res) => {
   const commit = String(req.body?.commit ?? '');
   if (!/^[0-9a-f]{40,64}$/.test(commit)) return res.status(400).json({ error: 'bad commit' });
-  res.json({ merged: await isMergedHere(manager.sessions.get(id)!.cwd, commit) });
+  const cwd = manager.sessions.get(id)!.cwd;
+  const merged = await isMergedHere(cwd, commit);
+  // whether docs/architect/ moved since the worker branched — for the removal's docs check
+  const base = String(req.body?.base ?? '');
+  const docsChanged = merged && /^[0-9a-f]{40,64}$/.test(base) ? await docsChangedSince(cwd, base).catch(() => undefined) : undefined;
+  res.json({ merged, docsChanged });
 }));
 
 // Signed by the worker's hub with its key: it deletes a branch, so only that worker's, and only once.
@@ -2650,8 +2662,25 @@ setInterval(scanAttention, 15_000).unref();
 startStatusFileWatcher(manager, engine);
 startSessionPusher();
 
+// How far each architect's branch has moved since docs/architect/ last changed:
+// counted on the slow tick below and cached on the session, never per change.
+async function refreshDocsBehind() {
+  for (const s of manager.sessions.values()) {
+    const counts = s.role === 'architect' || s.role === 'subarchitect';
+    const n = counts ? await docsBehindCount(s.cwd).catch(() => undefined) : undefined;
+    if (n !== s.docsBehind) {
+      s.docsBehind = n;
+      broadcastSessions();
+    }
+  }
+}
+void refreshDocsBehind();
+
 // Broadcast every 15 s so elapsed-in-state timers stay honest even without events.
-setInterval(broadcastSessions, 15_000).unref();
+setInterval(() => {
+  void refreshDocsBehind();
+  broadcastSessions();
+}, 15_000).unref();
 
 // ----------------------------------------------------------------- Boot
 

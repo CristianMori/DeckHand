@@ -88,6 +88,8 @@ export class HubSession {
   role?: SessionRole;
   worker?: WorkerLink;
   toolUse?: Record<string, number>;
+  /** architects: commits on the current branch since docs/architect/ last changed (cached, refreshed on a slow tick) */
+  docsBehind?: number;
   /** public key for signed swarm messages; the private half is a file only this machine has */
   swarmKey?: string;
   /** who it leads, by public key: pinned when it started them */
@@ -141,6 +143,7 @@ export class HubSession {
       attention: this.attention,
       alerts: this.alerts,
       role: this.role,
+      docsBehind: this.docsBehind,
       swarmKey: this.swarmKey,
       worker: this.worker && { ...this.worker, outbox: undefined, seen: undefined },
       inboxCount: this.inbox?.length || undefined,

@@ -33,6 +33,8 @@ export interface SessionInfo {
   files?: { id: string; name: string; size: number; at: number; url: string }[];
   /** architect: designs and delegates; subarchitect: the same for one module; worker: one task. Absent: plain */
   role?: 'architect' | 'subarchitect' | 'worker';
+  /** architects: commits on the current branch since docs/architect/ last changed */
+  docsBehind?: number;
   worker?: WorkerLink;
   /** letters waiting in its swarm inbox; absent when none, and on a hub too old to count them */
   inboxCount?: number;

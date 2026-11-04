@@ -59,6 +59,8 @@ export interface SessionInfo {
   alerts?: AlertChannels;
   /** architect: designs and delegates; subarchitect: the same for one module, under an architect; worker: one task. Absent: a plain session */
   role?: SessionRole;
+  /** architects: commits on the current branch since docs/architect/ last changed; absent outside git or for plain sessions */
+  docsBehind?: number;
   /** public key for signed swarm messages */
   swarmKey?: string;
   worker?: WorkerLink;

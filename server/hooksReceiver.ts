@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { agentFor, listAgents } from './agents/index.js';
 import type { HookPayload } from './agents/types.js';
+import { readDocsRefeed } from './architectDocs.js';
 import { architectEditDecision, editedPaths, folderOwner, ownershipWarning, projectFolderOf } from './etiquette.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import type { StatusEngine } from './statusEngine.js';
@@ -76,6 +77,21 @@ export function makeHookHandler(
     hookBus.emit('hook', session, event, body);
     const sig = agentFor(session).mapHookEvent(event, body);
     if (sig) engine.signal(session, SIG_HOOK, sig.state, sig.detail);
+
+    // an architect compacted or resumed lost its memory of the design: hand it
+    // back its own documentation as additionalContext (Claude Code and Codex
+    // both take this shape from a SessionStart hook)
+    if (event === 'SessionStart' && (body.source === 'compact' || body.source === 'resume') && (session.role === 'architect' || session.role === 'subarchitect')) {
+      try {
+        const context = readDocsRefeed(session.cwd);
+        if (context) {
+          console.log(`[docs] ${session.name}: re-fed docs/architect after ${body.source} (${context.length} characters)`);
+          return res.json({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } });
+        }
+      } catch {
+        /* never let the refeed break a hook */
+      }
+    }
 
     // etiquette level 2: warn on edits into another live session's folder;
     // level 3: refuse an architect's first attempt to edit code itself

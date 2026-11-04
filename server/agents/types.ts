@@ -8,6 +8,8 @@ export interface HookPayload {
   message?: string;
   cwd?: string;
   transcript_path?: string;
+  /** SessionStart: how the session started — startup | resume | clear | compact | fork */
+  source?: string;
 }
 
 export interface BuildArgsInput {

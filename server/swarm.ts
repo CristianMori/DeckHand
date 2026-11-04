@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { leadMcpChoices, type McpChoices } from './agents/claude.js';
+import { ARCHITECTURE_FILE, architectureInCommit, docsChangedSince, docsMergeDecision, inFlightLine } from './architectDocs.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
 import { osName, projectFolderOf, windowsUnsafeNames } from './etiquette.js';
@@ -322,6 +323,8 @@ export interface SwarmFleet {
 export class Swarm {
   /** sessions being told right now that they have messages */
   private delivering = new Set<string>();
+  /** merged workers whose removal was refused once over unchanged docs: worker hubId → when */
+  private docsReminded = new Map<string, number>();
   /** sessions with a message on its way to another hub, and when to try a failed one again */
   private sending = new Set<string>();
   private retryAt = new Map<string, number>();
@@ -371,6 +374,9 @@ export class Swarm {
     if (!architect.swarmKey) throw new Error('this session has no swarm key yet: restart it, then try again');
     const name = opts.name?.trim() || `${architect.name} ${kind === 'worker' ? 'worker' : 'sub-architect'}`;
     if (opts.machine && opts.machine !== this.deps.fleet?.self) return this.startElsewhere(architect, { ...opts, task, name }, opts.machine);
+    // the architecture a worker branches from has to be written down first; a folder outside git is exempt
+    const base = await repoBase(architect.cwd);
+    if (base) await this.requireArchitecture(architect.cwd, base.baseCommit, base.sub, kind);
     const tree = await createWorktree(architect.cwd, name);
     if (!tree && kind === 'subarchitect') throw new Error('a sub-architect works on a branch of its own, and this folder is not a git repository');
     const mcpChoices = this.leadChoices(architect);
@@ -405,7 +411,16 @@ export class Swarm {
     this.deps.promptFrom(session, `session:${architect.hubId}`, true);
     this.manager.emit('change', session);
     this.deps.save();
-    return { session, info: undefined, baseDirty: tree?.baseDirty ?? false, isolated: !!tree };
+    return { session, info: undefined, baseDirty: tree?.baseDirty ?? false, isolated: !!tree, inFlight: tree ? inFlightLine(name, tree.branch, task) : undefined };
+  }
+
+  /** Starting from a commit without the lead's architecture.md is refused: workers inherit the design from it. */
+  private async requireArchitecture(folder: string, baseCommit: string, sub: string, kind: 'worker' | 'subarchitect') {
+    if (await architectureInCommit(folder, baseCommit, sub)) return;
+    throw new Error(
+      `${ARCHITECTURE_FILE} is not in the commit your ${kind === 'worker' ? 'worker' : 'sub-architect'} would branch from. ` +
+      `Write the project's documentation first (docs/architect/: architecture.md, notes/, README.md), commit it, then start it again.`,
+    );
   }
 
   /** On the architect's hub: get the code to the other machine, and start the worker there. */
@@ -417,6 +432,7 @@ export class Swarm {
     if (fleet.isFrozen(project)) throw new Error(`${project} is frozen to this machine: its code can't go to ${machine}. Run the worker here, or unfreeze it.`);
     const base = await repoBase(architect.cwd);
     if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
+    await this.requireArchitecture(architect.cwd, base.baseCommit, base.sub, opts.kind ?? 'worker');
     const ask = async (path: string, body: unknown) => {
       const out = await fleet.call(machine, path, body).catch(() => undefined);
       if (!out) throw new Error(`machine not reachable: ${machine}`);
@@ -454,7 +470,7 @@ export class Swarm {
     const branch = str(info?.worker?.branch);
     if (typeof info?.swarmKey !== 'string' || !WORKER_BRANCH.test(branch)) throw new Error(`${machine} doesn't sign its workers' messages: update its hub`);
     this.pin(architect, info.swarmKey, { name: opts.name, kind: opts.kind ?? 'worker', hubId: str(info.hubId), machine, branch });
-    return { session: undefined, info, baseDirty: base.baseDirty, isolated: true };
+    return { session: undefined, info, baseDirty: base.baseDirty, isolated: true, inFlight: inFlightLine(opts.name, branch, opts.task) };
   }
 
   /** On the worker's hub: the code has arrived, so give it a checkout and start. */
@@ -702,8 +718,12 @@ export class Swarm {
     if (w.worktree && w.repo && !discard) {
       const facts = await worktreeFacts(w).catch(() => undefined);
       if (facts?.dirty) throw new Error('its worktree has uncommitted changes: pass discard=true to throw them away');
-      if (facts?.commits && !(await this.isMerged(w))) {
-        throw new Error(`branch ${w.branch} is not merged: merge it, or pass discard=true to throw it away`);
+      if (facts?.commits) {
+        const { merged, docsChanged } = await this.mergedState(w);
+        if (!merged) throw new Error(`branch ${w.branch} is not merged: merge it, or pass discard=true to throw it away`);
+        // a merge is only done once the documentation says so: refused once, a second call goes through
+        const refusal = docsMergeDecision(this.docsReminded, session.hubId, { merged, docsChanged, report: w.result });
+        if (refusal) throw new Error(refusal);
       }
     }
     // a running process holds its folder on Windows, and git could not remove it
@@ -725,12 +745,20 @@ export class Swarm {
     this.deps.save();
   }
 
-  private async isMerged(w: WorkerLink) {
-    if (!w.architectMachine) return gitOk(w.repo!, 'merge-base', '--is-ancestor', w.branch!, 'HEAD');
+  /** Whether the worker's branch is merged into its lead's HEAD, and whether that stretch touched docs/architect/. */
+  private async mergedState(w: WorkerLink): Promise<{ merged: boolean; docsChanged?: boolean }> {
+    if (!w.architectMachine) {
+      const merged = await gitOk(w.repo!, 'merge-base', '--is-ancestor', w.branch!, 'HEAD');
+      // undefined when it can't be seen (the lead's folder gone, no base): nobody is held to that
+      const docsChanged = merged && w.baseCommit ? await docsChangedSince(w.baseFolder, w.baseCommit).catch(() => undefined) : undefined;
+      return { merged, docsChanged };
+    }
     const head = await git(w.repo!, 'rev-parse', `refs/heads/${w.branch}`);
-    const out = await this.deps.fleet?.callArchitect(w.architect, 'worker-merged', { commit: head }).catch(() => undefined);
+    const out = await this.deps.fleet?.callArchitect(w.architect, 'worker-merged', { commit: head, base: w.baseCommit }).catch(() => undefined);
     if (!out) throw new Error(`can't check whether ${w.branch} was merged: its architect isn't reachable. Pass discard=true to remove it anyway`);
-    return out.status === 200 && !!out.body?.merged;
+    // an older hub answers without docsChanged, and that stays unchecked
+    const body = (out.status === 200 ? out.body : undefined) ?? {};
+    return { merged: !!body.merged, docsChanged: typeof body.docsChanged === 'boolean' ? body.docsChanged : undefined };
   }
 
   private async dropWorktree(w: WorkerLink, force: boolean) {
