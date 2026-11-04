@@ -38,7 +38,10 @@ function grouped(sessions: SessionInfo[]): { session: SessionInfo; depth: number
   return out;
 }
 
-const ROLE_LABEL = { architect: 'ARCHITECT', subarchitect: 'SUB-ARCHITECT', worker: 'WORKER' } as const;
+const ROLE_LABEL = { architect: 'ARCHITECT', subarchitect: 'SUB-ARCHITECT', worker: 'WORKER', role: 'ROLE' } as const;
+
+/** A role instance is labelled by the charter it runs ("tester"); the others by their role. */
+const roleLabel = (s: SessionInfo) => (s.role === 'role' ? s.worker?.charter || ROLE_LABEL.role : ROLE_LABEL[s.role!]);
 
 const finished = (s: SessionInfo) => !s.alive && (s.worker?.status === 'reported' || s.worker?.status === 'failed');
 
@@ -84,7 +87,7 @@ export function renderSessionList(
       </div>
       <div class="card-tags">
         <span class="agent-tag"></span>
-        ${s.role ? `<span class="role-tag ${s.role}">${ROLE_LABEL[s.role]}</span>` : ''}
+        ${s.role ? `<span class="role-tag ${s.role}"></span>` : ''}
         ${s.model?.startsWith('local/') ? '<span class="tag local">LOCAL</span>' : ''}
         ${s.machine ? '<span class="machine-tag"></span>' : ''}
         ${s.frozen ? '<span class="frozen-tag" title="folder frozen to this machine">❄</span>' : ''}
@@ -146,6 +149,8 @@ export function renderSessionList(
         `← handed off from ${s.handoff.fromAgent} @ ${s.handoff.fromMachine}`;
     }
     (card.querySelector('.card-name') as HTMLElement).textContent = s.name;
+    // textContent, not markup: a charter's name comes from a charter file
+    if (s.role) (card.querySelector('.role-tag') as HTMLElement).textContent = roleLabel(s);
     const terminal = s.agentType === 'shell';
     const engine = terminal ? 'terminal' : s.agentType || 'claude';
     (card.querySelector('.agent-tag') as HTMLElement).textContent = engine;

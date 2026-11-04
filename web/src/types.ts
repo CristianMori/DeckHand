@@ -31,8 +31,8 @@ export interface SessionInfo {
   frozen?: boolean;
   /** files the session handed to the user (dh_send_file), newest first */
   files?: { id: string; name: string; size: number; at: number; url: string }[];
-  /** architect: designs and delegates; subarchitect: the same for one module; worker: one task. Absent: plain */
-  role?: 'architect' | 'subarchitect' | 'worker';
+  /** architect: designs and delegates; subarchitect: the same for one module; worker: one task; role: a specialist instance that only reports. Absent: plain */
+  role?: 'architect' | 'subarchitect' | 'worker' | 'role';
   /** architects: commits on the current branch since docs/architect/ last changed */
   docsBehind?: number;
   worker?: WorkerLink;
@@ -53,6 +53,8 @@ export interface WorkerLink {
   project?: string;
   architectMachine?: string;
   platform?: string;
+  /** a role instance: the name of the charter it runs — the card's label */
+  charter?: string;
   worktree?: string;
   branch?: string;
   status: 'working' | 'asking' | 'stalled' | 'reported' | 'failed';
