@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,14 +10,15 @@ import {
   CREATE_DOCS_PROMPT,
   DOCS_RETRY_WINDOW_MS,
   REFEED_CAP,
-  architectureInCommit,
+  SUMMARY_CAP,
   composeDocsRefeed,
   docsBehindCount,
-  docsChangedSince,
+  docsFingerprint,
   docsMergeDecision,
   docsMissing,
   inFlightLine,
   readDocsRefeed,
+  readLeadSummary,
   splitSummary,
 } from './architectDocs.js';
 import { ARCHITECT_RULES, fleetBriefing } from './etiquette.js';
@@ -33,9 +34,11 @@ function repo(withDocs = true) {
   git('config', 'user.email', 't@t');
   git('config', 'user.name', 't');
   if (withDocs) {
+    // untracked and ignored, as the convention asks: the docs never enter a commit
     mkdirSync(join(dir, 'docs', 'architect', 'notes'), { recursive: true });
     writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
     writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-01.md'), 'note\n');
+    writeFileSync(join(dir, '.gitignore'), 'docs/architect/\n');
   }
   writeFileSync(join(dir, 'a.txt'), 'a\n');
   git('add', '.');
@@ -51,7 +54,10 @@ test('the briefings carry the documentation convention', () => {
   assert.match(ARCHITECT_RULES, /notes\/YYYY-MM-DD\.md/);
   assert.match(ARCHITECT_RULES, /In flight/);
   assert.match(ARCHITECT_RULES, /⎇ <branch> \(not merged\)/);
-  assert.match(ARCHITECT_RULES, /same commit/);
+  assert.match(ARCHITECT_RULES, /NOT tracked in git/);
+  assert.match(ARCHITECT_RULES, /\.gitignore/);
+  assert.match(ARCHITECT_RULES, /never committed/);
+  assert.match(ARCHITECT_RULES, /at the same time as any decision or merge/);
   assert.match(ARCHITECT_RULES, /quoted verbatim/);
   assert.match(ARCHITECT_RULES, /create it at once/);
   assert.match(ARCHITECT_RULES, /machines and people as roles/);
@@ -59,73 +65,98 @@ test('the briefings carry the documentation convention', () => {
   assert.match(ARCHITECT_RULES, /## Summary/);
   assert.match(ARCHITECT_RULES, /3,000 characters/);
   assert.match(ARCHITECT_RULES, /summary first and always in full/);
+  assert.match(ARCHITECT_RULES, /"Docs:" section/);
+  assert.match(ARCHITECT_RULES, /docs\/architect-convention\.md/);
 
   const id = { hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: 'D:/p/x', hubUrl: 'u' };
   const w: WorkerLink = { architect: 'a', architectName: 'lead', task: 't', baseFolder: 'D:/p/x', status: 'working', startedAt: 0 };
   const worker = fleetBriefing({ ...id, role: 'worker', worker: w });
-  assert.match(worker, /docs\/architect\/architecture\.md/);
-  assert.match(worker, /"Docs: updated" or "Docs: no change, because …"/);
+  assert.match(worker, /never create or edit docs\/architect in your worktree/);
+  assert.match(worker, /"Docs:" section/);
+  assert.match(worker, /"Docs: no change, because …"/);
   const sub = fleetBriefing({ ...id, role: 'subarchitect', worker: { ...w, worktree: '/w', branch: 'worker/x' } });
-  assert.match(sub, /docs\/architect\/architecture\.md/);
-  assert.match(sub, /docs\/architect\/notes\//);
+  assert.match(sub, /never create or edit docs\/architect in your worktree/);
+  assert.match(sub, /"Docs:" section/);
   assert.match(CREATE_DOCS_PROMPT, /architecture\.md/);
   assert.match(CREATE_DOCS_PROMPT, /README\.md/);
+  assert.match(CREATE_DOCS_PROMPT, /\.gitignore/);
+  assert.match(CREATE_DOCS_PROMPT, /never committed/);
+  assert.match(CREATE_DOCS_PROMPT, /docs\/architect-convention\.md/);
 });
 
-// ---- git facts
+// ---- the working folder's facts (the docs are untracked: git never sees them)
 
-test('architecture.md is found in the commit it is in, at the lead\'s own subfolder', async () => {
-  const { dir, git } = repo(false);
+test('the docs fingerprint follows architecture.md and the notes\' names and sizes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'docs-fp-'));
   try {
-    const first = git('rev-parse', 'HEAD').trim();
-    assert.equal(await architectureInCommit(dir, first), false);
-    mkdirSync(join(dir, 'docs', 'architect'), { recursive: true });
-    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), '# arch\n');
-    mkdirSync(join(dir, 'pkg', 'docs', 'architect'), { recursive: true });
-    writeFileSync(join(dir, 'pkg', 'docs', 'architect', 'architecture.md'), '# pkg arch\n');
-    git('add', '.');
-    git('commit', '-qm', 'docs');
-    const second = git('rev-parse', 'HEAD').trim();
-    assert.equal(await architectureInCommit(dir, first), false); // only the commit asked about counts
-    assert.equal(await architectureInCommit(dir, second), true);
-    assert.equal(await architectureInCommit(dir, second, 'pkg'), true);
-    assert.equal(await architectureInCommit(dir, second, 'elsewhere'), false);
+    assert.equal(docsFingerprint(dir), undefined); // nothing to fingerprint
+    const docs = join(dir, 'docs', 'architect');
+    mkdirSync(join(docs, 'notes'), { recursive: true });
+    writeFileSync(join(docs, 'architecture.md'), '# arch\n');
+    const bare = docsFingerprint(dir);
+    assert.ok(bare);
+    assert.equal(docsFingerprint(dir), bare); // stable while nothing moves
+    writeFileSync(join(docs, 'notes', '2026-11-04.md'), 'today\n');
+    const withNote = docsFingerprint(dir);
+    assert.notEqual(withNote, bare); // a new note counts
+    writeFileSync(join(docs, 'notes', '2026-11-04.md'), 'today, and more\n');
+    assert.notEqual(docsFingerprint(dir), withNote); // a grown note counts (by size)
+    writeFileSync(join(docs, 'architecture.md'), '# arch v2\n');
+    assert.notEqual(docsFingerprint(dir), withNote); // the architecture's text counts
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('whether docs changed between a base and HEAD, and how far a branch is behind them', async () => {
-  const { dir, git } = repo();
+test('a lead\'s ## Summary is read from the working architecture.md, capped for a briefing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'docs-sum-'));
   try {
-    const base = git('rev-parse', 'HEAD').trim();
+    assert.equal(readLeadSummary(dir), undefined);
+    const docs = join(dir, 'docs', 'architect');
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, 'architecture.md'), '# t\n\nno summary section');
+    assert.equal(readLeadSummary(dir), undefined);
+    writeFileSync(join(docs, 'architecture.md'), '# t\n\n## Summary\n\nthe essentials\n\n## Parts\n\ndetail');
+    assert.equal(readLeadSummary(dir), '## Summary\n\nthe essentials');
+    writeFileSync(join(docs, 'architecture.md'), `# t\n\n## Summary\n\n${'S'.repeat(2 * SUMMARY_CAP)}\n\n## Parts\n`);
+    const capped = readLeadSummary(dir)!;
+    assert.ok(capped.length < SUMMARY_CAP + 200, `${capped.length}`);
+    assert.match(capped, /cut by Deckhand/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('how far a branch is behind: commits made after the untracked docs\' newest mtime', async () => {
+  const { dir, git } = repo();
+  const touchDocs = (when: Date) => {
+    for (const f of [join(dir, 'docs', 'architect', 'architecture.md'), join(dir, 'docs', 'architect', 'notes', '2026-11-01.md')]) {
+      utimesSync(f, when, when);
+    }
+  };
+  try {
+    // the docs were just written: nothing happened after them
+    touchDocs(new Date(Date.now() + 60 * 60_000));
     assert.equal(await docsBehindCount(dir), 0);
-    assert.equal(await docsChangedSince(dir, base), false);
+    // the docs last moved an hour ago: every commit since counts
+    touchDocs(new Date(Date.now() - 60 * 60_000));
+    assert.equal(await docsBehindCount(dir), 1);
     for (const n of ['b', 'c']) {
       writeFileSync(join(dir, `${n}.txt`), n);
       git('add', '.');
       git('commit', '-qm', n);
     }
-    assert.equal(await docsChangedSince(dir, base), false);
-    assert.equal(await docsBehindCount(dir), 2);
+    assert.equal(await docsBehindCount(dir), 3);
+    // any file in the folder counts as the docs moving, a note included
     writeFileSync(join(dir, 'docs', 'architect', 'notes', '2026-11-04.md'), 'today\n');
-    git('add', '.');
-    git('commit', '-qm', 'note');
-    assert.equal(await docsChangedSince(dir, base), true);
+    utimesSync(join(dir, 'docs', 'architect', 'notes', '2026-11-04.md'), new Date(Date.now() + 60 * 60_000), new Date(Date.now() + 60 * 60_000));
     assert.equal(await docsBehindCount(dir), 0);
-    // a change outside architecture.md and notes/ does not count as documentation
-    writeFileSync(join(dir, 'docs', 'architect', 'README.md'), 'readme\n');
-    git('add', '.');
-    git('commit', '-qm', 'readme');
-    const beforeReadme = git('rev-parse', 'HEAD~1').trim();
-    assert.equal(await docsChangedSince(dir, beforeReadme), false);
-    assert.equal(await docsBehindCount(dir), 0); // but it does reset the behind count: the folder moved
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a repository that never touched docs/architect is behind by its whole branch', async () => {
+test('a repository with no docs/architect at all is behind by its whole branch', async () => {
   const { dir } = repo(false);
   const plain = mkdtempSync(join(tmpdir(), 'docs-plain-'));
   try {
