@@ -110,6 +110,45 @@ function presentedToken(headers: Record<string, string | string[] | undefined>, 
   return { token: undefined, viaQuery: false };
 }
 
+/**
+ * Whether a path belongs to the API, for gates that compare paths. Deliberately
+ * case-insensitive: routing is case-sensitive (index.ts), so a mixed-case
+ * /API/… matches no route — but every path gate must still claim it, never
+ * wave it past as "not the API".
+ */
+export const isApiPath = (path: string) => /^\/api\//i.test(path);
+
+/**
+ * Cross-site requests: a web page the user visits can make their browser send
+ * state-changing requests to a hub on the tailnet, riding the browser's network
+ * position. Browsers name the page's site on such requests (Origin, and
+ * Sec-Fetch-Site), so a request from a foreign site is recognizable; callers
+ * that are not browsers — the iOS app, curl, the MCP server, hub-to-hub
+ * federation, the Even bridge and glasses — send neither header and pass.
+ *
+ * Own origins, whatever the port (dashboards are opened by name, IP or MagicDNS
+ * name, and their hubs forward to peers): loopback, this machine's own
+ * addresses and any tailnet address (isTrustedSource), plus the hosts
+ * `isOwnHost` accepts — the fleet's machine names, bare or as a MagicDNS fqdn.
+ */
+export function fromAnotherSite(
+  headers: Record<string, string | string[] | undefined>,
+  isOwnHost: (host: string) => boolean,
+): boolean {
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const origin = one(headers.origin);
+  if (origin) {
+    let host: string;
+    try {
+      host = new URL(origin).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    } catch {
+      return true; // "null", or malformed: a browser that will not name the page's site
+    }
+    return !(host === 'localhost' || isTrustedSource(host) || isOwnHost(host));
+  }
+  return one(headers['sec-fetch-site'])?.toLowerCase() === 'cross-site';
+}
+
 export interface AccessVerdict {
   /** 0 = allowed */
   status: 0 | 401 | 403;

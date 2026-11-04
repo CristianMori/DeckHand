@@ -106,6 +106,29 @@ test("a prompt from the dashboard, the API or the terminal is the user's", async
   }
 });
 
+test('whether the turn began with an outside agent is tracked per turn', () => {
+  const { session, needs, set } = rig();
+  assert.equal(needs.turnFromOutsideAgent(session), false, 'nothing known yet');
+  for (const outside of ['gateway:ron', 'mimir', 'Mimir(task T7)']) {
+    needs.promptFrom(session, outside, false);
+    needs.turnStarted(session);
+    assert.equal(needs.turnFromOutsideAgent(session), true, outside);
+    needs.turnStarted(session); // the user types in the terminal: normal again
+    assert.equal(needs.turnFromOutsideAgent(session), false, outside);
+  }
+  for (const inside of ['session:abc/def@desktop', 'dashboard', 'api', 'text-reply']) {
+    needs.promptFrom(session, 'gateway:ron', false);
+    needs.turnStarted(session);
+    needs.promptFrom(session, inside, false);
+    needs.turnStarted(session);
+    assert.equal(needs.turnFromOutsideAgent(session), false, inside);
+  }
+  needs.promptFrom(session, 'gateway:ron', false);
+  needs.turnStarted(session);
+  set('STARTING'); // a new process: what the old one was doing is not known
+  assert.equal(needs.turnFromOutsideAgent(session), false);
+});
+
 test("after a session-sent turn, the user's next turn counts again", async () => {
   const reply = { text: 'All done.' };
   const { session, needs, set } = rig(reply);

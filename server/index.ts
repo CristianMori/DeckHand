@@ -1,12 +1,12 @@
 import { createServer } from 'node:http';
-import { authorize, cookieHeader, loadApiToken, LAN_ENABLED } from './access.js';
+import { authorize, cookieHeader, fromAnotherSite, isApiPath, loadApiToken, LAN_ENABLED } from './access.js';
 import { startBeacon } from './beacon.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { mkdir as mkdirAsync, rename, writeFile as writeFileAsync } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { homedir, networkInterfaces } from 'node:os';
+import { homedir, hostname, networkInterfaces } from 'node:os';
 import express from 'express';
 import { copyIn, listDir, safePath, zipFolder } from './files.js';
 import { FLEET_RULES, folderOwner, projectFolderOf } from './etiquette.js';
@@ -264,6 +264,11 @@ function activeElsewhereError(res: express.Response, machines: string[]) {
 // ---------------------------------------------------------------- HTTP API
 
 const app = express();
+// Express matches routes case-insensitively by default, but the gates below
+// compare paths literally — /API/… must never reach a route whose checks were
+// written for /api/…. A mixed-case path now matches no route at all, and the
+// path gates (here and in provenance.ts) still claim it via isApiPath.
+app.set('case sensitive routing', true);
 
 // Who gets in is decided in access.ts: loopback/own-address/tailnet freely,
 // the private LAN with the API token, nobody else.
@@ -274,6 +279,23 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: 'API token required (Authorization: Bearer …, or open /?token=… once)' });
   }
   if (verdict.setCookie) res.setHeader('Set-Cookie', cookieHeader());
+  next();
+});
+
+// A web page on another site can make the user's browser send requests here —
+// the browser is on the tailnet even when the page is not. Browsers name the
+// page's site (Origin / Sec-Fetch-Site): refuse a foreign site's request
+// before it changes anything. Non-browser callers — the iOS app, curl, the
+// MCP server, hub-to-hub federation, the Even bridge — carry neither header
+// and pass untouched (access.ts fromAnotherSite).
+const fleetHost = (host: string) =>
+  [discovery.selfName, hostname(), ...federation.machines(discovery.selfName).map((m) => m.machine)]
+    .some((name) => host === name.toLowerCase() || host.startsWith(`${name.toLowerCase()}.`));
+const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use((req, res, next) => {
+  if (STATE_CHANGING.has(req.method) && fromAnotherSite(req.headers, fleetHost)) {
+    return res.status(403).json({ error: 'cross-site browser requests cannot change the hub' });
+  }
   next();
 });
 
@@ -301,7 +323,7 @@ function sessionInfoById(id: string): SessionInfo | undefined {
 app.use(async (req, res, next) => {
   const trace = currentTrace();
   const agent = delegatedAgent(trace?.caller);
-  if (!agent || !req.path.startsWith('/api/')) return next();
+  if (!agent || !isApiPath(req.path)) return next();
   // straight from Mimir: it must hold the delegate key; a hub forwarding the call already checked it
   const lastHop = trace?.via.at(-1);
   const fromHub = !!lastHop && federation.machines(discovery.selfName).some((m) => m.machine === lastHop);
@@ -1114,6 +1136,19 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 const notTheUser = () => /^(session:|agent:|gateway:|mimir)/i.test(currentTrace()?.caller ?? '');
 const isCaller = (id: string) => (currentTrace()?.caller ?? '').startsWith(`session:${id}/`);
 
+// An outside agent can only ask; it must never end up with an unattended
+// session running on its word. While a session's current turn began with a
+// gateway or Mimir prompt (needsYou tracks who started each turn), the hub
+// refuses to start crew for that session — rules text asks the same, this
+// enforces it. The user's own starts, and the next user-started turn, pass.
+const OUTSIDE_AGENT_TURN =
+  "This turn began with a prompt from an outside agent. Workers run unattended, so the hub starts none on an outside agent's word: tell Cristian what was asked and let him start it.";
+const outsideAgentTurnRefused = (id: string, res: express.Response): boolean => {
+  if (!isCaller(id) || !needsYou.turnFromOutsideAgent(manager.sessions.get(id)!)) return false;
+  res.status(403).json({ error: OUTSIDE_AGENT_TURN });
+  return true;
+};
+
 // Whether a session is an architect. The user's, from the dashboard. It takes
 // effect when the session next starts: its instructions are given at launch.
 app.post('/api/sessions/:id/role', sessionAction((id, req, res) => {
@@ -1138,6 +1173,7 @@ app.post('/api/sessions/:id/role', sessionAction((id, req, res) => {
 // itself, or its own workers; outside agents never get past the access gate.
 app.post('/api/sessions/:id/workers', sessionAction(async (id, req, res) => {
   if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'a session starts only its own workers' });
+  if (outsideAgentTurnRefused(id, res)) return;
   const { task, name, agentType, model, permissionMode, machine } = req.body ?? {};
   const kind = req.body?.kind;
   if (kind !== undefined && kind !== 'worker' && kind !== 'subarchitect') return res.status(400).json({ error: 'kind must be worker or subarchitect' });
@@ -1339,6 +1375,7 @@ app.post('/api/sessions/:id/remove-worker', sessionAction(async (id, req, res) =
 // current state rather than a diff. Answers what it started and skipped and why.
 app.post('/api/sessions/:id/run-role', sessionAction(async (id, req, res) => {
   if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'roles are run by the user, or by the session itself' });
+  if (outsideAgentTurnRefused(id, res)) return;
   const lead = manager.sessions.get(id)!;
   if (lead.role !== 'architect' && lead.role !== 'subarchitect') return res.status(400).json({ error: 'not an architect' });
   const role = typeof req.body?.role === 'string' && req.body.role ? req.body.role : undefined;
@@ -2575,6 +2612,9 @@ async function findPeerForTerm(hubId: string) {
 httpServer.on('upgrade', (req, socket, head) => {
   const remoteAddress = (socket as import('node:net').Socket).remoteAddress;
   if (authorize(remoteAddress, req.headers, req.url ?? '/').status !== 0) return socket.destroy();
+  // a browser on a foreign site must not open sockets into the fleet either;
+  // federation, the CLI and the app send no Origin and connect as before
+  if (fromAnotherSite(req.headers, fleetHost)) return socket.destroy();
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/ws/control') {
     wss.handleUpgrade(req, socket, head, (ws) => {

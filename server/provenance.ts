@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type express from 'express';
+import { isApiPath } from './access.js';
 import { DATA_DIR } from './config.js';
 
 /**
@@ -83,8 +84,8 @@ function callerOf(req: express.Request): string {
 
 /** Which requests are worth a line: every change, and reads made by agents, gateway clients or people elsewhere. */
 function worthLogging(req: express.Request, caller: string): boolean {
-  if (!req.path.startsWith('/api/')) return false;
-  if (req.path === '/api/hook') return false; // agents' own lifecycle hooks, many per turn
+  if (!isApiPath(req.path)) return false;
+  if (req.path.toLowerCase() === '/api/hook') return false; // agents' own lifecycle hooks, many per turn
   if (req.method !== 'GET' && req.method !== 'HEAD') return true;
   // a hub's background polling (sync, catch-up, memory pulls) is not an action
   if (caller.startsWith('hub:')) return false;

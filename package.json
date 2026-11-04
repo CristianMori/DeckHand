@@ -10,7 +10,7 @@
     "dev": "concurrently -n server,web \"tsx watch server/index.ts\" \"vite web\"",
     "build": "vite build web",
     "start": "tsx server/index.ts",
-    "test": "node --import tsx --test --test-force-exit --test-timeout=30000 server/automation.test.ts server/needsYou.test.ts server/apns.test.ts server/sms.test.ts server/email.test.ts server/swarm.test.ts server/roleCharters.test.ts server/roleTrigger.test.ts server/architectDocs.test.ts server/workerStartup.test.ts server/sessionOrder.test.ts server/renameNotice.test.ts server/composer.test.ts"
+    "test": "node --import tsx --test --test-force-exit --test-timeout=30000 server/access.test.ts server/automation.test.ts server/needsYou.test.ts server/apns.test.ts server/sms.test.ts server/email.test.ts server/swarm.test.ts server/roleCharters.test.ts server/roleTrigger.test.ts server/architectDocs.test.ts server/workerStartup.test.ts server/sessionOrder.test.ts server/renameNotice.test.ts server/composer.test.ts"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.15",

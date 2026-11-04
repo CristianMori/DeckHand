@@ -49,15 +49,20 @@ export function attentionConfig(file = CONFIG_FILE): AttentionConfig {
 /** The sender answers these itself: a prompt from a session, an outside agent or Mimir. */
 const answeredBySender = (caller: string | undefined) => /^(session:|agent:|gateway:|mimir\b)/i.test(caller ?? '');
 
+/** From outside the fleet: a gateway client ("gateway:<agent>") or Mimir. */
+const fromOutsideAgent = (caller: string | undefined) => /^(gateway:|mimir\b)/i.test(caller ?? '');
+
 /** What a waiting session needs, in the words every outside channel uses. */
 export const attentionPhrase = (kind: Attention['kind']): string =>
   kind === 'permission' ? 'wants approval' : kind === 'dialog' ? 'is waiting at a dialog' : 'has a question';
 
 interface Track {
   /** prompts typed through the API whose turn hasn't started, oldest first */
-  pending: { bySender: boolean; expires: number }[];
+  pending: { bySender: boolean; byOutsideAgent: boolean; expires: number }[];
   /** the running or last turn: who started it; undefined until one starts under this process */
   turnBySender?: boolean;
+  /** the running or last turn began with a prompt from an outside agent (gateway client or Mimir) */
+  turnByOutsideAgent?: boolean;
   timer?: ReturnType<typeof setTimeout>;
   /** the reply last judged, so a late transcript flush isn't read as this turn's */
   judged?: string;
@@ -91,7 +96,7 @@ export class NeedsYou {
   /** A prompt is being typed through the API; its turn starts at the next prompt hook. */
   promptFrom(session: HubSession, caller: string | undefined, queued: boolean) {
     const ttl = queued ? QUEUED_PROMPT_TTL_MS : PROMPT_TTL_MS;
-    this.track(session).pending.push({ bySender: answeredBySender(caller), expires: Date.now() + ttl });
+    this.track(session).pending.push({ bySender: answeredBySender(caller), byOutsideAgent: fromOutsideAgent(caller), expires: Date.now() + ttl });
   }
 
   /** The agent took a prompt: whatever it was waiting on is over. */
@@ -99,9 +104,21 @@ export class NeedsYou {
     const t = this.track(session);
     const now = Date.now();
     t.pending = t.pending.filter((p) => p.expires > now);
-    t.turnBySender = t.pending.shift()?.bySender ?? false; // none pending: typed in the terminal
+    const started = t.pending.shift(); // none pending: typed in the terminal, or sent from a dashboard
+    t.turnBySender = started?.bySender ?? false;
+    t.turnByOutsideAgent = started?.byOutsideAgent ?? false;
     t.alerted = undefined;
     this.clear(session, t);
+  }
+
+  /**
+   * Whether the session's running (or last) turn began with a prompt from an
+   * outside agent. While it did, the hub starts no unattended crew on the
+   * session's word (the swarm routes refuse); the turn after the user types,
+   * or a dashboard or fleet session prompts, counts normally again.
+   */
+  turnFromOutsideAgent(session: HubSession): boolean {
+    return !!this.tracks.get(session.hubId)?.turnByOutsideAgent;
   }
 
   private clear(session: HubSession, t: Track) {
@@ -121,6 +138,7 @@ export class NeedsYou {
     switch (session.state) {
       case 'STARTING':
         t.turnBySender = undefined; // a new process: its old last reply is not a new question
+        t.turnByOutsideAgent = undefined;
         t.judged = undefined;
         if (a?.kind === 'dialog') return; // startup dialogs show in STARTING; the dialog scan clears them
         return this.clear(session, t);

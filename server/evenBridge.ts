@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import express from 'express';
-import { authorize, cookieHeader } from './access.js';
+import { authorize, cookieHeader, fromAnotherSite } from './access.js';
 import { getAgent } from './agents/index.js';
 import { hookBus } from './hooksReceiver.js';
 import type { SessionInfo, SessionState } from './types.js';
@@ -494,6 +494,9 @@ export function startEvenBridge(port: number, deps: EvenBridgeDeps) {
     if (verdict.status === 403) return res.status(403).end();
     if (verdict.status === 401) return res.status(401).json({ error: { code: 'auth_failed', message: 'Unauthorized' } });
     if (verdict.setCookie) res.setHeader('Set-Cookie', cookieHeader());
+    // a web page on a foreign site must not drive the glasses bridge from the
+    // user's browser; the Even app is no browser and sends neither header
+    if (req.method === 'POST' && fromAnotherSite(req.headers, () => false)) return res.status(403).end();
     if (req.method === 'POST') console.log(`[even] POST ${req.path}`); // the client polls; reads stay quiet
     next();
   });
