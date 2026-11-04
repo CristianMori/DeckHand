@@ -125,6 +125,13 @@ export interface AgentAdapter {
   isProtectedPrompt?(screen: string): boolean;
   /** a startup dialog on screen that blocks the engine before any hook fires, named for the stall notice */
   startupDialog?(screen: string): string | undefined;
+  /**
+   * The engine is signed out ("Login expired · Please run /login"), named for
+   * the attention episode. Unlike a startup dialog this appears after hooks
+   * have fired — every prompt is answered with the same line and no hook moves
+   * the state — and only the user logging in on this machine fixes it.
+   */
+  loggedOut?(screen: string): string | undefined;
 
   transcript?: TranscriptOps;
 

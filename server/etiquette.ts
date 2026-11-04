@@ -97,8 +97,12 @@ const docsContext = (w: WorkerLink) => {
   return '';
 };
 
+/** The task and its follow-ups as one text: inlined in the briefing while it fits, written whole to the task file once it doesn't (swarm.ts spillFollowUps). */
+export const taskWithFollowUps = (w: Pick<WorkerLink, 'task' | 'followUps'>) =>
+  `${w.task}${w.followUps?.length ? `\n\nFollow-ups since:\n${w.followUps.join('\n')}` : ''}`;
+
 const assignment = (w: WorkerLink) => `Your task, in case your context was compacted:
-${w.taskFile ? `it is long, so it lives in the file ${w.taskFile}: read it.` : w.task}${w.followUps?.length ? `\n\nFollow-ups since:\n${w.followUps.join('\n')}` : ''}${acrossSystems(w)}`;
+${w.taskFile ? `it is long, so it lives in the file ${w.taskFile}: read it${w.followUps?.length ? ' (follow-ups included)' : ''}.` : taskWithFollowUps(w)}${acrossSystems(w)}`;
 
 const subarchitectRules = (w: WorkerLink) => `Your role: SUB-ARCHITECT of one module, under the architect session "${w.architectName}". You hold this module's detail so that the architect doesn't have to. Your context is the scarce thing: spend it on the module's design, and delegate what can be forgotten once its result is known.
 

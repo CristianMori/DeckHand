@@ -363,6 +363,15 @@ export const claudeAdapter: AgentAdapter = {
     if (/Select login method|Sign in to Claude/i.test(screen)) return "Claude's login screen";
     return undefined;
   },
+  // Signed out mid-session (seen 2026-11-04): every prompt is answered with one
+  // line and no hook fires. The reply area says "Login expired · Please run
+  // /login"; the status line under the composer says "Not logged in · Run /login".
+  loggedOut: (screen) => {
+    const tail = screen.split('\n').slice(-14).join('\n');
+    if (/Login expired|Please run \/login/i.test(tail)) return "Claude's login expired (run /login)";
+    if (/Not logged in\s*·\s*Run \/login/i.test(tail)) return 'Claude is not logged in (run /login)';
+    return undefined;
+  },
 
   transcript: {
     file: (cwd, sessionId) => join(CLAUDE_PROJECTS_DIR, encodeProjectDir(cwd), `${sessionId}.jsonl`),

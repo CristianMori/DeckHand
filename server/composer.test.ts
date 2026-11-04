@@ -38,6 +38,18 @@ test('codex: placeholder is empty, typed text is a draft, menus count as busy', 
   assert.match(codexAdapter.startupDialog?.(screen('codex-dialog')) ?? '', /hooks-review dialog/);
 });
 
+test('a signed-out engine is recognized from the screen, a working one is not', () => {
+  // "Login expired · Please run /login" after a prompt (the 2026-11-04 incident), and the status line
+  assert.match(claudeAdapter.loggedOut?.(screen('claude-logged-out')) ?? '', /login expired/i);
+  assert.match(claudeAdapter.loggedOut?.(screen('claude-not-logged-in')) ?? '', /not logged in/i);
+  assert.equal(claudeAdapter.loggedOut?.(screen('claude-empty')), undefined);
+  assert.equal(claudeAdapter.loggedOut?.(screen('claude-draft')), undefined);
+  assert.equal(claudeAdapter.loggedOut?.(screen('claude-hub-working')), undefined);
+  assert.match(codexAdapter.loggedOut?.(screen('codex-logged-out')) ?? '', /not logged in/i);
+  assert.equal(codexAdapter.loggedOut?.(screen('codex-empty')), undefined);
+  assert.equal(codexAdapter.loggedOut?.(screen('codex-draft')), undefined);
+});
+
 function fake(screenBody: string | undefined, agentType = 'claude') {
   const writes: string[] = [];
   const session = {

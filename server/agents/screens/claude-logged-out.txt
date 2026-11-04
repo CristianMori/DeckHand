@@ -1,0 +1,16 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Fable 5 with high effort · API Usage Billing
+ ▝▝   ▝▝   ~\AppData\Local\Temp\screens-claude-XXXXXX
+
+
+
+
+> hello, are you there?
+
+  ⎿  Login expired · Please run /login
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

@@ -874,6 +874,65 @@ test('a 40 KB task travels as a file, and the command line carries the task once
   }
 });
 
+test('a 40 KB follow-up moves task and follow-ups into the task file, so a respawn still fits the command line', async () => {
+  const { dir } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const session = (await swarm.start(architect, { task: 'add b', name: 'small' })).session!;
+  const w = session.worker!;
+  const id = () => ({ hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: session.cwd, hubUrl: 'u', role: 'worker' as const, worker: w });
+  try {
+    // a short follow-up stays inline, as before
+    await swarm.followUp(session, 'also add c');
+    assert.equal(w.taskFile, undefined);
+    assert.match(fleetBriefing(id()), /also add c/);
+    // a 40 KB one outgrows the command line: task and follow-ups move whole to the file
+    const long = `the big follow-up\n${'z'.repeat(40_000)}`;
+    await swarm.followUp(session, long);
+    const file = w.taskFile!;
+    assert.ok(file && existsSync(file));
+    const onDisk = readFileSync(file, 'utf8');
+    assert.ok(onDisk.includes('add b') && onDisk.includes('also add c') && onDisk.includes('the big follow-up') && onDisk.includes('zzzz'));
+    const briefing = fleetBriefing(id());
+    assert.ok(!briefing.includes('zzzz'));
+    assert.ok(briefing.includes(file));
+    assert.ok(briefing.length < 32_000, `a respawn's command line would carry ${briefing.length}`);
+    // once a file exists, a later short follow-up joins it instead of riding the spawn line
+    await swarm.followUp(session, 'and finally d');
+    assert.equal(w.taskFile, file);
+    assert.ok(readFileSync(file, 'utf8').includes('and finally d'));
+    assert.ok(!fleetBriefing(id()).includes('and finally d'));
+    // the worker still hears each follow-up live, through its inbox
+    assert.equal(session.inbox?.length, 3);
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    if (w.taskFile) rmSync(w.taskFile, { force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a signed-out worker tells its lead once that only the user can log in, and is not nudged', async () => {
+  const { manager, swarm, typed } = harness(undefined, { loggedOut: (s) => (s.hubId === 'w1' ? "Claude's login expired (run /login)" : undefined) });
+  const architect = aLead();
+  manager.sessions.set('lead', architect);
+  const w = aMember(architect, 'w1', {}, { state: 'IDLE', stateSince: Date.now() - 60_000 });
+  manager.sessions.set('w1', w);
+  await swarm.tick();
+  assert.equal(w.worker!.status, 'stalled');
+  assert.equal(w.worker!.loggedOutTold, true);
+  await swarm.tick();
+  await swarm.tick();
+  const letters = swarm.inboxOf(architect).filter((l) => /login expired/i.test(l.text));
+  assert.equal(letters.length, 1); // told once, not every tick
+  assert.match(letters[0].text, /it can't work[\s\S]*log in on its machine/i);
+  assert.equal(typed.filter((t) => t.to === 'w1').length, 0); // never nudged
+  // logged in again and given more to do: tracked as working once more
+  await swarm.followUp(w, 'carry on');
+  assert.equal(w.worker!.status, 'working');
+  assert.equal(w.worker!.loggedOutTold, undefined);
+});
+
 function fleetHarness(answer: (conv: string, path: string, body: any) => { status: number; body: any } | undefined) {
   const h = harness();
   const sent: { path: string; body: any }[] = [];
@@ -1226,6 +1285,62 @@ test('a role instance is removed like a discard, whatever it left behind', async
     assert.equal(manager.sessions.has(session.hubId), false);
     assert.equal(existsSync(worktree), false);
     assert.equal(git('branch', '--list', 'role/*').trim(), '');
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the ack still removes a role instance whose hub id changed under it (a hub restart restores with new ids)', async () => {
+  const { dir, git } = repo();
+  const roleDone: { charter?: string }[] = [];
+  const { manager, swarm } = harness(undefined, { roleDone: (_l, w) => void roleDone.push(w) });
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'IDLE' });
+  manager.sessions.set('lead', architect);
+  const head = git('rev-parse', 'HEAD').trim();
+  const session = (await swarm.startRole(architect, aCharter(), { project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true }))!;
+  const w = session.worker!;
+  try {
+    await swarm.report(session, reported(session, 'all suites pass'));
+    await swarm.tick();
+    const [letter] = swarm.inboxOf(architect);
+    // the hub restarts and restores the instance under a new hub id; the letter still names the old one
+    const oldId = session.hubId;
+    manager.sessions.delete(oldId);
+    (session as unknown as { hubId: string }).hubId = 'restored';
+    manager.sessions.set('restored', session);
+    (session as { proc: unknown }).proc = null;
+    swarm.ackInbox(architect, [letter.id]);
+    for (let i = 0; i < 100 && manager.sessions.has('restored'); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(manager.sessions.has('restored'), false); // found by its signing key, not the stale id
+    assert.deepEqual(roleDone.map((r) => r.charter), ['tester']);
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a reported role instance whose letter left its lead\'s inbox is swept away, a kept letter keeps it', async () => {
+  const { dir, git } = repo();
+  const roleDone: { charter?: string }[] = [];
+  const { manager, swarm } = harness(undefined, { roleDone: (_l, w) => void roleDone.push(w) });
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
+  manager.sessions.set('lead', architect);
+  const head = git('rev-parse', 'HEAD').trim();
+  const session = (await swarm.startRole(architect, aCharter(), { project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true }))!;
+  const w = session.worker!;
+  try {
+    await swarm.report(session, reported(session, 'all suites pass'));
+    (session as { proc: unknown }).proc = null;
+    w.reportedAt = Date.now() - 120_000; // past the acked grace, far under the 24 h linger
+    await swarm.tick(); // delivers the report into the lead's inbox
+    await swarm.tick();
+    assert.equal(manager.sessions.has(session.hubId), true); // the letter is still there: not read yet
+    // the ack removed the letter but the removal itself slipped (the incident of 2026-11-04)
+    architect.inbox = undefined;
+    await swarm.tick();
+    assert.equal(manager.sessions.has(session.hubId), false);
+    assert.deepEqual(roleDone.map((r) => r.charter), ['tester']);
   } finally {
     if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
