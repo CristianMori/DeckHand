@@ -11,3 +11,6 @@ hub-env.cmd
 
 # Obsidian's own workspace settings, when docs/architect is opened as a vault
 .obsidian/
+
+# Architect documentation: kept in the folder, never committed (docs/architect-convention.md)
+docs/architect/
