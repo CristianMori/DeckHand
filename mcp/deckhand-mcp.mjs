@@ -385,7 +385,7 @@ const TOOLS = [
   },
   {
     name: 'dh_report',
-    description: 'Worker and sub-architect sessions: finish your task and give the architect the result: what you found or built, whether tests pass, what it must know or decide. Short, 3000 characters at most. Commit first; a report with uncommitted changes is refused unless failed=true. The hub stops you shortly after.',
+    description: 'Worker and sub-architect sessions: finish your task and give the architect the result: what you found or built, whether tests pass, what it must know or decide. Short, 3000 characters at most. End it with a "Docs:" section — what docs/architect should now say, or "Docs: no change, because …" — the lead writes the documents. Commit first; a report with uncommitted changes is refused unless failed=true. The hub stops you shortly after.',
     schema: { result: S('the result, not the story'), failed: B('you could not finish; say why in result') },
     required: ['result'],
     run: async ({ result, failed }) => {

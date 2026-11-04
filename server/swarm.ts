@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { leadMcpChoices, type McpChoices } from './agents/claude.js';
-import { ARCHITECTURE_FILE, architectureInCommit, docsChangedSince, docsMergeDecision, inFlightLine } from './architectDocs.js';
+import { ARCHITECTURE_FILE, docsFingerprint, docsMergeDecision, docsMissing, inFlightLine, readLeadSummary } from './architectDocs.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
 import { osName, projectFolderOf, windowsUnsafeNames } from './etiquette.js';
@@ -347,6 +347,10 @@ export interface HostWorker {
   mcpChoices?: McpChoices;
   /** the public key of who leads it */
   leadKey: string;
+  /** the lead's architecture.md ## Summary: its docs are untracked, so the worker can't read them over there */
+  leadSummary?: string;
+  /** fingerprint of the lead's docs/architect at start, compared by the lead's hub at removal */
+  docsFingerprint?: string;
 }
 
 export type Hop = (machine: string, path: string, body: unknown) => Promise<{ status: number; body: any }>;
@@ -419,9 +423,11 @@ export class Swarm {
     if (!architect.swarmKey) throw new Error('this session has no swarm key yet: restart it, then try again');
     const name = opts.name?.trim() || `${architect.name} ${kind === 'worker' ? 'worker' : 'sub-architect'}`;
     if (opts.machine && opts.machine !== this.deps.fleet?.self) return this.startElsewhere(architect, { ...opts, task, name }, opts.machine);
-    // the architecture a worker branches from has to be written down first; a folder outside git is exempt
+    // the architecture a worker inherits has to be written down first; a folder outside git is exempt
     const base = await repoBase(architect.cwd);
-    if (base) await this.requireArchitecture(architect.cwd, base.baseCommit, base.sub, kind);
+    const docsFolder = this.docsHome(architect);
+    if (base && docsFolder) this.requireArchitecture(docsFolder, kind);
+    const docsFp = docsFolder ? docsFingerprint(docsFolder) : undefined;
     const tree = await createWorktree(architect.cwd, name);
     if (!tree && kind === 'subarchitect') throw new Error('a sub-architect works on a branch of its own, and this folder is not a git repository');
     const mcpChoices = this.leadChoices(architect);
@@ -437,6 +443,9 @@ export class Swarm {
       repo: tree?.repo,
       branch: tree?.branch,
       baseCommit: tree?.baseCommit,
+      docsFolder: docsFp ? docsFolder : undefined,
+      docsFingerprint: docsFp,
+      leadSummary: docsFp ? undefined : architect.worker?.leadSummary,
       mcpChoices,
       leadKey: architect.swarmKey,
       status: 'working',
@@ -460,12 +469,24 @@ export class Swarm {
     return { session, info: undefined, baseDirty: tree?.baseDirty ?? false, isolated: !!tree, inFlight: tree ? inFlightLine(name, tree.branch, task) : undefined };
   }
 
-  /** Starting from a commit without the lead's architecture.md is refused: workers inherit the design from it. */
-  private async requireArchitecture(folder: string, baseCommit: string, sub: string, kind: 'worker' | 'subarchitect') {
-    if (await architectureInCommit(folder, baseCommit, sub)) return;
+  /**
+   * Where the lead's untracked docs/architect lives on this machine: an
+   * architect's own folder, or for a sub-architect its architect's folder,
+   * where the project's one docs folder is. Undefined when that folder is on
+   * another machine (a cross-machine sub-architect): it was checked when the
+   * sub-architect started, and its summary travels in the briefings instead.
+   */
+  private docsHome(lead: HubSession): string | undefined {
+    if (!lead.worker) return lead.cwd;
+    return lead.worker.architectMachine ? undefined : lead.worker.baseFolder;
+  }
+
+  /** Starting without the lead's working architecture.md is refused: workers inherit the design from it. */
+  private requireArchitecture(docsFolder: string, kind: 'worker' | 'subarchitect') {
+    if (!docsMissing(docsFolder)) return;
     throw new Error(
-      `${ARCHITECTURE_FILE} is not in the commit your ${kind === 'worker' ? 'worker' : 'sub-architect'} would branch from. ` +
-      `Write the project's documentation first (docs/architect/: architecture.md, notes/, README.md), commit it, then start it again.`,
+      `${ARCHITECTURE_FILE} does not exist in your working folder, and your ${kind === 'worker' ? 'worker' : 'sub-architect'} inherits the design from it. ` +
+      `Write the project's documentation first (docs/architect/: architecture.md, notes/, README.md — untracked, listed in .gitignore), then start it again.`,
     );
   }
 
@@ -478,7 +499,9 @@ export class Swarm {
     if (fleet.isFrozen(project)) throw new Error(`${project} is frozen to this machine: its code can't go to ${machine}. Run the worker here, or unfreeze it.`);
     const base = await repoBase(architect.cwd);
     if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
-    await this.requireArchitecture(architect.cwd, base.baseCommit, base.sub, opts.kind ?? 'worker');
+    // this hub decides about the docs before asking the host: they live here, in the lead's working folder
+    const docsFolder = this.docsHome(architect);
+    if (docsFolder) this.requireArchitecture(docsFolder, opts.kind ?? 'worker');
     const ask = async (path: string, body: unknown) => {
       const out = await fleet.call(machine, path, body).catch(() => undefined);
       if (!out) throw new Error(`machine not reachable: ${machine}`);
@@ -511,6 +534,10 @@ export class Swarm {
       author: author && { name: author[0], email: author[1] },
       mcpChoices: this.leadChoices(architect),
       leadKey: architect.swarmKey!,
+      // the docs are untracked, so they don't travel with the code: the summary rides the briefing,
+      // and the fingerprint comes back with the worker-merged question at removal
+      leadSummary: docsFolder ? readLeadSummary(docsFolder) : architect.worker?.leadSummary,
+      docsFingerprint: docsFolder ? docsFingerprint(docsFolder) : undefined,
     };
     const info = await ask('/api/worker-host/start', host);
     const branch = str(info?.worker?.branch);
@@ -543,6 +570,8 @@ export class Swarm {
       repo,
       branch: tree.branch,
       baseCommit: h.baseCommit,
+      leadSummary: h.leadSummary,
+      docsFingerprint: h.docsFingerprint,
       mcpChoices: h.mcpChoices,
       leadKey: h.leadKey,
       status: 'working',
@@ -798,16 +827,18 @@ export class Swarm {
     this.deps.save();
   }
 
-  /** Whether the worker's branch is merged into its lead's HEAD, and whether that stretch touched docs/architect/. */
+  /** Whether the worker's branch is merged into its lead's HEAD, and whether the lead's docs/architect moved since it started. */
   private async mergedState(w: WorkerLink): Promise<{ merged: boolean; docsChanged?: boolean }> {
     if (!w.architectMachine) {
       const merged = await gitOk(w.repo!, 'merge-base', '--is-ancestor', w.branch!, 'HEAD');
-      // undefined when it can't be seen (the lead's folder gone, no base): nobody is held to that
-      const docsChanged = merged && w.baseCommit ? await docsChangedSince(w.baseFolder, w.baseCommit).catch(() => undefined) : undefined;
+      // the docs are untracked: the lead's working folder is compared against the fingerprint taken
+      // at start. Undefined when there was nothing to fingerprint: nobody is held to that
+      const docsChanged = merged && w.docsFingerprint && w.docsFolder ? docsFingerprint(w.docsFolder) !== w.docsFingerprint : undefined;
       return { merged, docsChanged };
     }
     const head = await git(w.repo!, 'rev-parse', `refs/heads/${w.branch}`);
-    const out = await this.deps.fleet?.callArchitect(w.architect, 'worker-merged', { commit: head, base: w.baseCommit }).catch(() => undefined);
+    // the lead's hub compares the fingerprint itself: the docs are on its machine
+    const out = await this.deps.fleet?.callArchitect(w.architect, 'worker-merged', { commit: head, docsFp: w.docsFingerprint }).catch(() => undefined);
     if (!out) throw new Error(`can't check whether ${w.branch} was merged: its architect isn't reachable. Pass discard=true to remove it anyway`);
     // an older hub answers without docsChanged, and that stays unchecked
     const body = (out.status === 200 ? out.body : undefined) ?? {};
