@@ -28,7 +28,9 @@ import { startSessionPusher } from './sessionPusher.js';
 import { lastAssistantText } from './transcripts.js';
 import { moveDir, normCwd } from './transcriptIo.js';
 import { loadPersisted, savePersisted } from './persistence.js';
-import { bundleBranch, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, WORKER_BRANCH, type HostWorker } from './swarm.js';
+import { bundleBranch, CREW_BRANCH, dropBranchHere, isMergedHere, mirrorHeads, projectMirror, receiveBranch, receiveCommit, Swarm, swarmEvent, type HostWorker } from './swarm.js';
+import { gitHead, onMerge as roleOnMerge, reportAcked as roleReportAcked, RoleLedger, type RoleTriggerDeps } from './roleTrigger.js';
+import { listCharters, resolveCharter } from './roleCharters.js';
 import { signatureHolds } from '../mcp/swarm-envelope.mjs';
 import { listRecentConversations } from './conversations.js';
 import { Discovery } from './discovery.js';
@@ -156,7 +158,7 @@ for (const rec of loadPersisted()) {
   const s = manager.addExitedRecord(rec);
   s.autoYes = !!rec.autoYes;
   s.alerts = alertChannels(rec.alerts);
-  s.role = rec.role === 'architect' || rec.role === 'subarchitect' || rec.role === 'worker' ? rec.role : undefined;
+  s.role = rec.role === 'architect' || rec.role === 'subarchitect' || rec.role === 'worker' || rec.role === 'role' ? rec.role : undefined;
   s.worker = rec.worker;
   s.toolUse = rec.toolUse;
   s.swarmKey = rec.swarmKey;
@@ -441,6 +443,8 @@ app.get('/api/hub-info', (_req, res) => {
     instanceId: INSTANCE_ID,
     version: VERSION.version,
     build: VERSION.build,
+    // which OS this hub runs on — the role trigger's platform fan-out reads it off the peer list
+    platform: process.platform,
   });
 });
 
@@ -1206,12 +1210,23 @@ app.post('/api/sessions/:id/swarm-message', sessionAction(async (id, req, res) =
 app.post('/api/sessions/:id/worker-merged', sessionAction(async (id, req, res) => {
   const commit = String(req.body?.commit ?? '');
   if (!/^[0-9a-f]{40,64}$/.test(commit)) return res.status(400).json({ error: 'bad commit' });
-  const cwd = manager.sessions.get(id)!.cwd;
+  const lead = manager.sessions.get(id)!;
+  const cwd = lead.cwd;
   const merged = await isMergedHere(cwd, commit);
   // whether docs/architect/ moved since the worker branched — for the removal's docs check
   const base = String(req.body?.base ?? '');
-  const docsChanged = merged && /^[0-9a-f]{40,64}$/.test(base) ? await docsChangedSince(cwd, base).catch(() => undefined) : undefined;
+  const baseOk = /^[0-9a-f]{40,64}$/.test(base);
+  const docsChanged = merged && baseOk ? await docsChangedSince(cwd, base).catch(() => undefined) : undefined;
   res.json({ merged, docsChanged });
+  // a cross-machine merge confirmed: this (the lead's) hub's one sight of it — specialist roles run on it.
+  // The diff that drives them is base..HEAD of this repository, not the worker's own commit.
+  if (merged) {
+    const head = await gitHead(cwd).catch(() => undefined);
+    if (head) {
+      void roleOnMerge(lead, { project: lead.worker?.project ?? projectFolderOf(cwd) ?? folderNameOf(cwd), folder: cwd, base: baseOk ? base : undefined, head }, roleDeps)
+        .catch((err) => console.warn(`[roles] ${errorText(err)}`));
+    }
+  }
 }));
 
 // Signed by the worker's hub with its key: it deletes a branch, so only that worker's, and only once.
@@ -1221,7 +1236,7 @@ app.post('/api/sessions/:id/worker-branch-gone', sessionAction(async (id, req, r
   if (!signatureHolds(env) || env.type !== 'gone' || env.to !== lead.swarmKey) return res.status(403).json({ error: 'bad signature' });
   const pin = lead.crew?.[env.from];
   if (!pin) return res.status(403).json({ error: 'not a worker of this session' });
-  if (pin.branch && WORKER_BRANCH.test(pin.branch)) await dropBranchHere(lead.cwd, pin.branch, !!env.body.discard).catch(() => {});
+  if (pin.branch && CREW_BRANCH.test(pin.branch)) await dropBranchHere(lead.cwd, pin.branch, !!env.body.discard).catch(() => {});
   delete lead.crew![env.from];
   res.json({ ok: true });
 }));
@@ -1303,6 +1318,24 @@ app.post('/api/sessions/:id/remove-worker', sessionAction(async (id, req, res) =
     res.json({ ok: true });
   } catch (err) {
     swarmError(res, 409, err);
+  }
+}));
+
+// Run a specialist role by hand against a lead's current HEAD — the dashboard's
+// ROLES "run now" button, or the architect itself. A manual run skips the cost
+// controls (skip rules, ledger, cooldown) and tells the instance to inspect the
+// current state rather than a diff. Answers what it started and skipped and why.
+app.post('/api/sessions/:id/run-role', sessionAction(async (id, req, res) => {
+  if (notTheUser() && !isCaller(id)) return res.status(403).json({ error: 'roles are run by the user, or by the session itself' });
+  const lead = manager.sessions.get(id)!;
+  if (lead.role !== 'architect' && lead.role !== 'subarchitect') return res.status(400).json({ error: 'not an architect' });
+  const role = typeof req.body?.role === 'string' && req.body.role ? req.body.role : undefined;
+  try {
+    const head = await gitHead(lead.cwd);
+    const project = lead.worker?.project ?? projectFolderOf(lead.cwd) ?? folderNameOf(lead.cwd);
+    res.json(await roleOnMerge(lead, { project, folder: lead.cwd, head, manual: true, role }, roleDeps));
+  } catch (err) {
+    res.status(400).json({ error: errorText(err) });
   }
 }));
 
@@ -1863,8 +1896,27 @@ const swarm = new Swarm(manager, {
     },
     isFrozen,
   },
+  // specialist roles (roleTrigger.ts), injected to avoid an import cycle
+  onMerge: (lead, ev) => void roleOnMerge(lead, ev, roleDeps).catch((err) => console.warn(`[roles] ${ev.project}: ${errorText(err)}`)),
+  roleDone: (lead, w) => void roleReportAcked(lead, w, roleDeps).catch((err) => console.warn(`[roles] ${errorText(err)}`)),
 });
 setInterval(() => void swarm.tick(), 3000).unref();
+
+// What the role trigger needs from the rest of the hub: charters, platforms, who is running, the ledger.
+const roleDeps: RoleTriggerDeps<HubSession> = {
+  names: () => listCharters().map((c) => c.name),
+  resolve: (name, projectText) => resolveCharter(name, projectText),
+  startRole: (lead, charter, trig) => swarm.startRole(lead, charter, trig),
+  seats: () => [
+    { platform: process.platform, self: true },
+    ...federation.connectedPeers().flatMap((p) => (p.info.platform ? [{ platform: p.info.platform, machine: p.info.machine }] : [])),
+  ],
+  liveInstance: (project, role, platform) =>
+    mergedList().some((s) =>
+      s.worker?.charter === role && s.worker.project === project && s.worker.platform === platform
+      && !['reported', 'failed'].includes(s.worker.status)),
+  ledger: new RoleLedger(join(DATA_DIR, 'role-runs.json')),
+};
 
 async function answerFromText(session: HubSession, episode: unknown, text: string, via: 'text' | 'email' = 'text'): Promise<string | undefined> {
   const refusal = () => textReplyRefusal(session, episode, isProtectedPrompt(session));

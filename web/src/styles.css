@@ -570,6 +570,7 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .role-tag.architect { color: var(--bg); background: var(--amber); }
 .role-tag.subarchitect { color: var(--amber); border: 1px solid var(--amber-deep); }
 .role-tag.worker { color: var(--ink-dim); border: 1px solid var(--line-bright); }
+.role-tag.role { color: var(--ink-dim); border: 1px dashed var(--line-bright); }
 .card.nested { margin-left: 18px; }
 .card.depth-2 { margin-left: 36px; }
 .card.nested::before {

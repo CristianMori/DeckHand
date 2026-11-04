@@ -70,7 +70,7 @@ export interface SessionInfo {
   toolUse?: Record<string, number>;
 }
 
-export type SessionRole = 'architect' | 'subarchitect' | 'worker';
+export type SessionRole = 'architect' | 'subarchitect' | 'worker' | 'role';
 
 /** A worker's or sub-architect's tie to who leads it, its task and how it went (see swarm.ts). */
 export type { SwarmEnvelope } from '../mcp/swarm-envelope.mjs';
@@ -92,6 +92,10 @@ export interface WorkerLink {
   platform?: string;
   /** its branch has commits the architect's repo doesn't have yet */
   sendBranch?: boolean;
+  /** a role instance: the name of the charter it runs (tester, doc-keeper, …) */
+  charter?: string;
+  /** a role instance: the merge head it reports on — its checkout */
+  triggerHead?: string;
   /** its own checkout and branch; absent when the folder is not a git repo */
   worktree?: string;
   repo?: string;
@@ -129,7 +133,7 @@ export interface SwarmPacket {
 /** A session this one leads: its public key, pinned when this session started it. */
 export interface CrewPin {
   name: string;
-  kind: 'worker' | 'subarchitect';
+  kind: 'worker' | 'subarchitect' | 'role';
   hubId: string;
   machine?: string;
   branch?: string;
@@ -149,7 +153,7 @@ export interface SwarmLetter {
   /** what it is, for the dashboards' event; set when it is filed, never parsed back out of the text */
   kind?: SwarmLetterKind;
   /** who sent it, from the pin or the worker link, never from the sender's words */
-  from?: { name: string; hubId?: string; kind?: 'worker' | 'subarchitect' | 'architect' };
+  from?: { name: string; hubId?: string; kind?: 'worker' | 'subarchitect' | 'architect' | 'role' };
   /** who and what, in the hub's words: comes from the pin, not from the sender */
   header: string;
   /** the sender's own text */

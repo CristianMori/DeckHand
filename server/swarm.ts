@@ -9,7 +9,8 @@ import { leadMcpChoices, type McpChoices } from './agents/claude.js';
 import { ARCHITECTURE_FILE, architectureInCommit, docsChangedSince, docsMergeDecision, inFlightLine } from './architectDocs.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
-import { osName, projectFolderOf, windowsUnsafeNames } from './etiquette.js';
+import { osName, projectFolderOf, renderRoleTask, windowsUnsafeNames, type RoleTrigFacts } from './etiquette.js';
+import type { RoleCharter } from './roleCharters.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import { dropSwarmKey, sealAs } from './swarmKeys.js';
 import type { CrewPin, SessionRole, SwarmEnvelope, SwarmLetter, SwarmLetterKind, SwarmPacket, WorkerLink } from './types.js';
@@ -61,6 +62,11 @@ const SEEN_MAX = 200;
 const UNKNOWN_KEY_MAX = 20;
 
 export const WORKER_BRANCH = /^worker\/[a-z0-9-]+$/;
+export const ROLE_BRANCH = /^role\/[a-z0-9-]+$/;
+/** Any branch the swarm hands out: a worker's or a role instance's. */
+export const CREW_BRANCH = /^(worker|role)\/[a-z0-9-]+$/;
+/** A finished role instance left unread is still tidied away eventually. */
+const ROLE_LINGER_MS = 24 * 3600_000;
 const firstKeyChars = (key: string) => key.slice(0, 8);
 const remember = (seen: string[] | undefined, id: string) => [...(seen ?? []), id].slice(-SEEN_MAX);
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -87,6 +93,19 @@ export function swarmEvent(to: Pick<HubSession, 'hubId'>, l: SwarmLetter) {
 export const WORKER_NUDGE =
   'Your turn ended without a report. If the task is done, commit and call dh_report. If you are blocked, call dh_ask_architect. Otherwise carry on.';
 
+export const ROLE_NUDGE =
+  'Your turn ended without a report. If your check is done, call dh_report with what you found and where. If you are blocked, call dh_ask_architect. Otherwise carry on. Never fix or commit anything.';
+
+/** What the lead is handed to spawn one instance, besides the charter. */
+export interface RoleStart extends RoleTrigFacts {
+  /** another fleet machine to run it on (platform fan-out) */
+  machine?: string;
+  /** shown in the instance's name when one merge fans out per OS: "Tester (linux)" */
+  platformLabel?: string;
+}
+
+const ROLE_PROMPT = 'Carry out your role charter: it is in your briefing, under "Your task". Finish with dh_report.';
+
 /** A project's name holds on every machine: its folder name under the projects root. */
 function projectName(cwd: string) {
   return projectFolderOf(cwd) ?? folderNameOf(cwd);
@@ -103,6 +122,7 @@ function slug(name: string) {
 export function refusedLead(lead: SessionRole | undefined, kind: 'worker' | 'subarchitect'): string | undefined {
   if (lead === 'architect') return undefined;
   if (lead === 'subarchitect') return kind === 'worker' ? undefined : 'a sub-architect can only have workers';
+  if (lead === 'role') return 'a role instance checks and reports: it starts nobody';
   return `only an architect starts ${kind === 'worker' ? 'workers' : 'sub-architects'}`;
 }
 
@@ -171,11 +191,11 @@ async function repoBase(folder: string) {
   return { top, baseCommit, sub, baseDirty: !!(await git(folder, 'status', '--porcelain')) };
 }
 
-async function addWorktree(repo: string, baseCommit: string, name: string, root: string) {
+async function addWorktree(repo: string, baseCommit: string, name: string, root: string, kind: 'worker' | 'role' = 'worker') {
   mkdirSync(root, { recursive: true });
   const dir = `${slug(name)}-${randomBytes(3).toString('hex')}`;
   const worktree = join(root, dir);
-  const branch = `worker/${dir}`;
+  const branch = `${kind}/${dir}`;
   await git(repo, 'worktree', 'add', '-b', branch, worktree, baseCommit);
   return { worktree, branch };
 }
@@ -299,7 +319,11 @@ export interface HostWorker {
   architectName: string;
   architectMachine: string;
   architectPlatform: string;
-  kind?: 'worker' | 'subarchitect';
+  kind?: 'worker' | 'subarchitect' | 'role';
+  /** a role instance: the charter name — the task already carries its rendered text */
+  charter?: string;
+  /** a role instance: the merge head it reports on (= baseCommit) */
+  triggerHead?: string;
   baseFolder: string;
   author?: { name: string; email: string };
   /** project .mcp.json servers the lead enabled, read on its own machine */
@@ -343,7 +367,11 @@ export class Swarm {
       letterFiled?: (to: HubSession, letter: SwarmLetter) => void;
       fleet?: SwarmFleet;
       /** every session in the fleet: a session's workers can be on other machines */
-      fleetSessions?: () => { claudeSessionId: string; worker?: WorkerLink }[];
+      fleetSessions?: () => { claudeSessionId: string; hubId?: string; worker?: WorkerLink }[];
+      /** a merged branch was confirmed at removal: the role trigger runs on it (injected to avoid an import cycle) */
+      onMerge?: (lead: HubSession, ev: { project: string; folder: string; base?: string; head: string }) => void;
+      /** a role instance's report was acked: a pending head for its (project, role, platform) may fire */
+      roleDone?: (lead: HubSession, w: Pick<WorkerLink, 'charter' | 'project' | 'platform'>) => void;
     },
   ) {
     manager.on('removed', (s: HubSession) => void this.tidyAfterRemoval(s));
@@ -358,10 +386,11 @@ export class Swarm {
     return [...this.manager.sessions.values()].filter((s) => s.worker?.architect === architect.claudeSessionId);
   }
 
-  /** Those it leads, on any machine. */
+  /** Those it leads, on any machine. Role instances are left out: they lead nobody,
+   *  and a tester running on a lead's merge must never gate that lead's own report or removal. */
   private crewOf(lead: HubSession) {
     const all = this.deps.fleetSessions?.() ?? [...this.manager.sessions.values()];
-    return all.filter((s) => s.worker && s.worker.architect === lead.claudeSessionId);
+    return all.filter((s) => s.worker && !s.worker.charter && s.worker.architect === lead.claudeSessionId);
   }
 
   async start(architect: HubSession, opts: StartWorker) {
@@ -433,13 +462,7 @@ export class Swarm {
     const base = await repoBase(architect.cwd);
     if (!base) throw new Error(`${project} is not a git repository, so nothing can carry its code to ${machine}. Run the worker here.`);
     await this.requireArchitecture(architect.cwd, base.baseCommit, base.sub, opts.kind ?? 'worker');
-    const ask = async (path: string, body: unknown) => {
-      const out = await fleet.call(machine, path, body).catch(() => undefined);
-      if (!out) throw new Error(`machine not reachable: ${machine}`);
-      if (out.status === 404) throw new Error(`${machine} doesn't know about workers yet: update its hub`);
-      if (out.status !== 200) throw new Error(`${machine}: ${out.body?.error ?? out.status}`);
-      return out.body;
-    };
+    const ask = this.askHost(fleet, machine);
     const { heads } = await ask('/api/worker-host/heads', { project });
     const bytes = await bundleCommit(base.top, base.baseCommit, heads);
     if (bytes) {
@@ -473,21 +496,126 @@ export class Swarm {
     return { session: undefined, info, baseDirty: base.baseDirty, isolated: true, inFlight: inFlightLine(opts.name, branch, opts.task) };
   }
 
+  /** One call to the hub that will host a worker or role instance. */
+  private askHost(fleet: SwarmFleet, machine: string) {
+    return async (path: string, body: unknown) => {
+      const out = await fleet.call(machine, path, body).catch(() => undefined);
+      if (!out) throw new Error(`machine not reachable: ${machine}`);
+      if (out.status === 404) throw new Error(`${machine} doesn't know about workers yet: update its hub`);
+      if (out.status !== 200) throw new Error(`${machine}: ${out.body?.error ?? out.status}`);
+      return out.body;
+    };
+  }
+
+  /**
+   * A role instance: a session the hub starts on the lead's behalf when a merge
+   * lands (roleTrigger.ts). A worker that never merges — its worktree sits AT
+   * the merge head on a role/* branch, it reports what it finds and is removed
+   * when the lead acks the report. No architecture check: the lead's own merge
+   * already passed it.
+   */
+  async startRole(lead: HubSession, charter: RoleCharter, trig: RoleStart) {
+    if (lead.role !== 'architect' && lead.role !== 'subarchitect') throw new Error('a role instance runs for an architect or sub-architect');
+    if (!lead.swarmKey) throw new Error('this session has no swarm key yet: restart it, then try again');
+    const name = trig.platformLabel ? `${charter.title} (${trig.platformLabel})` : charter.title;
+    const task = renderRoleTask(charter, trig);
+    if (trig.machine && trig.machine !== this.deps.fleet?.self) return this.startRoleElsewhere(lead, charter, trig, trig.machine, name, task);
+    const base = await repoBase(lead.cwd);
+    if (!base) throw new Error('not a git repository: a role instance needs a commit to check out');
+    const tree = await addWorktree(base.top, trig.head, name, WORKTREES, 'role');
+    const worker: WorkerLink = {
+      architect: lead.claudeSessionId,
+      architectName: lead.name,
+      task,
+      baseFolder: lead.cwd,
+      project: trig.project,
+      platform: process.platform,
+      worktree: tree.worktree,
+      repo: base.top,
+      branch: tree.branch,
+      baseCommit: trig.head,
+      charter: charter.name,
+      triggerHead: trig.head,
+      mcpChoices: this.leadChoices(lead),
+      leadKey: lead.swarmKey,
+      status: 'working',
+      startedAt: Date.now(),
+    };
+    const session = this.manager.create({
+      cwd: base.sub ? join(tree.worktree, base.sub) : tree.worktree,
+      name,
+      agentType: lead.agentType,
+      model: charter.model ?? lead.model,
+      initialPrompt: ROLE_PROMPT,
+      role: 'role',
+      worker,
+    });
+    session.autoYes = true; // unattended by design; it changes nothing
+    this.pin(lead, session.swarmKey, { name, kind: 'role', hubId: session.hubId, branch: tree.branch });
+    this.deps.promptFrom(session, `session:${lead.hubId}`, true);
+    this.manager.emit('change', session);
+    this.deps.save();
+    return session;
+  }
+
+  /** The tester on another OS: the merge head travels as a bundle, like a worker's base. */
+  private async startRoleElsewhere(lead: HubSession, charter: RoleCharter, trig: RoleStart, machine: string, name: string, task: string) {
+    const fleet = this.deps.fleet;
+    if (!fleet) throw new Error('this hub has no fleet to reach');
+    if (fleet.isFrozen(trig.project)) throw new Error(`${trig.project} is frozen to this machine: its code can't go to ${machine}`);
+    const base = await repoBase(lead.cwd);
+    if (!base) throw new Error('not a git repository: a role instance needs a commit to check out');
+    const ask = this.askHost(fleet, machine);
+    const { heads } = await ask('/api/worker-host/heads', { project: trig.project });
+    const bytes = await bundleCommit(base.top, trig.head, heads);
+    if (bytes) {
+      const sent = await fleet.upload(machine, `/api/worker-host/commit?project=${encodeURIComponent(trig.project)}`, bytes).catch(() => undefined);
+      if (sent?.status !== 200) throw new Error(`could not send the code to ${machine}: ${sent?.body?.error ?? 'not reachable'}`);
+    }
+    const host: HostWorker = {
+      task,
+      name,
+      agentType: lead.agentType,
+      model: charter.model ?? lead.model,
+      project: trig.project,
+      baseCommit: trig.head,
+      sub: base.sub.replace(/\\/g, '/'),
+      architect: lead.claudeSessionId,
+      architectName: lead.name,
+      architectMachine: fleet.self,
+      architectPlatform: process.platform,
+      kind: 'role',
+      charter: charter.name,
+      triggerHead: trig.head,
+      baseFolder: lead.cwd,
+      mcpChoices: this.leadChoices(lead),
+      leadKey: lead.swarmKey!,
+    };
+    const info = await ask('/api/worker-host/start', host);
+    const branch = str(info?.worker?.branch);
+    if (typeof info?.swarmKey !== 'string' || !ROLE_BRANCH.test(branch)) throw new Error(`${machine} doesn't host role instances yet: update its hub`);
+    this.pin(lead, info.swarmKey, { name, kind: 'role', hubId: str(info.hubId), machine, branch });
+    this.deps.save();
+    return undefined;
+  }
+
   /** On the worker's hub: the code has arrived, so give it a checkout and start. */
   async hostWorker(h: HostWorker) {
     const repo = await projectMirror(h.project);
     if (h.author?.name) await git(repo, 'config', 'user.name', h.author.name);
     if (h.author?.email) await git(repo, 'config', 'user.email', h.author.email);
-    const tree = await addWorktree(repo, h.baseCommit, h.name, WORKTREES);
+    const tree = await addWorktree(repo, h.baseCommit, h.name, WORKTREES, h.kind === 'role' ? 'role' : 'worker');
     const session = this.manager.create({
       cwd: h.sub ? join(tree.worktree, h.sub) : tree.worktree,
       name: h.name,
       agentType: h.agentType,
       model: h.model,
       permissionMode: h.permissionMode,
-      initialPrompt: h.task,
-      role: h.kind === 'subarchitect' ? 'subarchitect' : 'worker',
+      initialPrompt: h.kind === 'role' ? ROLE_PROMPT : h.task,
+      role: h.kind === 'subarchitect' ? 'subarchitect' : h.kind === 'role' ? 'role' : 'worker',
       worker: {
+        charter: h.charter,
+        triggerHead: h.triggerHead,
         architect: h.architect,
         architectName: h.architectName,
         architectMachine: h.architectMachine,
@@ -562,9 +690,17 @@ export class Swarm {
 
   /** What a message from the crew says, with the who taken from the pin, not from the sender. */
   private fromCrew(pin: CrewPin, { env, facts }: SwarmPacket): Pick<SwarmLetter, 'header' | 'said' | 'footer'> {
-    const kind = pin.kind === 'subarchitect' ? 'sub-architect' : 'worker';
+    const kind = pin.kind === 'subarchitect' ? 'sub-architect' : pin.kind === 'role' ? 'role instance' : 'worker';
     const place = facts?.machine ? ` on ${facts.machine}, ${osName(facts.platform)}` : '';
     const who = `${kind} "${pin.name}" (${pin.hubId})${place}`;
+    if (env.type === 'report' && pin.kind === 'role') {
+      const head = str(env.body.head).slice(0, 7);
+      return {
+        header: `${who} ${env.body.failed ? 'could not finish its check' : 'reports'}${head ? ` on merge ${head}` : ''}.`,
+        said: str(env.body.result),
+        footer: 'Its branch is never merged. dh_remove_worker when read; it is also removed automatically when you ack this letter.',
+      };
+    }
     if (env.type === 'report') {
       const failed = !!env.body.failed;
       const commits = facts?.commits ?? 0;
@@ -595,10 +731,33 @@ export class Swarm {
   }
 
   ackInbox(session: HubSession, ids: string[]) {
+    const acked = (session.inbox ?? []).filter((l) => ids.includes(l.id));
     session.inbox = session.inbox?.filter((l) => !ids.includes(l.id));
     if (!session.inbox?.length) session.inbox = undefined;
     this.manager.emit('change', session); // the card's inboxCount moves
     this.deps.save();
+    // a role instance is done the moment its report is read: removed on the ack
+    for (const l of acked) {
+      if (l.from?.kind === 'role' && (l.kind === 'report' || l.kind === 'failed')) void this.roleReportAcked(session, l.from.hubId);
+    }
+  }
+
+  /** The lead read a role instance's report: the instance goes, and a pending merge for its slot may fire. */
+  private async roleReportAcked(lead: HubSession, hubId: string | undefined) {
+    if (!hubId) return;
+    const local = this.manager.sessions.get(hubId);
+    const w = local?.worker ?? this.deps.fleetSessions?.().find((s) => s.hubId === hubId)?.worker;
+    if (local?.worker?.charter) {
+      await this.remove(local, true).catch((err) => console.warn(`[swarm] role instance ${local.name} not removed: ${err}`));
+    } else if (!local) {
+      // on another machine: tell its hub, signed as the lead, the way dh_remove_worker would
+      const entry = Object.entries(lead.crew ?? {}).find(([, pin]) => pin.hubId === hubId && pin.kind === 'role');
+      if (entry && entry[1].machine && lead.swarmKey) {
+        const env = sealAs(lead.swarmKey, { type: 'remove', to: entry[0], body: { discard: true } });
+        await this.deps.fleet?.call(entry[1].machine, `/api/sessions/${encodeURIComponent(hubId)}/lead-message`, { env }).catch((err) => console.warn(`[swarm] role instance ${hubId} on ${entry[1].machine} not removed: ${err}`));
+      }
+    }
+    if (w?.charter) this.deps.roleDone?.(lead, { charter: w.charter, project: w.project, platform: w.platform });
   }
 
   /** On the worker's hub: something from its lead. Refused unless the key pinned when it started signed it. */
@@ -641,14 +800,15 @@ export class Swarm {
       throw new Error(`too long (${text.length} characters, the limit is ${REPORT_MAX}). Give the result, not the story: the transcript stays readable.`);
     }
     const facts = await worktreeFacts(w);
-    if (facts.dirty && !failed) throw new Error('uncommitted changes in your worktree: commit them first, or report with failed=true to say they should not be taken');
+    // a role instance's test runs leave artifacts, and its work is never taken: dirt doesn't block it
+    if (facts.dirty && !failed && !w.charter) throw new Error('uncommitted changes in your worktree: commit them first, or report with failed=true to say they should not be taken');
     if (w.worktree && (await git(w.worktree, 'rev-parse', 'HEAD')) !== str(env.body.head)) throw new Error('your branch moved after this report was signed: report again');
     w.status = failed ? 'failed' : 'reported';
     w.result = text;
     w.reportedAt = Date.now();
     w.commits = facts.commits;
     w.files = facts.files;
-    if (w.architectMachine && facts.commits) w.sendBranch = true;
+    if (w.architectMachine && facts.commits && !w.charter) w.sendBranch = true; // a role branch is never fetched
     const unsafe = w.architectPlatform === 'win32' && process.platform !== 'win32' ? windowsUnsafeNames(await changedFiles(w)) : [];
     this.send(session, {
       env,
@@ -712,10 +872,14 @@ export class Swarm {
   async remove(session: HubSession, discard: boolean) {
     const w = session.worker;
     if (!w) throw new Error('not a worker');
+    // a role instance's branch is never merged and its work never taken: removal is always a discard,
+    // with no merged or docs checks, and it leads nobody (crewOf leaves role instances out anyway)
+    const role = !!w.charter;
     // its workers have their checkouts in its repository, and they report to it
-    const crew = this.crewOf(session);
+    const crew = role ? [] : this.crewOf(session);
     if (crew.length) throw new Error(`it still has ${crew.length} worker${crew.length === 1 ? '' : 's'}: remove ${crew.length === 1 ? 'it' : 'them'} first`);
-    if (w.worktree && w.repo && !discard) {
+    let mergedWithCommits = false;
+    if (w.worktree && w.repo && !discard && !role) {
       const facts = await worktreeFacts(w).catch(() => undefined);
       if (facts?.dirty) throw new Error('its worktree has uncommitted changes: pass discard=true to throw them away');
       if (facts?.commits) {
@@ -724,6 +888,7 @@ export class Swarm {
         // a merge is only done once the documentation says so: refused once, a second call goes through
         const refusal = docsMergeDecision(this.docsReminded, session.hubId, { merged, docsChanged, report: w.result });
         if (refusal) throw new Error(refusal);
+        mergedWithCommits = true;
       }
     }
     // a running process holds its folder on Windows, and git could not remove it
@@ -732,10 +897,10 @@ export class Swarm {
       for (let i = 0; i < 24 && session.proc; i++) await new Promise((r) => setTimeout(r, 250));
     }
     // merged in the architect's repo, not the mirror here: checked above, so the mirror's copy can go
-    await this.dropWorktree(w, discard || !!w.architectMachine);
+    await this.dropWorktree(w, role || discard || !!w.architectMachine);
     // the copy it fetched has served its purpose too
     if (w.architectMachine && w.branch && session.swarmKey && w.leadKey) {
-      const env = sealAs(session.swarmKey, { type: 'gone', to: w.leadKey, body: { discard } });
+      const env = sealAs(session.swarmKey, { type: 'gone', to: w.leadKey, body: { discard: discard || role } });
       await this.deps.fleet?.callArchitect(w.architect, 'worker-branch-gone', { env }).catch(() => {});
     }
     const lead = this.manager.byClaudeSessionId(w.architect);
@@ -743,6 +908,12 @@ export class Swarm {
     w.worktree = undefined; // nothing left for the card's removal to tidy
     this.manager.remove(session.hubId);
     this.deps.save();
+    // a merged branch confirmed at removal is this hub's one sight of a merge: the role trigger runs on it.
+    // Cross-machine merges are seen by the lead's hub in its worker-merged route instead.
+    if (mergedWithCommits && !w.architectMachine && lead) {
+      const head = await git(lead.cwd, 'rev-parse', 'HEAD').catch(() => undefined);
+      if (head) this.deps.onMerge?.(lead, { project: w.project ?? projectName(lead.cwd), folder: lead.cwd, base: w.baseCommit, head });
+    }
   }
 
   /** Whether the worker's branch is merged into its lead's HEAD, and whether that stretch touched docs/architect/. */
@@ -772,10 +943,13 @@ export class Swarm {
     dropSwarmKey(s.swarmKey);
     const w = s.worker;
     if (!w?.worktree) return;
-    const facts = await worktreeFacts(w).catch(() => undefined);
-    if (!facts || facts.dirty) return;
+    // a role instance's worktree holds nothing worth keeping, however dirty its test runs left it
+    if (!w.charter) {
+      const facts = await worktreeFacts(w).catch(() => undefined);
+      if (!facts || facts.dirty) return;
+    }
     // the process has only just been told to stop, and it holds the folder on Windows
-    setTimeout(() => void this.dropWorktree(w, false), s.proc ? 4000 : 0);
+    setTimeout(() => void this.dropWorktree(w, !!w.charter), s.proc ? 4000 : 0);
   }
 
   /** It never got to work: a startup dialog nobody is at the keyboard for is on its screen. */
@@ -803,6 +977,13 @@ export class Swarm {
   async tick(now = Date.now()) {
     const workers = [...this.manager.sessions.values()].filter((s) => s.worker);
     for (const s of workers) await this.step(s, now).catch((err) => console.warn(`[swarm] ${s.name}: ${err}`));
+    // a finished role instance whose report nobody acked still goes, a day later
+    for (const s of workers) {
+      const w = s.worker!;
+      if (!w.charter || !['reported', 'failed'].includes(w.status)) continue;
+      if (now - (w.reportedAt ?? w.startedAt) < ROLE_LINGER_MS) continue;
+      await this.remove(s, true).catch((err) => console.warn(`[swarm] ${s.name}: ${err}`));
+    }
     for (const s of workers) {
       if (!s.worker?.outbox?.length) continue;
       const lead = this.manager.byClaudeSessionId(s.worker.architect);
@@ -891,7 +1072,7 @@ export class Swarm {
         if (dialog) return this.stuckAtDialog(s, dialog);
         w.nudgedAt = now;
         this.deps.promptFrom(s, 'session:architect', false);
-        await this.deps.typePrompt(s, WORKER_NUDGE);
+        await this.deps.typePrompt(s, w.charter ? ROLE_NUDGE : WORKER_NUDGE);
         return;
       }
       case 'stalled': {

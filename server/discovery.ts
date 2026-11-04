@@ -11,6 +11,8 @@ export interface DiscoveredHub {
   ip: string;
   port: number;
   url: string;
+  /** the hub's process.platform; absent on hubs too old to say (they then host no role fan-out) */
+  platform?: string;
 }
 
 interface TailscaleDevice {
@@ -36,10 +38,10 @@ async function probe(ip: string, port: number): Promise<DiscoveredHub | null> {
   try {
     const res = await fetch(`http://${ip}:${port}/api/hub-info`, { signal: ctrl.signal });
     if (!res.ok) return null;
-    const info = (await res.json()) as { hub?: string; machine?: string; instanceId?: string };
+    const info = (await res.json()) as { hub?: string; machine?: string; instanceId?: string; platform?: string };
     // accept the pre-rename identity during the fleet's transition window
   if ((info.hub !== 'deckhand' && info.hub !== 'claude-hub') || !info.machine || !info.instanceId) return null;
-    return { machine: info.machine, instanceId: info.instanceId, ip, port, url: `http://${ip}:${port}` };
+    return { machine: info.machine, instanceId: info.instanceId, ip, port, url: `http://${ip}:${port}`, platform: typeof info.platform === 'string' ? info.platform : undefined };
   } catch {
     return null;
   } finally {

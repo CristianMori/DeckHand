@@ -5,12 +5,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, windowsUnsafeNames } from './etiquette.js';
+import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, renderRoleTask, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
 import { HubSession, type SessionManager } from './sessionManager.js';
 import { reachableByAgents } from './agentAccess.js';
 import { dropSwarmKey, ensureSwarmKey, sealAs } from './swarmKeys.js';
 import { bundleBranch, bundleCommit, createWorktree, mirrorHeads, projectMirror, receiveBranch, receiveCommit, refusedLead, REPORT_MAX, Swarm, swarmEvent, workerStep, worktreeFacts } from './swarm.js';
+import type { RoleCharter } from './roleCharters.js';
 import type { WorkerLink } from './types.js';
 
 const link = (over: Partial<WorkerLink> = {}): WorkerLink => ({
@@ -139,7 +140,7 @@ function repo(withDocs = true) {
   return { dir, git };
 }
 
-function harness(stuckAt?: (s: HubSession) => string | undefined) {
+function harness(stuckAt?: (s: HubSession) => string | undefined, extra: Partial<ConstructorParameters<typeof Swarm>[1]> = {}) {
   const manager = Object.assign(new EventEmitter(), {
     sessions: new Map<string, HubSession>(),
     create(opts: { cwd: string; name: string; role: string; worker: WorkerLink; agentType: string }) {
@@ -166,9 +167,23 @@ function harness(stuckAt?: (s: HubSession) => string | undefined) {
     stuckAt,
     save() {},
     letterFiled: (to, letter) => void events.push(swarmEvent(to, letter)),
+    ...extra,
   });
   return { manager, swarm, typed, asked, events };
 }
+
+const aCharter = (over: Partial<RoleCharter> = {}): RoleCharter => ({
+  name: 'tester',
+  title: 'Tester',
+  on: 'merge',
+  paths: [],
+  platforms: 'any',
+  skip: {},
+  enabled: true,
+  body: 'Run the tests and report failures.',
+  layers: ['builtin'],
+  ...over,
+});
 
 /** A worker's report, signed the way its MCP server signs one. */
 const reported = (s: HubSession, result: string, failed = false) =>
@@ -220,7 +235,8 @@ test('a folder that is not a git repo has no worktree to give', async () => {
 
 test('from task to report to merge to removal', async () => {
   const { dir, git } = repo();
-  const { manager, swarm, typed, asked } = harness();
+  const merges: { project: string; folder: string; base?: string; head: string }[] = [];
+  const { manager, swarm, typed, asked } = harness(undefined, { onMerge: (_l, ev) => void merges.push(ev) });
   const architect = aLead({ cwd: dir, agentType: 'claude', state: 'WORKING' });
   manager.sessions.set('lead', architect);
   const started = await swarm.start(architect, { task: 'add b', name: 'adder' });
@@ -287,13 +303,19 @@ test('from task to report to merge to removal', async () => {
     git('merge', '-q', w.branch!);
     // merged, but the merge touched no documentation and the report gave no reason: refused once
     await assert.rejects(swarm.remove(session, false), /refused this removal once/);
-    const { worktree, branch } = w;
+    assert.equal(merges.length, 0); // a refused removal fires no role trigger
+    const { worktree, branch, baseCommit } = w;
     // the deliberate second call goes through
     await swarm.remove(session, false);
     assert.equal(manager.sessions.has(session.hubId), false);
     assert.equal(existsSync(worktree!), false);
     assert.equal(git('branch', '--list', branch!).trim(), '');
     assert.ok(existsSync(join(dir, 'b.txt')));
+    // the confirmed merge is the one sight of it: the role trigger fires with the merge diff's ends
+    assert.equal(merges.length, 1);
+    assert.equal(merges[0].base, baseCommit);
+    assert.equal(merges[0].head, git('rev-parse', 'HEAD').trim());
+    assert.equal(merges[0].folder, dir);
   } finally {
     if (session.worker?.worktree) rmSync(session.worker.worktree, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
@@ -835,6 +857,129 @@ test('a worker branches from its sub-architect, and merges into its branch, not 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- specialist role instances: workers that never merge
+
+test('a role instance checks out the merge head on a role/ branch, reports dirty, and the ack removes it', async () => {
+  const { dir, git } = repo();
+  const roleDone: { charter?: string; project?: string; platform?: string }[] = [];
+  const { manager, swarm } = harness(undefined, { roleDone: (_l, w) => void roleDone.push(w) });
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'IDLE' });
+  manager.sessions.set('lead', architect);
+  // a second commit plays the merge head the instance must be given, not the first
+  writeFileSync(join(dir, 'm.txt'), 'm\n');
+  git('add', '.');
+  git('commit', '-qm', 'the merge');
+  const head = git('rev-parse', 'HEAD').trim();
+  const session = (await swarm.startRole(architect, aCharter(), {
+    project: 'p', base: `${'0'.repeat(40)}`, head, files: ['m.txt'], insertions: 1, deletions: 0,
+  }))!;
+  const w = session.worker!;
+  try {
+    assert.equal(session.role, 'role');
+    assert.equal(session.autoYes, true);
+    assert.equal(w.charter, 'tester');
+    assert.equal(w.triggerHead, head);
+    assert.match(w.branch!, /^role\/tester-[0-9a-f]{6}$/);
+    assert.equal(execFileSync('git', ['-C', w.worktree!, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), head);
+    assert.ok(existsSync(join(w.worktree!, 'm.txt')));
+    assert.equal(architect.crew?.[session.swarmKey!]?.kind, 'role');
+    // the briefing carries the charter and the trigger; the instance is told to report only
+    assert.match(w.task, /Run the tests and report failures\./);
+    assert.match(w.task, /git diff/);
+    const briefing = fleetBriefing({ hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: w.worktree!, hubUrl: 'u', role: 'role', worker: w });
+    assert.match(briefing, /Your role: ROLE INSTANCE \("tester"\)/);
+    assert.match(briefing, /REPORT ONLY/);
+
+    // test runs leave artifacts: a dirty worktree does not block a role instance's report
+    writeFileSync(join(w.worktree!, 'junk.log'), 'x\n');
+    await swarm.report(session, reported(session, 'all suites pass'));
+    assert.equal(w.status, 'reported');
+    await swarm.tick();
+    const [letter] = swarm.inboxOf(architect);
+    assert.match(letter.text, new RegExp(`^VERIFIED: role instance "Tester" \\(${session.hubId}\\) reports on merge ${head.slice(0, 7)}\\.`));
+    assert.match(letter.text, /never merged[\s\S]*removed automatically when you ack/);
+
+    // the ack removes the instance: card, worktree and branch, with no merged or docs questions
+    const worktree = w.worktree!;
+    (session as { proc: unknown }).proc = null; // the hub stops it after the report
+    swarm.ackInbox(architect, [letter.id]);
+    for (let i = 0; i < 100 && manager.sessions.has(session.hubId); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.equal(manager.sessions.has(session.hubId), false);
+    assert.equal(existsSync(worktree), false);
+    assert.equal(git('branch', '--list', 'role/*').trim(), '');
+    assert.deepEqual(roleDone, [{ charter: 'tester', project: 'p', platform: process.platform }]);
+    assert.equal(architect.crew?.[session.swarmKey ?? ''], undefined);
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a role instance is removed like a discard, whatever it left behind', async () => {
+  const { dir, git } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude' });
+  manager.sessions.set('lead', architect);
+  const head = git('rev-parse', 'HEAD').trim();
+  const session = (await swarm.startRole(architect, aCharter(), { project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true }))!;
+  const w = session.worker!;
+  try {
+    // even a stray commit on its branch asks no "not merged" or docs questions
+    writeFileSync(join(w.worktree!, 'stray.txt'), 's\n');
+    execFileSync('git', ['-C', w.worktree!, 'add', '.']);
+    execFileSync('git', ['-C', w.worktree!, 'commit', '-qm', 'stray']);
+    const worktree = w.worktree!;
+    (session as { proc: unknown }).proc = null;
+    await swarm.remove(session, false);
+    assert.equal(manager.sessions.has(session.hubId), false);
+    assert.equal(existsSync(worktree), false);
+    assert.equal(git('branch', '--list', 'role/*').trim(), '');
+  } finally {
+    if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a running role instance never gates its lead\'s own report, and never leads anybody', async () => {
+  const { manager, swarm } = harness();
+  const top = aLead({ hubId: 'top', claudeSessionId: 'top-conv' });
+  const sub = aMember(top, 'sub', { architect: 'top-conv' }, { role: 'subarchitect', claudeSessionId: 'sub-conv' });
+  manager.sessions.set('sub', sub);
+  // a tester on the sub's merge, still working; and a real worker, also still working
+  const inst = aMember(sub, 'r1', { architect: 'sub-conv', charter: 'tester' }, { role: 'role', claudeSessionId: 'r1-conv' });
+  manager.sessions.set('r1', inst);
+  const hands = aMember(sub, 'w2', { architect: 'sub-conv' }, { claudeSessionId: 'w2-conv' });
+  manager.sessions.set('w2', hands);
+  const sealed = (s: HubSession, result: string) => sealAs(s.swarmKey!, { type: 'report', to: s.worker!.leadKey!, body: { result, failed: false } });
+  // the worker blocks the sub's report; the role instance is not counted at all
+  await assert.rejects(swarm.report(sub, sealed(sub, 'done')), /1 of your workers is still going/);
+  hands.worker!.status = 'reported';
+  await swarm.report(sub, sealed(sub, 'module done'));
+  assert.equal(sub.worker?.status, 'reported');
+  // and a role instance starts nobody
+  await assert.rejects(swarm.start(inst, { task: 'x' }), /starts nobody/);
+  assert.match(refusedLead('role', 'worker') ?? '', /starts nobody/);
+});
+
+test('a role instance\'s task renders the charter, the trigger and the caps', () => {
+  const files = Array.from({ length: 90 }, (_, i) => `src/f${i}.ts`);
+  const text = renderRoleTask({ title: 'Tester', body: 'Check it.', effort: 'low' }, {
+    project: 'p', base: 'a'.repeat(40), head: 'b'.repeat(40), files, insertions: 120, deletions: 30,
+  });
+  assert.match(text, /Your charter — Tester:/);
+  assert.match(text, /Check it\./);
+  assert.match(text, /\+120 −30 over 90 files/);
+  assert.match(text, /…and 10 more/);
+  assert.match(text, new RegExp(`git diff ${'a'.repeat(40)} ${'b'.repeat(40)}`));
+  assert.match(text, /Pace: work at low effort/);
+  assert.doesNotMatch(text, /src\/f85\.ts/); // capped at 80 names
+  const manual = renderRoleTask({ title: 'T', body: 'B' }, { project: 'p', head: 'c'.repeat(40), files: [], insertions: 0, deletions: 0, manual: true });
+  assert.match(manual, /manual run: inspect the current state/);
+  const huge = renderRoleTask({ title: 'T', body: 'x'.repeat(30_000) }, { project: 'p', head: 'c'.repeat(40), files: [], insertions: 0, deletions: 0, manual: true });
+  assert.ok(huge.length < 8_100);
+  assert.match(huge, /cut by Deckhand/);
 });
 
 test('a question from a worker to its sub-architect stays between them', async () => {
