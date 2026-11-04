@@ -12,8 +12,9 @@ import { DATA_DIR } from './config.js';
  *   builtin  server/roles/<name>.md, shipped with Deckhand
  *   fleet    DATA_DIR/roles/<name>.md on the fleet-memory authority,
  *            replicated to every hub (edited in ADMIN → ROLES, user-only)
- *   project  docs/architect/roles/<name>.md read from the merged commit —
- *            the caller reads that from git and passes the text in
+ *   project  docs/architect/roles/<name>.md in the lead's working folder
+ *            (docs/architect/ is not in git) — the caller reads that file
+ *            and passes the text in
  *
  * The fleet layer syncs like fleet memory in spirit — one authority, replicas
  * pull — but as its own small store: the authority keeps the files plus a
@@ -36,6 +37,8 @@ export interface RoleCharter {
   platforms: 'any' | 'all' | string[]; // 'any' = one instance on the lead's machine; 'all' = one per distinct OS among connected hubs; list = process.platform values
   model?: string; // passed to the agent spawn
   effort?: string; // rendered into the instance briefing as pace guidance
+  /** the role needs the lead's docs/architect: a path on the lead's machine, inlined elsewhere */
+  docs?: boolean;
   skip: RoleSkip;
   enabled: boolean;
   body: string; // charter prose, front matter stripped
@@ -135,6 +138,7 @@ function assemble(name: string, layers: { layer: Layer; parsed: CharterText }[])
     else if (Array.isArray(f.platforms)) c.platforms = f.platforms.map(String);
     if (typeof f.model === 'string' && f.model) c.model = f.model;
     if (typeof f.effort === 'string' && f.effort) c.effort = f.effort;
+    if (typeof f.docs === 'boolean') c.docs = f.docs;
     if (f.skip && typeof f.skip === 'object' && !Array.isArray(f.skip)) {
       const s = f.skip as Record<string, unknown>;
       const skip: RoleSkip = {};

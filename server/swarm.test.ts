@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, fleetBriefing, isDocPath, renderRoleTask, windowsUnsafeNames } from './etiquette.js';
+import { ARCHITECT_RETRY_WINDOW_MS, architectEditDecision, DOCS_INLINE_CAP, fleetBriefing, isDocPath, readLeadDocsInline, renderRoleTask, windowsUnsafeNames } from './etiquette.js';
 import { seal, signatureHolds, newSwarmKey } from '../mcp/swarm-envelope.mjs';
 import { peerWithLiveSession } from './federation.js';
 import { HubSession, type SessionManager } from './sessionManager.js';
@@ -1180,6 +1180,94 @@ test('a role instance is removed like a discard, whatever it left behind', async
   }
 });
 
+test('a docs role instance is pointed at the lead\'s folder, and a long role task travels as a file', async () => {
+  const { dir, git } = repo();
+  const { manager, swarm } = harness();
+  const architect = aLead({ cwd: dir, agentType: 'claude', state: 'IDLE' });
+  manager.sessions.set('lead', architect);
+  const head = git('rev-parse', 'HEAD').trim();
+  const promptOf = (s: HubSession) => (s as unknown as { initialPrompt?: string }).initialPrompt ?? '';
+  const body = `check the documents\n${'y'.repeat(10_000)}`;
+  const long = (await swarm.startRole(architect, aCharter({ name: 'doc-keeper', title: 'Doc keeper', docs: true, body }), {
+    project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true,
+  }))!;
+  const short = (await swarm.startRole(architect, aCharter(), { project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true }))!;
+  const lw = long.worker!;
+  const sw = short.worker!;
+  try {
+    // the rendered task names the lead's working docs folder by absolute path
+    const file = lw.taskFile!;
+    assert.ok(file && existsSync(file));
+    const task = readFileSync(file, 'utf8');
+    assert.equal(task, lw.task);
+    assert.ok(task.includes(join(dir, 'docs', 'architect')));
+    assert.match(task, /the lead's working copy, not in git/);
+    // over the inline limit, the first prompt points at the file and keeps the standing rule
+    assert.ok(promptOf(long).includes(file));
+    assert.match(promptOf(long), /REPORT ONLY/);
+    assert.match(promptOf(long), /dh_report/);
+    assert.ok(!promptOf(long).includes('yyyy'));
+    // and the briefing names the file instead of carrying 10 KB
+    const briefing = fleetBriefing({ hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: lw.worktree!, hubUrl: 'u', role: 'role', worker: lw });
+    assert.ok(briefing.includes(file));
+    assert.ok(!briefing.includes('yyyy'));
+    // a short task stays inline: no file, the usual prompt, no docs block without charter.docs
+    assert.equal(sw.taskFile, undefined);
+    assert.match(promptOf(short), /Carry out your role charter: it is in your briefing/);
+    assert.ok(!sw.task.includes('docs/architect'));
+  } finally {
+    for (const w of [lw, sw]) {
+      if (w.taskFile) rmSync(w.taskFile, { force: true });
+      if (w.worktree) rmSync(w.worktree, { recursive: true, force: true });
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a docs role instance elsewhere gets the lead\'s documents inlined into its task', async () => {
+  const { dir, git } = repo();
+  const { manager } = harness();
+  const calls: { path: string; body: any }[] = [];
+  const swarm = new Swarm(manager as unknown as SessionManager, {
+    typePrompt: async () => {},
+    promptFrom: () => {},
+    lastReply: async () => undefined,
+    save() {},
+    fleet: {
+      self: 'alpha',
+      call: async (_m, path, body) => {
+        calls.push({ path, body });
+        if (path === '/api/worker-host/heads') return { status: 200, body: { heads: [] } };
+        if (path === '/api/worker-host/start') return { status: 200, body: { swarmKey: 'peer-key', hubId: 'h9', worker: { branch: 'role/doc-keeper-abc123' } } };
+        return { status: 200, body: {} };
+      },
+      upload: async () => ({ status: 200, body: {} }),
+      callArchitect: async () => undefined,
+      isFrozen: () => false,
+    },
+  });
+  try {
+    const architect = aLead({ cwd: dir, agentType: 'claude' });
+    manager.sessions.set('lead', architect);
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), `# arch\n${'a'.repeat(20_000)}`); // grown past the inline cap
+    const head = git('rev-parse', 'HEAD').trim();
+    await swarm.startRole(architect, aCharter({ name: 'doc-keeper', title: 'Doc keeper', docs: true }), {
+      project: 'p', head, files: [], insertions: 0, deletions: 0, manual: true, machine: 'beta',
+    });
+    const task: string = calls.find((c) => c.path === '/api/worker-host/start')!.body.task;
+    // the path would not exist on beta, so the documents ride in the task, framed as data
+    assert.match(task, /The lead's docs\/architect as its hub read them just now \(not in your checkout\):/);
+    assert.match(task, /--- architecture\.md ---/);
+    assert.match(task, /--- notes\/2026-11-01\.md ---/);
+    assert.match(task, /cut here by Deckhand/);
+    assert.doesNotMatch(task, /documentation lives at/);
+    assert.ok(task.length <= 24_000, `task is ${task.length}`);
+    assert.equal(architect.crew?.['peer-key']?.kind, 'role');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a running role instance never gates its lead\'s own report, and never leads anybody', async () => {
   const { manager, swarm } = harness();
   const top = aLead({ hubId: 'top', claudeSessionId: 'top-conv' });
@@ -1216,8 +1304,40 @@ test('a role instance\'s task renders the charter, the trigger and the caps', ()
   const manual = renderRoleTask({ title: 'T', body: 'B' }, { project: 'p', head: 'c'.repeat(40), files: [], insertions: 0, deletions: 0, manual: true });
   assert.match(manual, /manual run: inspect the current state/);
   const huge = renderRoleTask({ title: 'T', body: 'x'.repeat(30_000) }, { project: 'p', head: 'c'.repeat(40), files: [], insertions: 0, deletions: 0, manual: true });
-  assert.ok(huge.length < 8_100);
+  assert.ok(huge.length < 24_100);
   assert.match(huge, /cut by Deckhand/);
+  // a docs-needing instance is pointed at the lead's working documents, or handed them inline
+  const trig = { project: 'p', head: 'c'.repeat(40), files: [], insertions: 0, deletions: 0, manual: true };
+  const pathed = renderRoleTask({ title: 'Doc keeper', body: 'B' }, { ...trig, docsPath: 'D:/p/lead/docs/architect' });
+  assert.match(pathed, /documentation lives at D:\/p\/lead\/docs\/architect/);
+  assert.match(pathed, /the lead's working copy, not in git/);
+  assert.match(pathed, /Read only; it is the lead's\./);
+  const inlined = renderRoleTask({ title: 'Doc keeper', body: 'B' }, { ...trig, docsInline: "The lead's docs/architect as its hub read them just now (not in your checkout):\n\n--- architecture.md ---\n# arch" });
+  assert.match(inlined, /--- architecture\.md ---/);
+  assert.doesNotMatch(inlined, /documentation lives at/);
+});
+
+test('the lead\'s documents inline as data: the newest two notes, each clipped, the block capped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swarm-docs-'));
+  try {
+    assert.equal(readLeadDocsInline(dir), undefined); // no documents: nothing to inline
+    mkdirSync(join(dir, 'docs', 'architect', 'notes'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'architecture.md'), `# arch\n${'a'.repeat(20_000)}`);
+    for (const d of ['2026-11-01', '2026-11-02', '2026-11-03']) {
+      writeFileSync(join(dir, 'docs', 'architect', 'notes', `${d}.md`), `note ${d}\n${'n'.repeat(5_000)}`);
+    }
+    const block = readLeadDocsInline(dir)!;
+    assert.match(block, /^The lead's docs\/architect as its hub read them just now \(not in your checkout\):/);
+    assert.match(block, /--- architecture\.md ---/);
+    assert.match(block, /--- notes\/2026-11-02\.md ---/);
+    assert.match(block, /--- notes\/2026-11-03\.md ---/);
+    assert.doesNotMatch(block, /notes\/2026-11-01\.md/); // only the newest two ride along
+    assert.match(block, /architecture\.md cut here by Deckhand/);
+    assert.match(block, /notes\/2026-11-03\.md cut here by Deckhand/);
+    assert.ok(block.length <= DOCS_INLINE_CAP, `inline block is ${block.length}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a question from a worker to its sub-architect stays between them', async () => {

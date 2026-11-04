@@ -229,20 +229,48 @@ test('a merge runs the matching charters once, with the diff computed at the tri
   }
 });
 
-test('the project layer is read from the merged commit itself', async () => {
+test('the project layer is read from the lead\'s working folder, not any commit', async () => {
   const { dir, git } = repo();
   try {
     const base = git('rev-parse', 'HEAD');
-    mkdirSync(join(dir, 'docs', 'architect', 'roles'), { recursive: true });
-    writeFileSync(join(dir, 'docs', 'architect', 'roles', 'tester.md'), '---\nenabled: false\n---\n');
     writeFileSync(join(dir, 'd.ts'), 'const d = 4;\n'.repeat(20));
     git('add', '.');
-    git('commit', '-qm', 'switch the tester off');
+    git('commit', '-qm', 'merge');
     const head = git('rev-parse', 'HEAD');
+    // the override is the architect's living file: on disk, never committed anywhere
+    mkdirSync(join(dir, 'docs', 'architect', 'roles'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'architect', 'roles', 'tester.md'), '---\nenabled: false\n---\n');
     const { deps, lead, started } = trigHarness(dir, charter());
     const out = await onMerge(lead, { project: 'p', folder: dir, base, head }, deps);
     assert.deepEqual(started, []);
     assert.deepEqual(out.skipped, [{ role: 'tester', reason: 'disabled' }]);
+    // the file gone from the folder, the override is gone with it
+    rmSync(join(dir, 'docs', 'architect', 'roles', 'tester.md'));
+    const again = await onMerge(lead, { project: 'p', folder: dir, base, head }, deps);
+    assert.deepEqual(again.started, ['tester']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable project charter skips the layer with one warning, not the run', async (t) => {
+  const { dir, git } = repo();
+  try {
+    const base = git('rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'd.ts'), 'const d = 4;\n'.repeat(20));
+    git('add', '.');
+    git('commit', '-qm', 'merge');
+    const head = git('rev-parse', 'HEAD');
+    // a directory where the file should be: it exists but cannot be read as one
+    mkdirSync(join(dir, 'docs', 'architect', 'roles', 'tester.md'), { recursive: true });
+    const warn = t.mock.method(console, 'warn', () => {});
+    const { deps, lead, started } = trigHarness(dir, charter());
+    const out = await onMerge(lead, { project: 'p', folder: dir, base, head }, deps);
+    assert.deepEqual(out.started, ['tester']);
+    assert.equal(started.length, 1);
+    await onMerge(lead, { project: 'p', folder: dir, base, head }, deps); // the charter is read again each trigger
+    const warned = warn.mock.calls.filter((c) => /project charter tester is skipped/.test(String(c.arguments[0])));
+    assert.equal(warned.length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

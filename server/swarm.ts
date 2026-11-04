@@ -9,7 +9,7 @@ import { leadMcpChoices, type McpChoices } from './agents/claude.js';
 import { ARCHITECTURE_FILE, architectureInCommit, docsChangedSince, docsMergeDecision, inFlightLine } from './architectDocs.js';
 import { DATA_DIR } from './config.js';
 import { folderNameOf } from './frozen.js';
-import { osName, projectFolderOf, renderRoleTask, windowsUnsafeNames, type RoleTrigFacts } from './etiquette.js';
+import { osName, projectFolderOf, readLeadDocsInline, renderRoleTask, windowsUnsafeNames, type RoleTrigFacts } from './etiquette.js';
 import type { RoleCharter } from './roleCharters.js';
 import type { HubSession, SessionManager } from './sessionManager.js';
 import { dropSwarmKey, sealAs } from './swarmKeys.js';
@@ -114,6 +114,12 @@ export interface RoleStart extends RoleTrigFacts {
 }
 
 const ROLE_PROMPT = 'Carry out your role charter: it is in your briefing, under "Your task". Finish with dh_report.';
+
+/** Like startPrompt: a role task too long for the command line is read from its file. */
+const rolePrompt = (w: WorkerLink) =>
+  w.taskFile
+    ? `Read your task from the file ${w.taskFile}, then carry out your role charter. REPORT ONLY - never fix or commit anything. Finish with dh_report.`
+    : ROLE_PROMPT;
 
 /** A project's name holds on every machine: its folder name under the projects root. */
 function projectName(cwd: string) {
@@ -564,8 +570,14 @@ export class Swarm {
     if (lead.role !== 'architect' && lead.role !== 'subarchitect') throw new Error('a role instance runs for an architect or sub-architect');
     if (!lead.swarmKey) throw new Error('this session has no swarm key yet: restart it, then try again');
     const name = trig.platformLabel ? `${charter.title} (${trig.platformLabel})` : charter.title;
+    const elsewhere = !!trig.machine && trig.machine !== this.deps.fleet?.self;
+    if (charter.docs) {
+      // the lead's documents live in its working folder, not in any commit: name the
+      // path when the instance can reach it, inline them when it is on another machine
+      trig = elsewhere ? { ...trig, docsInline: readLeadDocsInline(lead.cwd) } : { ...trig, docsPath: join(lead.cwd, 'docs', 'architect') };
+    }
     const task = renderRoleTask(charter, trig);
-    if (trig.machine && trig.machine !== this.deps.fleet?.self) return this.startRoleElsewhere(lead, charter, trig, trig.machine, name, task);
+    if (elsewhere) return this.startRoleElsewhere(lead, charter, trig, trig.machine!, name, task);
     const base = await repoBase(lead.cwd);
     if (!base) throw new Error('not a git repository: a role instance needs a commit to check out');
     const tree = await addWorktree(base.top, trig.head, name, WORKTREES, 'role');
@@ -573,6 +585,7 @@ export class Swarm {
       architect: lead.claudeSessionId,
       architectName: lead.name,
       task,
+      taskFile: taskFileFor(task, name),
       baseFolder: lead.cwd,
       project: trig.project,
       platform: process.platform,
@@ -592,7 +605,7 @@ export class Swarm {
       name,
       agentType: lead.agentType,
       model: charter.model ?? lead.model,
-      initialPrompt: ROLE_PROMPT,
+      initialPrompt: rolePrompt(worker),
       role: 'role',
       worker,
     });
@@ -682,7 +695,7 @@ export class Swarm {
       agentType: h.agentType,
       model: h.model,
       permissionMode: h.permissionMode,
-      initialPrompt: h.kind === 'role' ? ROLE_PROMPT : startPrompt(worker),
+      initialPrompt: h.kind === 'role' ? rolePrompt(worker) : startPrompt(worker),
       role: h.kind === 'subarchitect' ? 'subarchitect' : h.kind === 'role' ? 'role' : 'worker',
       worker,
     });
