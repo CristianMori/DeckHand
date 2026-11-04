@@ -174,7 +174,7 @@ for (const rec of loadPersisted()) {
  * never got an id (an unbound Codex card). HUB_RESTORE=0 disables it.
  */
 function restoreSessions() {
-  if (process.env.HUB_RESTORE === '0' || !toRestore.length) return;
+  if (process.env.HUB_RESTORE === '0') return;
   const eligible = toRestore.filter((s) => {
     if (s.claudeSessionId.startsWith('pending-')) return false;
     // a terminal has no conversation to pick up — it waits for a manual restart
@@ -187,7 +187,7 @@ function restoreSessions() {
       return false;
     }
   });
-  console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
+  if (toRestore.length) console.log(`[restore] ${eligible.length} of ${toRestore.length} session(s) were running before the restart — resuming`);
   eligible.forEach((s, i) => {
     setTimeout(() => {
       if (s.proc || !manager.sessions.has(s.hubId)) return; // resumed by hand meanwhile, or removed
@@ -199,6 +199,9 @@ function restoreSessions() {
       }
     }, 1500 + i * 2500).unref();
   });
+  // a worker the restore pass skipped or failed to bring back would otherwise wait
+  // forever ("hub restarted" is left alone): one more chance, or its lead is told
+  setTimeout(() => swarm.restoreLeftBehind(), 1500 + eligible.length * 2500 + 4000).unref();
 }
 
 /** Local sessions tagged with this machine's name — the shape peers rely on. */
@@ -1809,8 +1812,8 @@ const swarm = new Swarm(manager, {
       return { status: out.status, body };
     },
     callArchitect: async (conversation, path, body) => {
-      const peer = federation.connectedPeers().find((p) => p.sessions.some((s) => s.claudeSessionId === conversation && s.alive))
-        ?? federation.connectedPeers().find((p) => p.sessions.some((s) => s.claudeSessionId === conversation));
+      // only a live card: a dead one reads nothing, and the sender's outbox keeps the message
+      const peer = federation.peerWithLiveSession(conversation);
       if (!peer) return undefined;
       return federation.forward(peer, `/api/sessions/${encodeURIComponent(conversation)}/${path}`, { method: 'POST', body });
     },

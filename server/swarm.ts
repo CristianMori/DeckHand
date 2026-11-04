@@ -190,6 +190,10 @@ async function changedFiles(w: Pick<WorkerLink, 'worktree' | 'baseCommit'>) {
 export async function createWorktree(folder: string, name: string, root = WORKTREES) {
   const base = await repoBase(folder);
   if (!base) return undefined;
+  // the subfolder has to be in the commit, or the worker's cwd would not exist in its checkout
+  if (base.sub && !(await gitOk(base.top, 'cat-file', '-e', `${base.baseCommit}:${base.sub}`))) {
+    throw new Error(`this folder (${base.sub}) is not in the commit a worker would branch from: commit it first`);
+  }
   const tree = await addWorktree(base.top, base.baseCommit, name, root);
   return { ...tree, baseCommit: base.baseCommit, repo: base.top, cwd: base.sub ? join(tree.worktree, base.sub) : tree.worktree, baseDirty: base.baseDirty };
 }
@@ -478,6 +482,10 @@ export class Swarm {
     const repo = await projectMirror(h.project);
     if (h.author?.name) await git(repo, 'config', 'user.name', h.author.name);
     if (h.author?.email) await git(repo, 'config', 'user.email', h.author.email);
+    // the subfolder has to be in the commit, or the worker's cwd would not exist in its checkout
+    if (h.sub && !(await gitOk(repo, 'cat-file', '-e', `${h.baseCommit}:${h.sub}`))) {
+      throw new Error(`the architect's folder (${h.sub}) is not in the commit the worker would branch from: commit it there first`);
+    }
     const tree = await addWorktree(repo, h.baseCommit, h.name, WORKTREES);
     const session = this.manager.create({
       cwd: h.sub ? join(tree.worktree, h.sub) : tree.worktree,
@@ -655,8 +663,9 @@ export class Swarm {
       facts: { commits: facts.commits, files: facts.files, dirty: facts.dirty, unsafe, platform: process.platform, machine: w.architectMachine ? this.deps.fleet?.self : undefined },
       branchOf: w.sendBranch ? session.claudeSessionId : undefined,
     });
+    const statusAtReport = w.status; // captured now: a follow-up sets it back to working, and then the stop must not land
     setTimeout(() => {
-      if (session.worker?.status === w.status && session.proc) this.manager.kill(session.hubId);
+      if (session.worker?.status === statusAtReport && session.proc) this.manager.kill(session.hubId);
     }, STOP_AFTER_REPORT_MS).unref?.();
     return facts;
   }
@@ -796,6 +805,30 @@ export class Swarm {
     const w = worker.worker!;
     w.outbox = [...(w.outbox ?? []), packet];
     this.manager.emit('change', worker);
+    this.deps.save();
+  }
+
+  /**
+   * After a hub restart, once the restore pass is done: a worker still down with
+   * "hub restarted" on its card is waited on forever (workerStep leaves that state
+   * alone), so bring each back once. One that can't come back is failed and its
+   * lead told, so it can remove it or follow it up.
+   */
+  restoreLeftBehind() {
+    for (const s of [...this.manager.sessions.values()]) {
+      const w = s.worker;
+      if (!w || s.proc || s.detail !== 'hub restarted') continue;
+      if (w.status === 'reported' || w.status === 'failed') continue;
+      try {
+        this.manager.resume(s.hubId);
+      } catch {
+        /* told below: it has no process */
+      }
+      if (s.proc) continue;
+      w.status = 'failed';
+      w.result = `could not restore after a restart (${s.detail ?? 'exited'})`;
+      this.notice(s, `it could not restore after a restart (${s.detail ?? 'exited'}). dh_worker_followup brings it back; dh_remove_worker removes it.`);
+    }
     this.deps.save();
   }
 
