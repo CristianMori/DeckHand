@@ -2,6 +2,17 @@ node_modules/
 data/
 server/public/
 
+# Secrets never belong in the repo (scripts/check-secrets.mjs guards commits).
+# The hub keeps every credential in a file under data/ (already ignored:
+# api-token, delegate.key, attention.json keyFiles, swarm-keys/); these cover
+# a key file or env file landing anywhere else.
+*.key
+*.pem
+*.p8
+.env
+.env.*
+swarm-keys/
+
 .stfolder/
 .stignore
 version.json
