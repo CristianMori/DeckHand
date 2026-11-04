@@ -100,7 +100,29 @@ function clip(text: string, limit: number, file: string): string {
   return `${text.slice(0, limit)}\n[…cut by Deckhand: ${text.length - limit} more characters — read ${file} for the rest.]`;
 }
 
-/** The post-compaction refeed, composed from the documents' text. Undefined: nothing to say. */
+/**
+ * architecture.md split at its `## Summary` section (the essentials an
+ * architect must never lose, kept right after the title by convention):
+ * that section with its heading, and everything else. No section: no summary.
+ */
+export function splitSummary(architecture: string): { summary?: string; rest: string } {
+  const m = /^##\s+Summary\s*$/im.exec(architecture);
+  if (!m) return { rest: architecture };
+  const afterHeading = m.index + m[0].length;
+  const next = architecture.slice(afterHeading).search(/^##?\s/m);
+  const end = next === -1 ? architecture.length : afterHeading + next;
+  return {
+    summary: architecture.slice(m.index, end).trimEnd(),
+    rest: (architecture.slice(0, m.index).trimEnd() + '\n\n' + architecture.slice(end).trimStart()).trim(),
+  };
+}
+
+/**
+ * The post-compaction refeed, composed from the documents' text: the
+ * `## Summary` section first and in full, then as much of the rest of
+ * architecture.md as fits, then the newest notes — every cut marked.
+ * Undefined: nothing to say.
+ */
 export function composeDocsRefeed(
   architecture: string | undefined,
   notes: { name: string; text: string }[],
@@ -114,9 +136,13 @@ export function composeDocsRefeed(
   });
   const parts = [header, ...noteParts];
   if (architecture) {
-    const used = parts.reduce((a, p) => a + p.length + 2, 0);
+    const { summary, rest } = splitSummary(architecture);
+    const archParts: string[] = [];
+    if (summary) archParts.push(`--- ${ARCHITECTURE_FILE}: ## Summary (in full) ---\n${summary}`);
+    const used = [...parts, ...archParts].reduce((a, p) => a + p.length + 2, 0);
     const budget = Math.max(ARCHITECTURE_MIN, cap - used - 40);
-    parts.splice(1, 0, `--- ${ARCHITECTURE_FILE} ---\n${clip(architecture, budget, ARCHITECTURE_FILE)}`);
+    if (rest) archParts.push(`--- ${ARCHITECTURE_FILE}${summary ? ': the rest' : ''} ---\n${clip(rest, budget, ARCHITECTURE_FILE)}`);
+    parts.splice(1, 0, ...archParts);
   }
   return parts.join('\n\n').slice(0, cap + 200);
 }

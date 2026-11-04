@@ -70,6 +70,7 @@ const event = (over: Partial<AttentionEvent> = {}) =>
 test('subject: short, the session name and what it needs', () => {
   assert.equal(emailSubject(event()), 'RavenAgents on mac has a question');
   assert.equal(emailSubject(event({ kind: 'permission', machine: undefined })), 'RavenAgents wants approval');
+  assert.equal(emailSubject(event({ kind: 'dialog', machine: undefined })), 'RavenAgents is waiting at a dialog');
 });
 
 test("send: follows Hermod's notify contract — the mailbox key chooses email, the episode is the correlationId, no reply deadline", async () => {

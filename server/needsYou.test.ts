@@ -5,7 +5,7 @@ import { askingText } from './askDetect.js';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FleetAttention, NeedsYou, SentLedger, alertChannels, attentionEvent, discordRecipients, sendAlert, sendToDiscord, type AttentionEvent } from './needsYou.js';
+import { FleetAttention, NeedsYou, SentLedger, alertChannels, attentionEvent, attentionPhrase, discordRecipients, sendAlert, sendToDiscord, type AttentionEvent } from './needsYou.js';
 import { HubSession } from './sessionManager.js';
 import type { SessionManager } from './sessionManager.js';
 import type { SessionInfo } from './types.js';
@@ -179,6 +179,46 @@ test('answered within the delay: no alert, and the next wait is a new episode', 
   set('WAITING_PERMISSION', 'needs approval');
   assert.notEqual(session.attention!.episode, first);
   assert.equal(session.attention!.alertedAt, undefined);
+});
+
+test('a startup dialog raises attention, alerts after the delay, and clears when it is gone', async () => {
+  const { session, needs } = rig();
+  session.state = 'STARTING'; // a dialog blocks the engine before any hook
+  needs.dialogWait(session, "Claude's folder trust dialog");
+  assert.equal(session.attention?.kind, 'dialog');
+  assert.equal(session.attention?.text, "Claude's folder trust dialog");
+  const episode = session.attention!.episode;
+  needs.dialogWait(session, "Claude's folder trust dialog"); // the next scan carries the same episode
+  assert.equal(session.attention?.episode, episode);
+  await sleep(DELAY + 10);
+  assert.ok(session.attention?.alertedAt); // the outside channels fire
+  needs.dialogWait(session, undefined); // answered: the screen moved on
+  assert.equal(attn(session), undefined);
+});
+
+test('a dialog wait survives the quiet-idle flip, and yields to a real wait', () => {
+  const { session, needs, set } = rig();
+  session.state = 'STARTING';
+  needs.dialogWait(session, "Claude's login screen");
+  set('IDLE', 'quiet'); // the two-minute quiet heuristic, with the dialog still on screen
+  assert.equal(session.attention?.kind, 'dialog');
+  set('WAITING_PERMISSION', 'needs approval');
+  needs.dialogWait(session, "Claude's login screen");
+  assert.equal(session.attention?.kind, 'permission'); // the scan never papers over a real wait
+});
+
+test('the channel phrase names what each kind needs, dialogs included', () => {
+  assert.equal(attentionPhrase('question'), 'has a question');
+  assert.equal(attentionPhrase('ask'), 'has a question');
+  assert.equal(attentionPhrase('permission'), 'wants approval');
+  assert.equal(attentionPhrase('dialog'), 'is waiting at a dialog');
+});
+
+test('a worker at a dialog is not raised here: its lead is told instead', () => {
+  const { session, needs } = rig();
+  (session as unknown as { worker?: unknown }).worker = { architect: 'a' };
+  needs.dialogWait(session, "Codex's folder trust dialog");
+  assert.equal(attn(session), undefined);
 });
 
 test('one alert per episode, even when the question changes kind', async () => {

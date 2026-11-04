@@ -409,11 +409,29 @@ export const codexAdapter: AgentAdapter = {
     if (tail.some((l) => /Ask Codex to do anything|^\s?›\s*$/.test(l))) return 'idle';
     return null;
   },
+  // The composer is the "› " line; empty, it shows the "Ask Codex to do
+  // anything" placeholder. Codex's startup menus reuse the same character
+  // ("› 1. Review hooks"), and reading those as a draft is right too: typed
+  // text would land in the menu, so the hub must hold off either way.
+  composerText: (screen) => {
+    const lines = screen.split('\n');
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 14); i--) {
+      const m = /^\s{0,2}›\s?(.*)$/.exec(lines[i]);
+      if (!m) continue;
+      const text = m[1].trim();
+      return text === 'Ask Codex to do anything' ? '' : text;
+    }
+    return undefined;
+  },
   acceptKeystroke: '\r',
   // Codex has no project MCP dialog (MCP servers come from config.toml, and a
   // project's own .codex/config.toml is silently skipped until trusted — which
-  // ensureTrusted records up front). Only the trust prompt can block startup.
-  startupDialog: (screen) => (/Do you trust the contents of this directory\?/i.test(screen) ? "Codex's folder trust dialog" : undefined),
+  // ensureTrusted records up front). The trust prompt or a hooks review can block startup.
+  startupDialog: (screen) => {
+    if (/Do you trust the contents of this directory\?/i.test(screen)) return "Codex's folder trust dialog";
+    if (/Hooks need review/i.test(screen)) return "Codex's hooks-review dialog";
+    return undefined;
+  },
 
   transcript: {
     file(cwd, sessionId) {

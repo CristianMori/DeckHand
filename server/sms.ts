@@ -46,7 +46,7 @@ const oneLine = (s: string) => s.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s+/
 
 /** "RavenAgents: Which one?", trimmed to fit, with no URLs for the gateway to refuse. */
 export function smsText(e: Pick<AttentionEvent, 'name' | 'kind' | 'text'>): string {
-  const lead = e.kind === 'permission' ? `${e.name} wants approval: ` : `${e.name}: `;
+  const lead = e.kind === 'permission' ? `${e.name} wants approval: ` : e.kind === 'dialog' ? `${e.name} is waiting at ` : `${e.name}: `;
   const message = oneLine(`${lead}${e.text}`.replace(URLS, ' '));
   return message.length > MAX_TEXT ? `${message.slice(0, MAX_TEXT - 3).trimEnd()}...` : message;
 }

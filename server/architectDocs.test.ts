@@ -18,6 +18,7 @@ import {
   docsMissing,
   inFlightLine,
   readDocsRefeed,
+  splitSummary,
 } from './architectDocs.js';
 import { ARCHITECT_RULES, fleetBriefing } from './etiquette.js';
 import { makeHookHandler } from './hooksReceiver.js';
@@ -55,6 +56,9 @@ test('the briefings carry the documentation convention', () => {
   assert.match(ARCHITECT_RULES, /create it at once/);
   assert.match(ARCHITECT_RULES, /machines and people as roles/);
   assert.match(ARCHITECT_RULES, /Obsidian/);
+  assert.match(ARCHITECT_RULES, /## Summary/);
+  assert.match(ARCHITECT_RULES, /3,000 characters/);
+  assert.match(ARCHITECT_RULES, /summary first and always in full/);
 
   const id = { hubId: 'h', conversationId: 'c', machine: 'm', engine: 'claude', cwd: 'D:/p/x', hubUrl: 'u' };
   const w: WorkerLink = { architect: 'a', architectName: 'lead', task: 't', baseFolder: 'D:/p/x', status: 'working', startedAt: 0 };
@@ -198,6 +202,30 @@ test('the refeed carries architecture.md and the newest notes, under Claude\'s a
   assert.match(big ?? '', /cut by Deckhand: \d+ more characters — read docs\/architect\/architecture\.md/);
   assert.match(big ?? '', /read docs\/architect\/notes\/n1\.md/);
   assert.ok(REFEED_CAP < 10_000);
+});
+
+test('architecture.md splits at its ## Summary section, when it has one', () => {
+  assert.deepEqual(splitSummary('# t\n\nbody'), { rest: '# t\n\nbody' });
+  const doc = '# title\n\n## Summary\n\nthe essentials\nmore of them\n\n## Parts\n\ndetail';
+  const { summary, rest } = splitSummary(doc);
+  assert.equal(summary, '## Summary\n\nthe essentials\nmore of them');
+  assert.equal(rest, '# title\n\n## Parts\n\ndetail');
+  // a summary that ends the file
+  assert.equal(splitSummary('# t\n\n## summary\nlast').summary, '## summary\nlast');
+});
+
+test('the refeed sends the ## Summary first and in full, then clips the rest', () => {
+  const summary = `## Summary\n\n${'S'.repeat(2_500)}`;
+  const doc = `# title\n\n${summary}\n\n## Parts\n\n${'A'.repeat(50_000)}`;
+  const out = composeDocsRefeed(doc, [{ name: 'n1.md', text: 'B'.repeat(50_000) }]);
+  assert.ok((out?.length ?? 0) <= 10_000, `${out?.length} > 10000`);
+  assert.match(out ?? '', /--- docs\/architect\/architecture\.md: ## Summary \(in full\) ---\n## Summary/);
+  assert.ok(out!.includes('S'.repeat(2_500))); // the whole summary, never cut
+  const summaryAt = out!.indexOf('## Summary');
+  const restAt = out!.indexOf('--- docs/architect/architecture.md: the rest ---');
+  const noteAt = out!.indexOf('--- docs/architect/notes/n1.md ---');
+  assert.ok(summaryAt > 0 && summaryAt < restAt && restAt < noteAt); // summary, rest, notes — in that order
+  assert.match(out ?? '', /cut by Deckhand: \d+ more characters — read docs\/architect\/architecture\.md/);
 });
 
 test('the refeed is read from the folder, newest two notes only', () => {
