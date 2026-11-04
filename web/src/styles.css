@@ -488,7 +488,7 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 #admin-dialog { width: 1560px; max-width: 96vw; max-height: 92vh; }
 /* only while open: a closed dialog has to stay display:none */
 #admin-dialog[open] { display: flex; flex-direction: column; }
-.ad-columns { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 16px; flex: 1; min-height: 0; }
+.ad-columns { display: grid; grid-template-columns: 1fr 1fr 1.25fr 1.25fr; gap: 16px; flex: 1; min-height: 0; }
 /* each column scrolls on its own, so the buttons below stay on screen */
 .ad-columns section { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .ad-columns .resume-list, .ad-scroll {
@@ -544,6 +544,23 @@ dialog .mg-row input, dialog .mg-all input { width: auto; flex: none; accent-col
 .tr-form input { width: 110px; }
 .tr-form select { flex: 1; min-width: 120px; }
 .tr-error { color: #e88; font-size: 11px; min-height: 1em; margin-top: 4px; }
+
+/* ADMIN → ROLES: specialist role charters */
+.ro-role { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.ro-head { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+.ro-head .ro-name { color: var(--ink-dim); font-size: 11px; }
+.ro-facts { color: var(--ink-dim); font-size: 11px; margin: 4px 0 6px; overflow-wrap: anywhere; }
+.ro-text {
+  width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--font-mono, monospace);
+  font-size: 11px; line-height: 1.5; background: transparent; color: var(--ink);
+  border: 1px solid var(--line); padding: 6px 8px;
+}
+.ro-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.ro-actions .ro-run { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.ro-actions .ro-lead { max-width: 180px; }
+.ro-new { margin-top: 14px; }
+.ro-new .tr-form { margin: 0 0 6px; }
+.ro-new input { flex: 1; min-width: 140px; width: auto; }
 
 /* ── architects and workers ── */
 .role-tag {
