@@ -20,6 +20,7 @@
         <h1>DECKHAND</h1>
         <span class="brand-sub">mission control</span>
       </div>
+      <div id="machine-stats" aria-label="Sessions per machine"></div>
       <div class="topbar-right">
         <span id="conn-status" class="conn offline">LINK&nbsp;DOWN</span>
         <button id="restart-all-btn" class="ghost-btn" title="Kill and respawn every idle session on this machine; any that fail turn red">RESTART ALL</button>
@@ -33,7 +34,10 @@
       </div>
     </header>
     <main id="layout">
-      <aside id="session-list" aria-label="Sessions"></aside>
+      <aside id="sidebar" aria-label="Sessions">
+        <input id="session-filter" type="search" placeholder="FILTER · name folder machine role" autocomplete="off" spellcheck="false" />
+        <div id="session-list"></div>
+      </aside>
       <section id="terminal-panel">
         <div id="term-tabs" hidden></div>
         <div id="terminal-placeholder">
@@ -65,6 +69,7 @@
   <dialog id="files-dialog"></dialog>
   <dialog id="manage-dialog"></dialog>
   <dialog id="swarm-dialog"></dialog>
+  <dialog id="confirm-dialog"></dialog>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

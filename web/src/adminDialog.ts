@@ -1,4 +1,5 @@
 import { api } from './api';
+import { confirmDialog } from './confirmDialog';
 import { openAuditDialog, renderGatewayAgents } from './auditDialog';
 import { renderRolesPanel } from './rolesPanel';
 import { renderTrustPanel } from './trustPanel';
@@ -127,7 +128,7 @@ export async function openAdminDialog() {
       restart.className = 'ghost-btn danger';
       restart.textContent = 'RESTART';
       restart.onclick = async () => {
-        if (!confirm(`Restart the hub on ${machine}? Live sessions there become resumable EXITED cards.`)) return;
+        if (!(await confirmDialog(`Restart the hub on ${machine}?\n\nLive sessions there become resumable EXITED cards.`, 'RESTART HUB'))) return;
         await api.adminRestart(machine).catch(() => {});
         watching.set(machine, -1);
         void watchLoop();
