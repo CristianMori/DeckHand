@@ -427,7 +427,7 @@ works as the original standalone dashboard.
 
 Once any hub serves a published release (the release shelf), every new
 machine installs from the browser: join the tailnet, open
-`http://<any-hub>:5959/install` on the new machine, and click the download
+`http://<any-hub>:5959/install/` on the new machine, and click the download
 for its OS. The page shows the current build and the exact warnings to
 expect; the downloaded installer fetches the release from the shelf, so the
 new machine never needs git or a checkout.
@@ -449,17 +449,42 @@ new machine never needs git or a checkout.
   questions, installs, runs `scripts/install-macos.sh` (per-user
   LaunchAgent), waits for the hub, and prints the always-on notes:
   automatic login, FileVault off, keep the Mac awake.
-- **Linux** — the page shows a copy-paste one-liner (download, extract,
-  `npm install`, `sudo bash scripts/install.sh`).
+- **Linux** — the page shows a copy-paste one-liner that fetches
+  `linux.sh`, which checks the same prerequisites, asks the same two
+  questions, and installs the systemd service via `sudo bash
+  scripts/install.sh`.
 
-Both installers refuse to touch a machine that already runs a hub (a
+All three installers refuse to touch a machine that already runs a hub (a
 running hub updates itself from ADMIN → UPDATE), log what they do
-(`%TEMP%\deckhand-install.log` / `~/Library/Logs/deckhand-install.log`),
-and take `-DryRun` / `--dry-run` to print every step without changing
-anything.
+(`%TEMP%\deckhand-install.log` / `~/Library/Logs/deckhand-install.log` /
+`/tmp/deckhand-install.log`), and take `-DryRun` / `--dry-run` to print
+every step without changing anything.
+
+### Serving it as a regular web page (port 80)
+
+Everything lives under `/install/` with relative links — the page
+(`/install/`), `windows.cmd`, `mac.command`, `linux.sh`, `release.tgz`,
+`version.json`, and `meta.json` (name, build, version and relative download
+links, with CORS, for a landing page to show) — so the subtree can sit
+behind a path-mapping proxy. On the shelf machine, a landing page (e.g.
+Bifrost) behind **Tailscale Serve** on port 80 can map
+`http://<shelf-host>/deckhand/` to `http://127.0.0.1:5959/install/`; or map
+it directly with Tailscale alone:
+
+```
+tailscale serve --bg --http=80 --set-path=/deckhand http://127.0.0.1:5959/install
+```
+
+Keep it **Serve, never Funnel**, so the page stays tailnet-only. The URL
+embedded in the downloaded scripts follows, in order: the
+`HUB_INSTALL_PUBLIC_URL` env var when set (e.g.
+`http://<shelf-host>/deckhand`); else `X-Forwarded-Host` /
+`X-Forwarded-Proto` / `X-Forwarded-Prefix` when the request comes from a
+loopback proxy; else the host the request was served from. The page also
+keeps working at `http://<any-hub>:5959/install/` without any of this.
 
 The manual steps below remain for the first machine of a fleet (nothing
-serves `/install` yet) and for installing from a git checkout.
+serves `/install/` yet) and for installing from a git checkout.
 
 ---
 

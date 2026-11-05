@@ -21,6 +21,7 @@ param([switch]$DryRun, [switch]$Elevated)
 # wrapper). Downloads the current release from the fleet's shelf, installs
 # the hub as a Windows service, then explains how to make it run as you.
 $ErrorActionPreference = 'Stop'
+# the install subtree this file was downloaded from, e.g. http://host:5959/install
 $Base = '__DECKHAND_BASE_URL__'
 $Name = 'Deckhand'
 $LogFile = Join-Path $env:TEMP 'deckhand-install.log'
@@ -79,10 +80,10 @@ try {
 
   # -- the shelf must answer before anything is touched ---------------------
   try {
-    $shelf = Invoke-RestMethod -Uri "$Base/releases/version.json" -TimeoutSec 10
+    $shelf = Invoke-RestMethod -Uri "$Base/version.json" -TimeoutSec 10
     Write-Host "Release on the shelf: build $($shelf.build) ($($shelf.version))"
   } catch {
-    Write-Host "Cannot read $Base/releases/version.json - is this machine on the tailnet (Tailscale signed in)?"
+    Write-Host "Cannot read $Base/version.json - is this machine on the tailnet (Tailscale signed in)?"
     Done 1
   }
 
@@ -153,8 +154,8 @@ try {
   # -- download, extract, install --------------------------------------------
   Say 'downloading and extracting the release'
   $tgz = Join-Path $env:TEMP 'deckhand-release.tgz'
-  Step "download $Base/releases/deckhand-release.tgz" {
-    Invoke-WebRequest -UseBasicParsing -Uri "$Base/releases/deckhand-release.tgz" -OutFile $tgz
+  Step "download $Base/release.tgz" {
+    Invoke-WebRequest -UseBasicParsing -Uri "$Base/release.tgz" -OutFile $tgz
   }
   Step "create $InstallDir and $ProjectsRoot" {
     New-Item -ItemType Directory -Force $InstallDir | Out-Null
@@ -245,7 +246,7 @@ task instead (runs at logon as you, no password needed):
        powershell -ExecutionPolicy Bypass -File "$InstallDir\scripts\install.ps1" -Mode startup
 
 Dashboard:     http://127.0.0.1:5959
-Install page:  $Base/install
+Install page:  $Base/
 "@
   Done 0
 } catch {

@@ -42,8 +42,8 @@ fi
 
 # -- the shelf must answer before anything is touched -------------------------
 say "release on the shelf"
-if ! VERSION_JSON="$(curl -fsS --max-time 10 "$BASE/releases/version.json")"; then
-  fail "cannot read $BASE/releases/version.json - is this Mac on the tailnet (Tailscale signed in)?"
+if ! VERSION_JSON="$(curl -fsSL --max-time 10 "$BASE/version.json")"; then
+  fail "cannot read $BASE/version.json - is this Mac on the tailnet (Tailscale signed in)?"
 fi
 echo "$VERSION_JSON"
 
@@ -105,9 +105,9 @@ fi
 # -- download, extract, install -----------------------------------------------
 say "downloading and extracting the release"
 TGZ="${TMPDIR:-/tmp}/deckhand-release.$$.tgz"
-step "download $BASE/releases/deckhand-release.tgz"
+step "download $BASE/release.tgz"
 if [ "$DRY" = 0 ]; then
-  curl -fL --progress-bar "$BASE/releases/deckhand-release.tgz" -o "$TGZ" || fail "download failed"
+  curl -fL --progress-bar "$BASE/release.tgz" -o "$TGZ" || fail "download failed"
 fi
 step "extract into $INSTALL_DIR"
 if [ "$DRY" = 0 ]; then
