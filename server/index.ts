@@ -38,6 +38,7 @@ import { Federation, type PeerAlert } from './federation.js';
 import { createSyncManager, bootstrapSyncConfig, type SyncManager } from './syncthing.js';
 import { loadVersionInfo } from './version.js';
 import { FLEET_TARGET_FILE, UPDATE_MACHINE, Updater, type FleetTarget } from './updater.js';
+import { macInstaller, renderInstallPage, validBase, windowsInstaller, type InstallShelf, type ShelfVersion } from './installPage.js';
 import {
   storeMeta,
   applyUpload,
@@ -478,6 +479,58 @@ app.get('/api/hub-info', (_req, res) => {
 // Release channel: whichever machine holds files in data/releases serves the
 // fleet (in practice vps-node — scripts/publish.ps1 uploads there).
 app.use('/releases', express.static(join(DATA_DIR, 'releases')));
+
+// ------------------------------------------------- /install: join the fleet
+// A human page with one-click installers for new machines. Served by every
+// hub; the downloaded scripts fetch the release from the shelf — this host
+// when it holds one, else the release machine (never a hard-coded name).
+async function installShelf(req: express.Request): Promise<InstallShelf | null> {
+  const localVersion = join(DATA_DIR, 'releases', 'version.json');
+  if (existsSync(localVersion)) {
+    // the shelf is here: downloads go to whatever name the browser reached us by
+    const base = `http://${String(req.headers.host ?? `127.0.0.1:${actualPort}`)}`;
+    if (!validBase(base)) return null;
+    let version: ShelfVersion | undefined;
+    try {
+      version = JSON.parse(readFileSync(localVersion, 'utf8')) as ShelfVersion;
+    } catch {
+      version = undefined;
+    }
+    return { base, version };
+  }
+  const peer = federation.peerByMachine(UPDATE_MACHINE);
+  if (!peer || !validBase(peer.info.url)) return null;
+  let version: ShelfVersion | undefined;
+  try {
+    const res = await fetch(`${peer.info.url}/releases/version.json`, { signal: AbortSignal.timeout(3500) });
+    if (res.ok) version = (await res.json()) as ShelfVersion;
+  } catch {
+    version = undefined;
+  }
+  // the live read failed: the updater's last check is better than nothing
+  if (!version && updater.status.latestBuild) version = { build: updater.status.latestBuild, version: updater.status.latestVersion };
+  return { base: peer.info.url, version };
+}
+
+app.get('/install', async (req, res) => {
+  res.type('html').send(renderInstallPage(await installShelf(req), discovery.selfName));
+});
+
+function installerRoute(file: string, generate: (base: string) => string) {
+  app.get(`/install/${file}`, async (req, res) => {
+    const shelf = await installShelf(req);
+    if (!shelf) {
+      return res
+        .status(503)
+        .type('text/plain')
+        .send(`no release shelf: this hub holds no releases and the fleet's release machine (${UPDATE_MACHINE}) is not connected`);
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
+    res.type('application/octet-stream').send(generate(shelf.base));
+  });
+}
+installerRoute('deckhand-install.cmd', windowsInstaller);
+installerRoute('deckhand-install.command', macInstaller);
 
 /** Forward an admin call to another machine's hub when ?machine= says so. */
 function adminForward(req: express.Request, res: express.Response): boolean {

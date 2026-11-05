@@ -25,7 +25,7 @@ npm start
 
 Open <http://127.0.0.1:5959>. `npm start` serves `server/public`, which a clone does not include until `npm run build`. For a live reload UI instead, `npm run dev` serves it at <http://127.0.0.1:5960> (the hub stays on 5959).
 
-**Add a second machine:** install [Tailscale](https://tailscale.com) on both, then repeat the clone, install, build, and start. Hubs discover each other on the tailnet; every dashboard shows the whole fleet. The always-on installer, projects root, and firewall rules are in [Install (each machine)](#install-each-machine).
+**Add a second machine:** install [Tailscale](https://tailscale.com) on both, then open `http://<first-machine>:5959/install` on the new one — one click per OS ([Install from your fleet](#install-from-your-fleet-the-install-page)). Or repeat the clone, install, build, and start by hand: the always-on installer, projects root, and firewall rules are in [Install (each machine)](#install-each-machine).
 
 A self-hosted **fleet controller for coding-agent sessions** — Claude Code and
 OpenAI Codex, side by side. Run agent sessions on any of your computers, watch
@@ -420,6 +420,46 @@ and how to behave towards the others.
 
 A single machine with none of the above except Node + Claude Code still
 works as the original standalone dashboard.
+
+---
+
+## Install from your fleet (the /install page)
+
+Once any hub serves a published release (the release shelf), every new
+machine installs from the browser: join the tailnet, open
+`http://<any-hub>:5959/install` on the new machine, and click the download
+for its OS. The page shows the current build and the exact warnings to
+expect; the downloaded installer fetches the release from the shelf, so the
+new machine never needs git or a checkout.
+
+- **Windows** — `deckhand-install.cmd`: double-click it (SmartScreen warns
+  on unsigned downloads: **More info → Run anyway**). It self-elevates via
+  UAC, checks Tailscale and Node 20+ (offering
+  `winget install OpenJS.NodeJS.LTS` when Node is missing), asks for an
+  install folder and a projects root, downloads and extracts the release,
+  runs `npm install`, writes `hub-env.cmd`, adds the two firewall rules,
+  installs the Windows service through `scripts\install.ps1 -Mode service`,
+  waits for the hub to answer — and then spells out how to make the service
+  **run as your user** and why (step 4 below): Claude Code's and Codex's
+  sign-ins live in your profile, and LocalSystem has none.
+- **macOS** — `deckhand-install.command`: Gatekeeper blocks double-clicked
+  unsigned downloads — right-click → **Open**, or run
+  `bash ~/Downloads/deckhand-install.command` in Terminal. It checks
+  Tailscale and Node (offering `brew install node`), asks the same two
+  questions, installs, runs `scripts/install-macos.sh` (per-user
+  LaunchAgent), waits for the hub, and prints the always-on notes:
+  automatic login, FileVault off, keep the Mac awake.
+- **Linux** — the page shows a copy-paste one-liner (download, extract,
+  `npm install`, `sudo bash scripts/install.sh`).
+
+Both installers refuse to touch a machine that already runs a hub (a
+running hub updates itself from ADMIN → UPDATE), log what they do
+(`%TEMP%\deckhand-install.log` / `~/Library/Logs/deckhand-install.log`),
+and take `-DryRun` / `--dry-run` to print every step without changing
+anything.
+
+The manual steps below remain for the first machine of a fleet (nothing
+serves `/install` yet) and for installing from a git checkout.
 
 ---
 
