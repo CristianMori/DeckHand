@@ -39,6 +39,10 @@ import { createSyncManager, bootstrapSyncConfig, type SyncManager } from './sync
 import { loadVersionInfo } from './version.js';
 import { FLEET_TARGET_FILE, UPDATE_MACHINE, Updater, type FleetTarget } from './updater.js';
 import {
+  installMeta, linuxInstaller, macInstaller, renderInstallPage, resolveInstallBase, validInstallBase, windowsInstaller,
+  type InstallBase, type ShelfVersion,
+} from './installPage.js';
+import {
   storeMeta,
   applyUpload,
   STORE_DIR,
@@ -478,6 +482,111 @@ app.get('/api/hub-info', (_req, res) => {
 // Release channel: whichever machine holds files in data/releases serves the
 // fleet (in practice vps-node — scripts/publish.ps1 uploads there).
 app.use('/releases', express.static(join(DATA_DIR, 'releases')));
+
+// ------------------------------------------------- /install: join the fleet
+// A self-contained, read-only subtree (page, installers, release, metadata)
+// that also works behind a prefix-stripping proxy — Tailscale Serve, or the
+// Bifrost landing page mapping http://<host>/deckhand/ to /install/. All
+// links on the page are relative; the base the scripts download from is the
+// HUB_INSTALL_PUBLIC_URL setting, else X-Forwarded-* from a loopback proxy,
+// else the request itself (installPage.resolveInstallBase).
+const header1 = (req: express.Request, name: string): string | undefined => {
+  const v = req.headers[name];
+  return typeof v === 'string' && v ? v : undefined;
+};
+function installBaseFor(req: express.Request): InstallBase | null {
+  const ra = req.socket.remoteAddress ?? '';
+  return resolveInstallBase({
+    host: header1(req, 'host'),
+    loopback: ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1',
+    forwardedHost: header1(req, 'x-forwarded-host'),
+    forwardedProto: header1(req, 'x-forwarded-proto'),
+    forwardedPrefix: header1(req, 'x-forwarded-prefix'),
+  });
+}
+
+/** The shelf: here (data/releases), on the release machine, or out of reach. */
+async function installShelf(): Promise<{ reachable: boolean; peerUrl?: string; version?: ShelfVersion }> {
+  const localVersion = join(DATA_DIR, 'releases', 'version.json');
+  if (existsSync(localVersion)) {
+    let version: ShelfVersion | undefined;
+    try {
+      version = JSON.parse(readFileSync(localVersion, 'utf8')) as ShelfVersion;
+    } catch {
+      version = undefined;
+    }
+    return { reachable: true, version };
+  }
+  const peer = federation.peerByMachine(UPDATE_MACHINE);
+  if (!peer || !validInstallBase(peer.info.url)) return { reachable: false };
+  let version: ShelfVersion | undefined;
+  try {
+    const out = await fetch(`${peer.info.url}/releases/version.json`, { signal: AbortSignal.timeout(3500) });
+    if (out.ok) version = (await out.json()) as ShelfVersion;
+  } catch {
+    version = undefined;
+  }
+  // the live read failed: the updater's last check is better than nothing
+  if (!version && updater.status.latestBuild) version = { build: updater.status.latestBuild, version: updater.status.latestVersion };
+  return { reachable: true, peerUrl: peer.info.url, version };
+}
+
+// /install redirects to /install/ so the page's relative links resolve; the
+// route matches both spellings (Express's default loose trailing slash).
+app.get('/install', async (req, res) => {
+  if (!req.path.endsWith('/')) return res.redirect(301, '/install/');
+  const [shelf, base] = [await installShelf(), installBaseFor(req)];
+  res.type('html').send(
+    renderInstallPage({
+      version: shelf.version,
+      downloads: shelf.reachable,
+      base: base?.base,
+      homeLink: !!base?.proxied,
+      machine: discovery.selfName,
+    }),
+  );
+});
+
+/** An installer download: generated per request with the base embedded. */
+function installerRoute(file: string, saveAs: string, generate: (base: string) => string) {
+  app.get(`/install/${file}`, async (req, res) => {
+    const shelf = await installShelf();
+    if (!shelf.reachable) {
+      return res.status(503).type('text/plain').send('no release shelf: this hub holds no releases and the release machine is not connected');
+    }
+    const base = installBaseFor(req);
+    if (!base) return res.status(503).type('text/plain').send('no usable download URL could be derived from this request');
+    res.setHeader('Content-Disposition', `attachment; filename="${saveAs}"`);
+    res.type('application/octet-stream').send(generate(base.base));
+  });
+}
+installerRoute('windows.cmd', 'deckhand-install.cmd', windowsInstaller);
+installerRoute('mac.command', 'deckhand-install.command', macInstaller);
+installerRoute('linux.sh', 'deckhand-install.sh', linuxInstaller);
+// the first version's names keep working
+installerRoute('deckhand-install.cmd', 'deckhand-install.cmd', windowsInstaller);
+installerRoute('deckhand-install.command', 'deckhand-install.command', macInstaller);
+
+/** The release and its stamp, from here or the release machine, so the whole
+ *  subtree works through a proxy that only maps /install. */
+function shelfFileRoute(file: string, localName: string) {
+  app.get(`/install/${file}`, (_req, res) => {
+    const local = join(DATA_DIR, 'releases', localName);
+    if (existsSync(local)) return res.sendFile(local);
+    const peer = federation.peerByMachine(UPDATE_MACHINE);
+    if (!peer || !validInstallBase(peer.info.url)) return res.status(503).type('text/plain').send('no release shelf reachable');
+    res.redirect(302, `${peer.info.url}/releases/${localName}`);
+  });
+}
+shelfFileRoute('release.tgz', 'deckhand-release.tgz');
+shelfFileRoute('version.json', 'version.json');
+
+// what a landing page shows about Deckhand without scraping HTML
+app.get('/install/meta.json', async (_req, res) => {
+  const shelf = await installShelf();
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.json(installMeta(shelf.version));
+});
 
 /** Forward an admin call to another machine's hub when ?machine= says so. */
 function adminForward(req: express.Request, res: express.Response): boolean {
@@ -2955,6 +3064,6 @@ function listen(port: number, attemptsLeft: number) {
 // tests, together with a temporary HUB_DATA_DIR) skips the listen() below so
 // the harness can listen on an ephemeral port itself; everything else about
 // loading this module — routes, gates, middleware — is identical to the real hub.
-export { app, httpServer, manager, needsYou, swarm };
+export { app, httpServer, manager, needsYou, swarm, federation };
 
 if (process.env.HUB_LISTEN !== '0') listen(DEFAULT_PORT, 10);
